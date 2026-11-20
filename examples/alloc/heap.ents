@@ -51,9 +51,9 @@ export func malloc(size: u32) -> u32 {
   return no_room
 }
 
-// Frees the block at an offset malloc gave. An offset malloc cannot have given,
-// below the first block or past the heap, is ignored, so free(no_room) does
-// nothing, like C's free(NULL).
+// Frees the block at an offset malloc gave. An offset below the first block or
+// past the heap, which malloc cannot have given, is ignored, so free(no_room)
+// does nothing, like C's free(NULL).
 export func free(ptr: u32) {
   return when ptr < sizeof(Header) || ptr > heap.len
   let block = header(ptr - sizeof(Header))
