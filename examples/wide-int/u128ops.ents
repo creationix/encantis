@@ -1,7 +1,7 @@
 // Operations on u128, a wide integer: two i64s, the low half first, in
-// registers, in memory and to the host (reference 2.2, 7.2). An operation
-// that takes more than one instruction is a call of a helper the compiler
-// adds to the module (11.5).
+// registers, in memory and to the host (reference 2.2, 7.2). ^, &, |, ~ and
+// == work on each half in place, with no call; + is a call of a helper the
+// compiler adds to the module, as mul_hi is (11.5).
 
 export func xor128(a: u128, b: u128) -> u128 => a ^ b
 export func add128(a: u128, b: u128) -> u128 => a + b
