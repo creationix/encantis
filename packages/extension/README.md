@@ -25,6 +25,9 @@ The extension runs the Encantis compiler itself, so what it reports is what `enc
 - **Diagnostics** as you type: parse errors, type errors and warnings, with unused names faded. A file that imports other `.ents` files is checked with them, and an error inside an instance of a generic points back to the calls that asked for it.
 - **Hover** shows the type of any name or expression, the value of a `def` or a literal, a function's signature, and for a call of a generic, the instance it calls.
 - **Go to Definition** and **Find All References**. A name another `.ents` file exports is defined at its import, and from the import, Go to Definition opens the file at its `export`. An import's path is a link to its file.
+- **Completion** of the names in scope, builtins, types and keywords, and after a `.`, of fields, `len`/`ptr`/`wid`, and the functions that can be called as methods (`v.push(x)` for `push(v, x)`), also while the line being written does not parse yet. **Signature help** shows the parameter of the argument being written.
+- **Rename** a function, type, global, constant, parameter or local, where it is declared and everywhere it is used. An exported function keeps the name the host knows it by (`export "area" func surface`). A rename is refused, with the reason, where the new name would make the program mean something else: a name it would hide or be hidden by, a keyword or a builtin.
+- **Outline**, breadcrumbs and **Go to Symbol in Editor** (`Ctrl+Shift+O` / `Cmd+Shift+O`): the module's declarations, a struct's fields, an import's items and a test's declarations, also while one of them does not parse.
 - **Semantic highlighting** of parameters, locals, globals, constants, functions and types, on top of the TextMate grammar. Encantis code blocks in Markdown are highlighted too.
 - **Format Document**, the same formatter as `encantis fmt`.
 - **WAT preview**: the WebAssembly text a file compiles to, beside it, updated as you type. Open it with the preview button in the editor title bar, **Encantis: Open WAT Preview to the Side** (`Ctrl+K V` / `Cmd+K V`), or **Encantis: Open WAT Preview** (`Ctrl+Shift+V` / `Cmd+Shift+V`). The status bar then shows:
@@ -35,7 +38,7 @@ The extension runs the Encantis compiler itself, so what it reports is what `enc
 
   Click an item to change it.
 
-The extension also works in VS Code for the Web (vscode.dev, github.dev). There each file is checked on its own, against the signatures its imports declare, and the WAT preview is not optimized.
+The extension also works in VS Code for the Web (vscode.dev, github.dev), where it reads a file's imports from the workspace as the desktop does. There the WAT preview is not optimized.
 
 ## The compiler
 

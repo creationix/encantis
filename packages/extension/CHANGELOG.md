@@ -6,6 +6,10 @@
 - The preview's status bar is shown while a preview is visible, with the size of the one in front, and no longer stays after the preview is closed.
 - A preview of a file with `#` or `?` in its name opens.
 - Go to Definition on an import of another `.ents` file opens that file at its `export`, and the import's path is a link to the file.
+- Completion: names in scope, builtins, types and keywords, and after a `.` fields and methods, also in a line that does not parse yet. Signature help.
+- Rename, checked: a rename that would change what the program means is refused, with the reason. An exported function keeps its export name.
+- Outline, breadcrumbs and Go to Symbol in Editor.
+- VS Code for the Web reads a file's imports from the workspace, instead of checking each file on its own.
 
 ## 0.3.0
 
