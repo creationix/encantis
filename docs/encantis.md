@@ -32,7 +32,7 @@ Source code is shown in `ents` code blocks. The examples that the compiler can p
 
 - An example is a whole module, which the test suite checks as it stands. Only the example of a design that is not implemented can be a fragment: a few statements, or a declaration that uses names declared elsewhere.
 - A `test "name" { ... }` block shows results with `assert` ([Tests](#12-tests)).
-- A code block marked `errors` after an example says that the example is refused. Each of its lines is the gist of one error the compiler reports, in the order reported; the full message can say more. The checker reports in passes, each in source order: generic types (what is wrong with their parameters, then any that applies itself to a growing argument, [8.5](#85-generic-types)); `type` declarations; the other declarations (imports, `def`s, globals, `data`, and functions' parameter and result types, with the limits on these, such as an array's size or the registers a signature takes, [2.12](#212-limits), and a second function with the same parameter types); export names used twice; the bodies of functions and tests; and last the instances of generics ([8.3](#83-requirements)). So an error in a later function's parameter type is listed before one in an earlier function's body. An expression that is refused takes a type that fits wherever it is used, so its uses add no error of their own. After a few errors the compiler still reports a second, misleading one at the same place (`cannot assign i32 to u32` after `unknown identifier 'n'` in a function that returns a `u32`: known bugs); the examples here avoid them.
+- A code block marked `errors` after an example says that the example is refused. Each of its lines is the gist of one error the compiler reports, in the order reported; the full message can say more. The checker reports in passes, each in source order: generic types (what is wrong with their parameters, then any that applies itself to a growing argument, [8.5](#85-generic-types)); `type` declarations; the other declarations, in source order whatever their kind (imports, `def`s, globals, `data`, functions' parameter and result types and a generic's comptime parameters, with the limits on these, such as an array's size or the registers a signature takes, [2.12](#212-limits); a second function with the same parameter types, and a generic that shares its name with a function, are reported at the one declared second); export names used twice; the bodies of functions and tests; and last the instances of generics ([8.3](#83-requirements)). So an error in a later function's parameter type is listed before one in an earlier function's body. A generic type's body is checked where the type is applied, so the body of one never applied is not checked at all ([8.5](#85-generic-types)). An expression that is refused takes a type that fits wherever it is used, so its uses add no error of their own. After a few errors the compiler still reports a second, misleading one at the same place (`cannot assign i32 to u32` after `unknown identifier 'n'` in a function that returns a `u32`: known bugs); the examples here avoid them.
 - A code block marked `ents same-wasm` after an example is a second program that compiles to exactly the same `.wasm` file. This is how the reference shows that a feature costs nothing.
 - A `text` block holds output, a grammar summary or code for another language, and a `wat` block the WebAssembly text a program compiles to.
 - A feature that is designed but not implemented is labelled **Not implemented** where it is described, and its examples are not working code. [Implementation Status](#implementation-status) lists every such feature.
@@ -333,7 +333,7 @@ A literal writes a value into the program. Most literals have no type of their o
 
 `:T` after a literal gives it a type: `42:i64`, `255:u8`, `2.5:f32`, `[0:u8; 64]`. The value has to be one of that type, which is never a conversion: `300:u8` is `cannot assign int(300) to u8`, and `1.5:i32` is `cannot assign float(1.5) to i32`. An integer is a value of a float type when the float holds it exactly, so `1:f64` is the float `1.0`. The same `:T` after any operand is a type annotation: `x:i64` widens an `i32` variable, and nothing narrows ([2.10](#210-type-conversions)). It binds as tightly as `as`, tighter than a prefix operator: `-x:i64` is `-(x:i64)`. A `-` before a number is part of the number, though ([Integer Literals](#integer-literals)), so `-5:u8` is the constant -5 given the type `u8`, an error.
 
-Directly after `(`, or after a `,` of a call's arguments or of a tuple or struct literal, a name followed by `:` names the argument or the field ([Struct Constructors](#struct-constructors)), and is no annotation: `clz(b:u32)` passes an argument named `b` (`'clz' takes positional arguments`), and `(b:u32, 1)` is a tuple whose field `b` would be the type `u32` (`'u32' is a type; a type can only be passed for a comptime parameter`). There, put the name in parentheses, `clz((b):u32)`, or cast it, `clz(b as u32)`. Anything but a bare name takes the annotation directly: `f(5:i64)`, `t.0:u32`, `ctz(x):u32 * 8`.
+Directly after `(`, or after a `,` of a call's arguments or of a tuple or struct literal, a name followed by `:` names the argument or the field ([Struct Constructors](#struct-constructors)), and is no annotation: `clz(b:u32)` passes an argument named `b` (`'clz' takes positional arguments`), and `(b:u32, 1)` is a tuple whose field `b` would be the type `u32` (`'u32' is a type; a type can only be passed for a comptime parameter`). So is `(a:u16 + b)`, a struct of one field, not a sum widened to `u16`. Where several functions share a name, a call's arguments are typed first to choose one, so `width(x:i16)` gets the second message too. There, put the name in parentheses, `clz((b):u32)`, `((a):u16 + b) * 2`, or cast it, `clz(b as u32)`, `(a as u16 + b) * 2`. Anything but a bare name takes the annotation directly: `f(5:i64)`, `t.0:u32`, `ctz(x):u32 * 8`, and so does a name that does not follow `(` or `,`: `a:u16 + b` is the widened sum.
 
 A constructor call, `Point(1.0, 2.0)`, makes the struct value that the tuple literal `(1.0, 2.0)` makes where a `Point` is wanted, but it is a call, not a literal: `mut` and `&` do not go before it, and it is not the whole value of a `data` ([3.2](#32-data-declarations-data)). Write the tuple literal, and the type where it is used: `data origin: Point = mut (1.0, 2.0)`, `let p: *mut Point = &(1.0, 2.0)`.
 
@@ -342,10 +342,12 @@ A constructor call, `Point(1.0, 2.0)`, makes the struct value that the tuple lit
 ```ents
 func lz(b: u8) -> u32 => clz((b):u32) - 24       // the leading zeros of a byte
 func tag(t: (u8, u8)) -> u32 => t.0:u32 * 256 + t.1
+func mean(a: u8, b: u8) -> u16 => ((a):u16 + b) / 2
 
 test "an annotation on a name in an argument list is in parentheses" {
   assert lz(1) == 7
   assert tag('ok') == 28523
+  assert mean(200, 100) == 150
 }
 ```
 
@@ -1168,7 +1170,7 @@ A value has a range when the compiler can see one:
 - the index of a counted loop, `for i in 6` (a `u32#6`), or `for i in n` with `n` a `def` or a value parameter ([5.2](#52-loops));
 - an operator with a constant `K` — a literal, a `def` or a value parameter, not an `if` of constants:
   - `x + K`, with `x` ranged (`#N`), is `#(N + K)`, and `x * K` (K above 0) is `#((N - 1) * K + 1)`: a `u32#4 * 2` is a `u32#7`. The constant may stand on either side;
-  - for any unsigned `x`, ranged or not, `x & K` (either side) is `#(K + 1)`, `x % K` (K above 0, on the right) is `#K`, and `x >> K` keeps the bits that are left: a `u32 >> 29` is a `u32#8`, a `u32#256 >> 5` a `u32#8`. The count is the one the shift takes ([4.2](#42-bitwise-operators)): `x >> 32` on a `u32` is `x`, with no range. When `x` has a smaller range of its own, it keeps that one;
+  - for any unsigned `x`, ranged or not, `x & K` (either side) is `#(K + 1)`, `x % K` (K above 0, on the right) is `#K`, and `x >> K` keeps the bits that are left, in every unsigned type: a `u32 >> 29` is a `u32#8`, a `u32#256 >> 5` a `u32#8`, a `u8 >> 2` a `u8#64`. A constant with a type is such an `x` too: `12:u32 & 7` is a `u32#8`. The count is the one the shift takes ([4.2](#42-bitwise-operators)): `x >> 32` on a `u32` is `x`, with no range. When `x` has a smaller range of its own, it keeps that one;
   - a `u8` or a `u16` is bounded by its width, so a `u8` indexes a `*[256]T` with no check. Its arithmetic wraps, so with `b: u8`, `b + 1` and `b * 3` are `u8`s and index a `*[256]T` with no check too. On a ranged `u8` or `u16` whose N + K passes the width, the compiler gives a bound past it (`u8#200 + 100` is called a `u8#300`), which proves nothing for a `*[256]T` although the sum wraps into it (a known bug);
 - `min` and `max` when every operand is ranged, or a constant inside the widest of those ranges: the result has the widest range. With `i: u32#4`, `min(i, 2)` is a `u32#4`, but `min(i, 7)` a plain `u32` ([10.1](#101-numeric-builtins));
 - a comparison that narrows it (below);
@@ -1195,6 +1197,7 @@ func evens() -> u32 {
 }
 func last(i: u32#(size - 1)) -> u32 => squares[i + 1]
 func nibble(x: u32#(0x10)) -> u32 => squares[x >> 1]
+func after(i: u32#size) -> u32 => squares[i + 1] ?? 0    // i + 1 may pass the end
 
 test "a ranged index needs no check" {
   assert square(3) == 9
@@ -1205,10 +1208,11 @@ test "a ranged index needs no check" {
   assert evens() == 56
   assert last(6) == 49
   assert nibble(15) == 49
+  assert after(6) == 49 && after(7) == 0
 }
 ```
 
-An index whose range may pass the length proves nothing, and is checked like any run-time index ([4.7](#47-bounds-checked-indexing)): it is resolved with `if let` or `??`, and anywhere else it is an error:
+An index whose range may pass the length proves nothing, and is checked like any run-time index ([4.7](#47-bounds-checked-indexing)): `if let` or `??` resolves it, as in `after` above, and read bare it is an error, `index type u32#9 may exceed *[8]u32 bounds` while it has a range and `runtime index on *[8]u32 requires 'if let' or '??'` once the range is gone:
 
 ```ents
 data squares = [0:u32, 1, 4, 9, 16, 25, 36, 49]
@@ -1228,7 +1232,7 @@ runtime index on *[8]u32 requires 'if let' or '??' (no optional type for u32)
 
 <!-- spec:end -->
 
-**Assigning.** A ranged type takes a value whose range fits in it — `u8#8` fits `u8#16`, which fits `u8` — and widens to its plain type and on, like it (`u32#4` to `u32` to `i64`). A plain value, or a constant too large, is an error. Two known bugs break this: a plain `u8` is refused for a `u8#256` (`cannot assign u8 to u8#256`, and likewise a `u16` for a `u16#65536`), although that type holds every `u8`; and a plain or wider-ranged value of a narrower unsigned type is accepted for a ranged type it does not fit (a `u8` or a `u8#200` for a `u32#4`), so an index proven by it is not checked. A variable keeps the type it is declared with, also one `let` infers: `let k = x & 15` is a `u32#16`, so `k = x` is refused, and a compound assignment has to leave the result in the range (`k &= 7`, `k >>= 1` and `k %= 4` do; `k += 1` does not). A variable meant to take any value is given its plain type, `let k: u32 = x & 15`.
+**Assigning.** A ranged type takes a value whose range fits in it — `u8#8` fits `u8#16`, which fits `u8` — and widens to its plain type and on, like it (`u32#4` to `u32` to `i64`). A plain value, or a constant too large, is an error. Two known bugs break this: a plain `u8` is refused for a `u8#256` (`cannot assign u8 to u8#256`, and likewise a `u16` for a `u16#65536`), although that type holds every `u8`; and a plain or wider-ranged value of a narrower unsigned type is accepted for a ranged type it does not fit (a `u8` or a `u8#200` for a `u32#4`), so an index proven by it is not checked. A variable keeps the type it is declared with, also one `let` infers: `let k = x & 15` is a `u32#16`, so `k = x` is refused, and a compound assignment has to leave the result in the range (`k &= 7`, `k >>= 1` and `k %= 4` do; `k += 1` does not). It does not narrow the variable: after `k &= 7`, `k` is still a `u32#16` and indexes no `*[8]T` (`index type u32#16 may exceed *[8]u32 bounds`), so index with `k & 7` or bind it, `let j = k & 7`. A variable meant to take any value is given its plain type, `let k: u32 = x & 15`.
 
 <!-- spec:begin compile -->
 
@@ -1252,7 +1256,13 @@ cannot assign u32 to u32#16
 
 <!-- spec:end -->
 
-**Narrowing.** Comparing an unsigned variable (a parameter, a named result, a `let`, a loop's variable or an `if let` binding) with a constant — a literal, a `def` (typed or not), a value parameter, `sizeof(T)`, the `.len` of a `*[N]T`, or arithmetic on these — narrows its range wherever the comparison is known to hold. Any of the six comparisons narrows, with the constant on either side: where they hold, `x < 12`, `x <= 11`, `12 > x` and `11 >= x` each make `x` a `u32#12`, and `x == 3` makes it a `u32#4`; `x >= 12`, `x > 11` and `x != 3` narrow where they are false. That is inside an `if` branch, in the later `elif` and `else` branches (where the earlier conditions are false), in the rest of a block after `return ... when c`, `break when c` or `continue when c`, and after an `if c { ... }` with no `else` whose branch always exits; the blocks nested there are in it, loop bodies too. `!` turns a comparison around, `&&` combines bounds, and `||` narrows only where it is false. The comparison written is the bounds check, so nothing else runs. With the constant on the left of `==` or `!=`, `3 == x` narrows nothing (a known bug): write the variable first.
+**Narrowing.** Comparing an unsigned variable (a parameter, a named result, a `let`, a loop's variable or an `if let` binding) with a constant — a literal, a `def` (typed or not), a value parameter, `sizeof(T)`, the `.len` of a `*[N]T`, or arithmetic on these — narrows its range wherever the comparison is known to hold. Any of the six comparisons narrows, with the constant on either side: where they hold, `x < 12`, `x <= 11`, `12 > x` and `11 >= x` each make `x` a `u32#12`, and `x == 3` makes it a `u32#4`; `x >= 12`, `x > 11` and `x != 3` narrow where they are false. A condition is known to hold, or to be false, in these places and in the blocks nested in them, loop bodies too:
+
+- inside an `if` branch (it holds), and in the later `elif` and `else` branches (the earlier conditions are false);
+- in the rest of a block after `return ... when c`, `break when c` or `continue when c` (`c` is false);
+- in the rest of a block after an `if c { ... }` that has no `elif` and no `else` and whose branch always exits (`c` is false).
+
+Nowhere else: an `if` with an `elif` or an `else` narrows nothing after it, even when its other branches exit, so write `return 0 when x >= 12` rather than `if x < 12 { ... } else { return 0 }`. `!` turns a comparison around, `&&` combines bounds, and `||` narrows only where it is false. The comparison written is the bounds check, so nothing else runs. With the constant on the left of `==` or `!=`, `3 == x` narrows nothing (a known bug): write the variable first.
 
 <!-- spec:begin compile -->
 
@@ -1293,7 +1303,7 @@ test "a comparison with a constant narrows" {
 
 Compare with the array's own `.len`, or with the `def` that sizes it, rather than writing its length again.
 
-Nothing else narrows: a signed variable, a field (`c.at < 12`), a comparison with a variable, a `while` condition, and an `assert` (`assert x < 12` traps when it is false, but the code after it still sees a plain `u32`: write `return ... when x >= 12`). Nor does a comparison narrow a variable assigned anywhere in the region it would cover, the branch it guards or the rest of the block after a `... when` or an exiting `if`, also after the index it would prove. An assignment before the comparison does not count, even one earlier in the same loop body, since the comparison runs again on each pass: in `loop { m += k; break when m >= 12; buf[m] = 1 }`, `m` is narrowed at `buf[m]`.
+Nothing else narrows: a signed variable, a field (`c.at < 12`), a comparison with a variable, a `while` condition, a `match` arm (in `match x { 3 => buf[x], _ => 0 }`, `x` is a plain `u32`), and an `assert` (`assert x < 12` traps when it is false, but the code after it still sees a plain `u32`: write `return ... when x >= 12`). Nor does a comparison narrow a variable assigned anywhere in the region it would cover, the branch it guards or the rest of the block after a `... when` or an exiting `if`, also after the index it would prove. An assignment before the comparison does not count, even one earlier in the same loop body, since the comparison runs again on each pass: in `loop { m += k; break when m >= 12; buf[m] = 1 }`, `m` is narrowed at `buf[m]`.
 
 ```ents
 data buf = mut [0:u8; 12]
@@ -1321,9 +1331,16 @@ func e(x: u32) -> u8 {
   x = 50                         // assigned in the region the comparison covers
   return v
 }
+func f(x: u32) -> u8 {
+  if x < 12 { buf[x] = 1 } else { return 0 }
+  return buf[x]                  // an if with an else narrows nothing after it
+}
+func g(x: u32) -> u8 => match x { 3 => buf[x], _ => 0 }
 ```
 
 ```errors
+runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
+runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
 runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
 runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
 runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
@@ -1408,7 +1425,7 @@ test "a value is copied, a reference shares" {
 
 **Members.** `v.len` is N and `v.wid` is `sizeof(T)`. Both are constants with no type of their own, as a literal is ([Comptime Literal Promotion](#comptime-literal-promotion)): each takes the type of where it is used (`let b: u8 = v.len`), and where nothing gives one it is an `i32`. So `let n = v.len` makes an `i32`, and `i < n` with `i: u32` is `mismatched operands for '<': u32 and i32`: write `let n: u32 = v.len`, or compare with `v.len` itself. `v.ptr` is an error: an array held by value is its elements and has no address, also where it was read out of memory (`p.*`). One that lies in memory has the address of its place, `(&p.items).ptr`.
 
-**No address.** Since it has none, an array held in registers is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is `cannot assign [3]i32 to *[3]i32`, and `v.sum()` is `the receiver is a [3]i32, which is held in registers and has no address`. An element loop needs a slice or a pointer (`cannot iterate over [3]u32`), and `==` does not compare arrays. An array literal is laid out in memory where a pointer or a slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
+**No address.** Since it has none, an array held in registers is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is `cannot assign [3]i32 to *[3]i32`, and `v.sum()` is `the receiver is a [3]i32, which is held in registers and has no address`; for a slice parameter both are the plain message, `receiver: cannot assign [3]u32 to []u32` for `v.total()` with `total(xs: []u32)`. An element loop needs a slice or a pointer (`cannot iterate over [3]u32`), and `==` does not compare arrays. An array literal is laid out in memory where a pointer or a slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
 
 Fixed arrays suit small data that is read by constant positions: the limbs of a number, the channels of a colour, the coordinates of a vector.
 
@@ -1750,6 +1767,7 @@ In a table:
 
 - `m[i]` loads row pointer `i` (a stride of 4 bytes) and is a `*[M]T`, or a `*mut [M]T` when the table is mutable. `m[i][j]` then indexes that row.
 - Each index is bounds-checked on its own, by the rules of [4.7](#47-bounds-checked-indexing): `m[i]` against N (a slice's rows against its `.len`), `m[i][j]` against M; a constant or ranged index is proven at compile time. A row has no optional type: like an element of a value type, a row index that isn't proven is resolved where it is taken, with `if let r = m[i]` or `m[i] ?? other`. `??` and `if let` resolve the index they are given, so in `m[i][j] ?? 0` the row index still has to be in range. A many-pointer (`[*][M]T`) has no length, so its row index is never checked.
+- A mutable table passes where a read-only one is wanted, `*mut [N][M]T` for `*[N][M]T` or `[][M]T`, since a row's mutability is the table's; a generic `*[n][m]T` infers from it too.
 - `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself. That is what `memcpy` and `memset` check a length against, and `memzero(m)` is an error: it would point every row at address 0. A row is zeroed or copied as the array it is, `for row in m { memzero(row) }`, and in a deeper table each row of rows: `for row in m { for cells in row { memzero(cells) } }` for a `*mut [2][2][2]T`.
 - `sizeof(*[N][M]T)` is 4, as for any pointer. `sizeof([N][M]T)` is `N × M × sizeof(T)`: that is the value, which lies in place as a field of a struct ([9.6](#96-structs-and-slices-in-memory)) or in registers. Reached where it lies in memory, it is packed, the `*[NxM]T` its rows make ([Fixed Arrays in Place](#fixed-arrays-in-place)), not a table.
 - `for row in m` binds each row pointer, as `m[i]` gives it: a `*[M]T`, or a `*mut [M]T` in a mutable table.
@@ -1770,9 +1788,9 @@ data spare = mut [9:i32, 9, 9]
 func cell(i: u32#2, j: u32#3) -> i32 => grid[i][j]
 func row-sum(i: u32) -> i32 => if let r = grid[i] { r[0] + r[1] + r[2] } else { 0 }
 func second(i: u32) -> i32 => (rows[i] ?? [-1, -1])[1]
-func total() -> i32 {
+func total(m: *[2][3]i32) -> i32 {
   let t = 0
-  for row in grid {
+  for row in m {
     for v in row { t += v }
   }
   return t
@@ -1784,12 +1802,13 @@ test "a table is row pointers" {
   assert row-sum(5) == 0
   assert second(1) == 4
   assert second(3) == -1
-  assert total() == 22
+  assert total(grid) == 22
   assert grid.len == 2 && grid.wid == 4 && grid[1].len == 3
   assert grid[1].*[2] == 5
   board[0][2] = 4
   board[1] = spare
   assert board[0][2] == 4 && board[1][0] == 9
+  assert total(board) == 31                      // a mutable table is read as one
 }
 ```
 
@@ -1883,7 +1902,7 @@ A tuple is values of any types, by position: `(i32, i32)` is a pair of `i32`s, `
 - `(x)` is grouping, not a tuple — the type is just `x`.
 - `(x, y, ...)` is a tuple, of two or more parts.
 
-Grouping holds wherever a type is written: after a colon, in a `type` declaration, in a cast, as a type argument, and as the type a constructor call names, so `x: (u32)` takes a `u32` and `(Point)(1.0, 2.0)` is `Point(1.0, 2.0)`. A field with a name makes a struct of one field: `(v: f64)`. After `->` the parentheses list the results: `-> (u32)` is one `u32`, `-> (q: i32, r: i32)` two named results, and `-> ((q: i32, r: i32))` one result that is a struct.
+Grouping holds wherever a type is written: after a colon, in a `type` declaration, in a cast, as a type argument, and as the type a constructor call names, so `x: (u32)` takes a `u32` and `(Point)(1.0, 2.0)` is `Point(1.0, 2.0)`. A field with a name makes a struct of one field: `(v: f64)`, and so does a literal, `(v: 41)`, while `(41)` is the number 41. After `->` the parentheses list the results: `-> (u32)` is one `u32`, `-> (q: i32, r: i32)` two named results, and `-> ((q: i32, r: i32))` one result that is a struct.
 
 A tuple is held as its parts, each in registers of its own: no memory, no pointer. A tuple of tuples is all their parts, and a function's results are a tuple returned as several wasm results. `t.0`, `t.1`, ... reach the parts, and chain, `t.0.1`; a position past the last is `invalid tuple index`. A tuple literal is written the same way, `(a, b)`, and its parts take their types from where it is used, or their defaults ([3.3](#33-variables)). Two tuple types are one type when their parts are, in order.
 
@@ -2346,17 +2365,19 @@ test "a narrower value widens where it meets a wider type" {
 
 <!-- spec:end -->
 
-The conversion is an instruction only when the WebAssembly type changes ([11.1](#111-widening-instructions-implicit)): `u8` → `i64` is `i64.extend_i32_u`, `i32` → `f64` is `f64.convert_i32_s`, and `u8` → `u32` is nothing, since every integer of 32 bits or fewer is a wasm `i32`. An operator works in the type its own operands meet at, whatever type its result is then given: a value is widened before an operation only by the other operand. With `a: u8`, `a + 1` is a `u8` sum that wraps at 256, and `a + n` with `n: u32` adds in 32 bits. `let z: u16 = a * 3`, or a `-> u16` body `a * 3`, is a `u8` product widened afterwards: 44 for an `a` of 100. For a `u16` product, widen an operand first, `a:u16 * 3`:
+The conversion is an instruction only when the WebAssembly type changes ([11.1](#111-widening-instructions-implicit)): `u8` → `i64` is `i64.extend_i32_u`, `i32` → `f64` is `f64.convert_i32_s`, and `u8` → `u32` is nothing, since every integer of 32 bits or fewer is a wasm `i32`. An operator works in the type its own operands meet at, whatever type its result is then given: a value is widened before an operation only by the other operand. With `a: u8`, `a + 1` is a `u8` sum that wraps at 256, and `a + n` with `n: u32` adds in 32 bits. `let z: u16 = a * 3`, or a `-> u16` body `a * 3`, is a `u8` product widened afterwards: 44 for an `a` of 100. For a `u16` product, widen an operand first, `a:u16 * 3`. Directly after `(` a name and `:` name a field instead ([1.5](#15-literals)), so a sum in parentheses is widened as `((a):u16 + b) / 2` or `(a as u16 + b) / 2`:
 
 <!-- spec:begin compile -->
 
 ```ents
 func triple(a: u8) -> u16 => a * 3             // a u8 product, then widened
 func triple16(a: u8) -> u16 => a:u16 * 3       // a u16 product
+func mean(a: u8, b: u8) -> u16 => (a as u16 + b) / 2
 
 test "an operator works in its operands' type" {
   assert triple(100) == 44                     // 300 wraps to 44 as a u8
   assert triple16(100) == 300
+  assert mean(200, 100) == 150
 }
 ```
 
@@ -2399,7 +2420,7 @@ This is the whole list. Each conversion applies wherever a value meets a declare
 | a narrower number | a wider number that holds all its values | [Implicit Widening](#implicit-widening) |
 | `u32#N` | `u32#M` with M ≥ N, and what `u32` widens to | the same for each unsigned type; a plain unsigned type is bounded by its width, so a `u8` is a `u32#256`, and a ranged value of a narrower unsigned type is a wider one whose bound is at least its own: a `u8#8` is a `u32#8` |
 | an untyped constant | any number type that holds its value exactly | [Comptime Literal Promotion](#comptime-literal-promotion) |
-| `*mut T`, `[]mut T`, `[*]mut T` | `*T`, `[]T`, `[*]T` | mutable to const ([Mutability](#mutability)), at the outer level only: a `*mut *mut u8` is no `**u8` |
+| `*mut T`, `[]mut T`, `[*]mut T` | `*T`, `[]T`, `[*]T` | mutable to const ([Mutability](#mutability)), at the outer level only: a `*mut *mut u8` is no `**u8`. A table's rows follow the table: a `*mut [N][M]T` is a `*[N][M]T` ([Nesting](#nesting)) |
 | `*[N]T` | `[]T` | the slice of its N elements; `*mut [N]T` gives a `[]mut T` or a `[]T` ([9.5](#95-array-type-conversions)) |
 | `*[N]T` | `[*]T` | the same address; a `*mut [N]T` gives a `[*]mut T` or a `[*]T` |
 | `*[NxM]T` | `[]T` | the slice of its N×M elements ([Nesting](#nesting)) |
@@ -2525,7 +2546,7 @@ cannot assign int(256) to u8
 
 <!-- spec:end -->
 
-A constant expression takes the type it's used as, all the way down to its literals, so integer literals alone take the float type they meet: `7 / 2` is 3.5 where an `f64` is wanted, and `7 % 2` there is `'%' needs integer operands, not f64`. There are two exceptions. A constant shifted by a count that has a type takes the count's type ([4.2](#42-bitwise-operators)). And a float literal beside an integer value makes the operation an `f64` one, if the integer widens to `f64`, also where an `f32` is wanted: with `k: u8`, `k * 0.5` returned as an `f32` is `cannot assign f64 to f32`, so write `k * 0.5:f32` (beside an `f32` value, `x * 0.5`, the literal is an `f32`):
+A constant expression takes the type it's used as, all the way down to its literals, so integer literals alone take the float type they meet: `7 / 2` is 3.5 where an `f64` is wanted, and `7 % 2` there is `'%' needs integer operands, not f64`. Constants that meet each other, as the two sides of `==` do, are one constant expression, so a float literal anywhere in it makes every step an `f64` one: `7 / 2 == 3.5` is true, while `7 / 2 == 3` compares the `i32`s 3 and 3. There are two exceptions. A constant shifted by a count that has a type takes the count's type ([4.2](#42-bitwise-operators)). And a float literal beside an integer value makes the operation an `f64` one, if the integer widens to `f64`, also where an `f32` is wanted: with `k: u8`, `k * 0.5` returned as an `f32` is `cannot assign f64 to f32`, so write `k * 0.5:f32` (beside an `f32` value, `x * 0.5`, the literal is an `f32`):
 
 <!-- spec:begin compile -->
 
@@ -2548,6 +2569,7 @@ test "a constant is computed in the type it is used as" {
   assert halves(5) == 2.5
   let h: f64 = 7 / 2         // an f64 division
   assert h == 3.5
+  assert 7 / 2 == 3.5 && 7 / 2 == 3
 }
 ```
 
@@ -2555,7 +2577,7 @@ test "a constant is computed in the type it is used as" {
 
 Each step of a constant expression is then computed in that type, and wraps as it would for values. What the compiler proves from a constant (an index in bounds, a range) it proves from that value: as a `u32`, `(0 - 1) / 4` is 1073741823, not 0, and `~0 >> 28` is 15.
 
-One number of the expression has to be a value of the type: the one furthest from zero among its literals and `def`s, the exact value of each step, and its own exact value. (So the type an expression defaults to holds its operands too: `5000000000 - 4999999999` is an `i64` subtraction.) Between two numbers as far from zero, a step's value counts before its operands, and the left operand before the right; the message prints the number. Where a `u8` is wanted, `255 + 1` is checked as 256 and `300 - 100` as 300, and both are errors. Where a `u32` is wanted, `0 - 1` and `0 - 1 + 1` are both checked as -1 and are errors, while `(0 - 1) / 4` is checked as 4 and is accepted. A `def` counts as the number its own expression is checked as:
+One number of the expression has to be a value of the type: the one furthest from zero among its untyped literals and `def`s, the exact value of each step, and its own exact value. A literal with `:T` is a value of `T`, not one of these: `200:u8 + 100` is a `u8` addition in which only `100` has to fit, and it wraps to 44 as `x + 100` would. (So the type an expression defaults to holds its operands too: `5000000000 - 4999999999` is an `i64` subtraction.) Between two numbers as far from zero, a step's value counts before its operands, and the left operand before the right; the message prints the number. Where a `u8` is wanted, `255 + 1` is checked as 256 and `300 - 100` as 300, and both are errors. Where a `u32` is wanted, `0 - 1` and `0 - 1 + 1` are both checked as -1 and are errors, while `(0 - 1) / 4` is checked as 4 and is accepted. A `def` counts as the number its own expression is checked as:
 
 <!-- spec:begin compile -->
 
@@ -2688,7 +2710,7 @@ A cast is written two ways:
 - `x as T`, for any target type `T`.
 - `T(x)`, for a primitive type's own name only: `u32(x)`, `f64(n)`, `i8(b)`. It takes exactly one argument (`type cast 'u32' expects 1 argument, got 2`). It is a call in form, so it binds as one: `u32(x).double()` calls `double` on the cast. A name for a primitive type (`type Count = u32`) has no such call: `Count(x)` is an error, and `x as Count` is the cast (the compiler reports `Count(x)` as `cannot call non-function type: u32`, followed by a second, misleading error: a known bug). Nor has a ranged type or a type parameter (`T(x)` in a generic says to write `x as T`). A capitalised name with arguments is a struct constructor ([2.8](#struct-constructors)), which builds a value, not a cast.
 
-`as` applies to a postfix expression: a name, a literal, a call, a field, an index, a dereference, or anything in parentheses. Its result takes no postfix operator and no second `as` without parentheses: `x as u32.double()` and `1 as u8 as u16` are syntax errors, and `(x as u32).double()` and `(b as u16) as u32` are what is meant. A unary operator before it applies to the cast: `-x as i32` is `-(x as i32)`. Every binary operator binds looser, so `x as i32 + 1` is `(x as i32) + 1`, and `n as i32 < 0` is `(n as i32) < 0`.
+`as` applies to a postfix expression: a name, a literal, a call, a field, an index, a dereference, or anything in parentheses. Its result takes no postfix operator, no second `as` and no `:T` without parentheses, and an annotated operand takes no `as`: `x as u32.double()`, `1 as u8 as u16` and `0.1:f32 as f64` are syntax errors, and `(x as u32).double()`, `(b as u16) as u32` and `(0.1:f32) as f64` are what is meant. A unary operator before it applies to the cast: `-x as i32` is `-(x as i32)`. Every binary operator binds looser, so `x as i32 + 1` is `(x as i32) + 1`, and `n as i32 < 0` is `(n as i32) < 0`.
 
 <!-- spec:begin compile -->
 
@@ -4546,13 +4568,13 @@ From the loosest binding to the tightest:
 | `+` `-` | left to right | |
 | `*` `/` `%` | left to right | |
 | `-` `~` `&` `mut` (prefix) | right to left: `-~x` is `-(~x)` | |
-| `x as T`, `x: T` | one per operand | `1 as u8 as u16` is a syntax error: `(1 as u8) as u16` |
+| `x as T`, `x: T` | one per operand | an operand takes one cast or one annotation: `1 as u8 as u16`, `0.1:f32 as f64` and `x as u16:u32` are syntax errors; write `(1 as u8) as u16`, `(0.1:f32) as f64` |
 | `.f` `.0` `.*` `.u32` `[i]` `[a..b]` `(args)` (postfix) | left to right | |
 
 Where this differs from C:
 
 - The bitwise operators bind tighter than the comparisons: `x & 1 == 0` is `(x & 1) == 0`.
-- `!` binds looser than a comparison, and takes a bool: `!a == b` is `!(a == b)`.
+- `!` binds looser than a comparison and than `&`, `|` and `^`, and takes a bool: `!a == b` is `!(a == b)`, and `!a & b` is `!(a & b)`; write `(!a) & b` for the other. It binds tighter than `&&` and `||`: `!a && b` is `(!a) && b`.
 - A cast binds tighter than every prefix operator: `-x as i32` is `-(x as i32)`, and `&p[1] as [*]u8` is `&(p[1] as [*]u8)`; write `(&p[1]) as [*]u8` for the address cast.
 - `??` binds loosest of all: `xs[i] ?? 0 == 0` is `xs[i] ?? (0 == 0)`; write `(xs[i] ?? 0) == 0`.
 - `-` written before a number where an operand starts is part of the number ([Integer Literals](#integer-literals)): `-128:i8` is one constant, and `-1 as u32` is the constant 4294967295.
@@ -4566,6 +4588,7 @@ func even(x: u32) -> bool => x & 1 == 0           // (x & 1) == 0
 func small(x: u32) -> bool => !x > 3              // !(x > 3)
 func shift() -> u32 => 1 << 2 + 3                 // 1 << 5
 func either(a: bool, b: bool, c: bool) -> bool => a || b && c
+func nand(a: bool, b: bool) -> bool => !a & b            // !(a & b)
 func flip(x: u32) -> i32 => -x as i32             // -(x as i32)
 func step(c: bool, x: u32) -> u32 => x + if c { 1 } else { 10 }
 func twice(c: bool, x: u32) -> u32 => x + if c { 1 } else { 10 } * 2   // x + (if ...) * 2
@@ -4575,6 +4598,7 @@ test "precedence" {
   assert small(2) && !small(4)
   assert shift() == 32
   assert either(true, false, false)
+  assert nand(false, false) && !nand(true, true)
   assert flip(5) == -5
   assert step(false, 5) == 15
   assert twice(false, 5) == 25
@@ -4631,7 +4655,7 @@ A trailing comma is accepted after the last element of an array literal (`[1, 2,
 | `/` | division | numbers |
 | `%` | remainder | integers |
 
-The two operands have one type, after [implicit widening](#implicit-widening), and that is the type of the result: a `u8` and a `u32` add as `u32`s, an `i32` and an `f64` as `f64`s. Types neither of which holds the other, such as `i32` and `u32`, need a cast (`mismatched operands for '+': i32 and u32 (cast one side explicitly)`). A constant takes the type of the other operand, and has to fit it: `x + 1` with a `u8` `x` is a `u8` addition. An operation on constants alone is checked when the program is compiled: its value, worked out in the type it is used as, has to fit that type ([Comptime Literal Promotion](#comptime-literal-promotion) says which of its numbers is checked), so `0xFFFFFFFF + 1` is 4294967296, an error where a `u32` is wanted, not 0. In a function body it is still compiled as the operation written, as a `def`'s value is ([3.1](#31-definitions-def)): `1 << 40` for a `u64` is an `i64.shl` of two constants, which an optimizer folds. A `bool` takes no arithmetic (`'+' cannot be applied to bool: cast it to an integer first`), and a pointer takes `+` and `-` of an integer ([4.6](#46-pointer-operations)).
+The two operands have one type, after [implicit widening](#implicit-widening), and that is the type of the result: a `u8` and a `u32` add as `u32`s, an `i32` and an `f64` as `f64`s. Types neither of which holds the other, such as `i32` and `u32`, need a cast (`mismatched operands for '+': i32 and u32 (cast one side explicitly)`). A constant takes the type of the other operand, and has to fit it: `x + 1` with a `u8` `x` is a `u8` addition. An operation on constants alone is checked when the program is compiled: its value, worked out in the type it is used as, has to fit that type ([Comptime Literal Promotion](#comptime-literal-promotion) says which of its numbers is checked), so `0xFFFFFFFF + 1` is 4294967296, an error where a `u32` is wanted, not 0. A literal with `:T` is a value of `T`, not such a constant: `200:u8 + 100` is a `u8` addition in which only `100` has to fit, and it wraps, as below. In a function body it is still compiled as the operation written, as a `def`'s value is ([3.1](#31-definitions-def)): `1 << 40` for a `u64` is an `i64.shl` of two constants, which an optimizer folds. A `bool` takes no arithmetic (`'+' cannot be applied to bool: cast it to an integer first`), and a pointer takes `+` and `-` of an integer ([4.6](#46-pointer-operations)).
 
 **Integers wrap.** `+`, `-` and `*` on integers never trap: the result is reduced to the width of its type, in two's complement, as wasm's `i32.add` and `i64.mul` do. An `i8`, `u8`, `i16` or `u16` is computed in an `i32` and brought back to its width after each operation ([2.2](#22-primitive-types)): `200:u8 + 100` is 44, `100:i8 + 100` is -56. Negation is `0 - x`, so it is allowed on an unsigned type and wraps too: `-x` with a `u32` of 1 is 4294967295.
 
@@ -4706,7 +4730,7 @@ The count of a shift or rotate can be any integer type: it doesn't have to match
 
 The result has the value's type, unless the count's type is wider. Then the shift is done in the integer type of the count's width and the value's signedness, the value widening to it first (sign-extended if it is signed), and that type is the result's. So with a `u8` value, a `u32` or an `i32` count gives a `u32`, and a `u64` or an `i64` count a `u64`; with an `i8` value, a `u32` count gives an `i32` (`i32.shr_s`), and a `u64` count an `i64`.
 
-A constant count takes the value's type and has to be a value of it: `x << 8` on a `u8` is a shift by the `u8` 8, and `x << 256` is `cannot assign int(256) to u8`. A negative count is taken by its low bits like any other, so `x << -3` on an `i32` is `x << 29`. Two constants shift exactly, as other operators on constants do: `1 << 40` is 1099511627776, an `i64` where nothing gives it a type, and `1 << 33` is no `u32`.
+A constant count takes the value's type and has to be a value of it: `x << 8` on a `u8` is a shift by the `u8` 8, and `x << 256` is `cannot assign int(256) to u8`. A negative count is taken by its low bits like any other, so `x << -3` on an `i32` is `x << 29`, and so is a negative count of a constant: `1 << -3` is 536870912 as an `i32`, its type where nothing gives one, and 2^61 as an `i64`. Otherwise two constants shift exactly, as other operators on constants do: `1 << 40` is 1099511627776, an `i64` where nothing gives it a type, and `1 << 33` is no `u32`. A shift whose exact value no `i64` holds, `1 << 64` with nothing to type it, should be refused as `18446744073709551616` is; the compiler takes it as an `i64` and gives 1 (a known bug).
 
 A constant value shifted by a count that has a type takes the count's type, without its range, whatever the shift is used as: an exception to the rule that a constant takes the type it is used as ([Comptime Literal Promotion](#comptime-literal-promotion)). `1 << n` with a `u8` count is a `u8` shift also in `let x: u32 = 1 << n`, and with a `u32` count it is a 32-bit shift also beside a `u64`: `x | 1 << i`, with `x` a `u64` and `i` a `u32`, sets bit `i % 32`, not bit `i`. Give the value the result's type: `1:u32 << n`, `x | 1:u64 << i`.
 
