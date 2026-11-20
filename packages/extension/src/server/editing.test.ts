@@ -4,7 +4,8 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { CompletionItem, Connection, DocumentSymbol, SignatureHelp, WorkspaceEdit } from 'vscode-languageserver/lib/common/api'
-import { pathFor, type ServerOptions, startServer, uriFor } from './serve'
+import { posix, win32 } from 'node:path'
+import { pathFor, pathOf, type ServerOptions, startServer, uriFor } from './serve'
 
 type Handler = (params: unknown) => unknown
 
@@ -247,11 +248,16 @@ describe('completion', () => {
 describe("a web editor's documents", () => {
   test('are named by the paths of their URIs, and the files beside them by theirs', () => {
     const main = 'vscode-vfs://github/creationix/encantis/examples/modular/main.ents'
-    expect(pathFor(main)).toBe('/creationix/encantis/examples/modular/main.ents')
-    expect(uriFor('/creationix/encantis/examples/modular/util.ents', main)).toBe('vscode-vfs://github/creationix/encantis/examples/modular/util.ents')
-    expect(uriFor('/a/my file.ents', main)).toBe('vscode-vfs://github/a/my%20file.ents')
+    expect(pathFor(main, posix)).toBe('/creationix/encantis/examples/modular/main.ents')
+    expect(uriFor('/creationix/encantis/examples/modular/util.ents', main, posix)).toBe('vscode-vfs://github/creationix/encantis/examples/modular/util.ents')
+    expect(uriFor('/a/my file.ents', main, posix)).toBe('vscode-vfs://github/a/my%20file.ents')
+    // On Windows the loader resolves a path with a drive and backslashes: the
+    // URI made from it again is the document's.
+    expect(uriFor('D:\\creationix\\encantis\\examples\\modular\\main.ents', main, win32)).toBe(main)
+    const resolved = pathFor(main, win32) as string
+    expect(uriFor(resolved, main, win32)).toBe(main)
     expect(pathFor('untitled:Untitled-1')).toBeNull()
-    expect(pathFor('file:///project/a.ents')).toBe('/project/a.ents')
+    expect(pathFor('file:///project/a.ents')).toBe(pathOf('file:///project/a.ents'))
   })
 
   test('import files the server reads through the editor', async () => {

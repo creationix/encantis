@@ -277,21 +277,25 @@ export interface ServerOptions {
 // or for a document of another file system (a web editor's, vscode-vfs://),
 // the path of its URI, where the URI has one. Null for a document of no
 // file (untitled:).
-export function pathFor(uri: string): string | null {
-  if (uri.startsWith('file:')) return pathOf(uri);
+// It is resolved, as the loader resolves the paths it is given and those it
+// makes: on Windows it gets the drive of the current directory, which the
+// URI made from it again does not have.
+export function pathFor(uri: string, paths: Paths = nodePath): string | null {
+  if (uri.startsWith('file:')) return pathOf(uri, paths);
   try {
     const url = new URL(uri);
-    return url.pathname.startsWith('/') ? decodeURIComponent(url.pathname) : null;
+    return url.pathname.startsWith('/') ? paths.resolve(decodeURIComponent(url.pathname)) : null;
   } catch {
     return null;
   }
 }
 
 // The URI of a path the loader made, on the file system of a document
-export function uriFor(path: string, near: string): string {
-  if (near.startsWith('file:')) return uriOf(path);
+export function uriFor(path: string, near: string, paths: Paths = nodePath): string {
+  if (near.startsWith('file:')) return uriOf(path, paths);
   const url = new URL(near);
-  return `${url.protocol}//${url.host}${path.split('/').map(encodeURIComponent).join('/')}`;
+  const slashed = paths.sep === '\\' ? path.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/') : path;
+  return `${url.protocol}//${url.host}${slashed.split('/').map(encodeURIComponent).join('/')}`;
 }
 
 // Whether two documents are on one file system: of the same scheme and host

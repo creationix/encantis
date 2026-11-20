@@ -359,7 +359,8 @@ describe('a document with source imports', () => {
     const files = new Map([[pathOf(libUri), lib]])
     const { at, handlers } = await open([[mainUri, main]], async (path) => files.get(path) ?? null)
     const definition = handlers.get('onDefinition')?.(at(main.indexOf('limit:'))) as Location
-    expect(definition).toEqual({ uri: libUri, range: { start: { line: 1, character: 22 }, end: { line: 1, character: 31 } } })
+    // The file's URI as made from its path: on Windows with its drive
+    expect(definition).toEqual({ uri: uriOf(pathOf(libUri) as string), range: { start: { line: 1, character: 22 }, end: { line: 1, character: 31 } } })
   })
 
   test("an import's path is a link to its file", async () => {

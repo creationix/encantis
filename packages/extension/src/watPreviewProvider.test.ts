@@ -5,10 +5,12 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 
 // vscode.Uri as far as the provider uses it: components kept decoded,
-// written out encoded, as VS Code's own Uri does.
+// written out encoded, and a Windows path (C:\x) written as a URI's
+// (/C:/x) and back, as VS Code's own Uri does.
+const windows = sep === '\\'
 class Uri {
   private constructor(
     readonly scheme: string,
@@ -20,7 +22,8 @@ class Uri {
     return new Uri(c.scheme, c.authority ?? '', c.path ?? '', c.query ?? '')
   }
   static file(path: string): Uri {
-    return new Uri('file', '', path, '')
+    const slashed = windows ? path.replace(/\\/g, '/') : path
+    return new Uri('file', '', slashed.startsWith('/') ? slashed : `/${slashed}`, '')
   }
   static parse(value: string): Uri {
     const m = /^([a-z][a-z0-9+.-]*):(?:\/\/([^/?#]*))?([^?#]*)(?:\?([^#]*))?/i.exec(value)
@@ -28,7 +31,7 @@ class Uri {
     return new Uri(m[1], m[2] ?? '', decodeURIComponent(m[3]), decodeURIComponent(m[4] ?? ''))
   }
   get fsPath(): string {
-    return this.path
+    return windows && /^\/[A-Za-z]:/.test(this.path) ? this.path.slice(1).replace(/\//g, '\\') : this.path
   }
   with(change: { path?: string }): Uri {
     return new Uri(this.scheme, this.authority, change.path ?? this.path, this.query)
