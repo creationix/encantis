@@ -6068,7 +6068,7 @@ A block, `{ ... }`, is a sequence of statements, run in order. Statements need n
 
 `if` and `match` are expressions. Written as a statement, one runs for what its branches do; written where a value is wanted, it gives one.
 
-**Bodies.** Everything that has a body takes either a block or `=>` and one expression: a function ([3.4](#34-functions)), each branch of an `if`, and `while`, `for` and `loop`. A match arm is its patterns, `=>`, and an expression or a block ([5.4](#54-match-expressions)). An arrow body is one expression, never a statement: `for i in n => add(i)` calls `add` on each pass, but `for i in n => t += i` is a syntax error, since an assignment is a statement, and so is the arm `1 => t = 6` (write `1 => { t = 6 }`). Where nothing takes an arrow body's value, as in a loop, the value is dropped.
+**Bodies.** Everything that has a body takes either a block or `=>` and one expression: a function ([3.4](#34-functions)), each branch of an `if`, and `while`, `for` and `loop`. A match arm is its patterns, `=>`, and an expression or a block ([5.4](#54-match-expressions)). An arrow body is one expression, never a statement: `for i in n => add(i)` calls `add` on each pass, but `for i in n => t += i` is a syntax error, since an assignment is a statement, and so is the arm `1 => t = 6` (write `1 => { t = 6 }`). `return`, `break` and `continue` are statements too, so `0 => return 5`, `_ => continue` and `if c => break else => 1` are syntax errors: write `0 => { return 5 }` and `if c { break } else { 1 }`. A block is always the body of something: a `{ ... }` standing alone among statements is a syntax error, so a `defer` runs at the end of a function body, a branch, a loop body or a match arm, never of a block of its own. Where nothing takes an arrow body's value, as in a loop, the value is dropped. The compiler drops it in a `while` and a `loop`, but not in a `for` or in an arrow branch of an `if` written as a statement: `for x in xs => h.push(x)`, with a `push` that returns a `bool`, and `if full => h.pop()` pass the check and give a module that does not validate (a known bug). There, write the body as a block, `for x in xs { h.push(x) }`, in which a call's value is dropped as any statement's is.
 
 <!-- spec:begin compile -->
 
@@ -6164,7 +6164,7 @@ condition must be bool, not u32
 
 **As a value.** An `if` with an `else` is also an expression. Its value is the value of the branch taken: the last expression of its block, or the expression after its `=>`. So every branch needs one, unless it always exits (`return`, `break`, `continue`): a branch that ends in a statement and goes on has no value (`this branch has no value: expected i32`). The branches widen to one type, like operands ([Implicit Widening](#implicit-widening)), and with a value the wasm `if` has that type's results. Branches of which neither type holds the other are an error, `branches have different types: i8 and u8 (cast one explicitly)`, unless a type is given for the whole: with a `u8` and an `i8` branch, `let v: i16 = if c { a } else { b }` is fine, each branch widening to the `i16` on its own. An `if` without an `else` has no value: it is of type `()`, the empty tuple, and using it as a number is an error (`cannot assign () to i32`). A function's block body is not such a value: with an unnamed result its last expression is not returned (write `return`, or an expression body), and with named results it fills them only when every branch ends in a value or exits; otherwise it is a statement, which leaves them as its branches set them ([3.4](#34-functions)).
 
-A branch whose value has no type of its own takes the type of the others, as a literal does anywhere it meets a typed value: an array literal next to a slice or a pointer is laid out as one, so `if c { xs } else { [] }` with `xs: []i32` is a `[]i32`, and so is `if c { xs } else { [7, 8] }`, with or without a type written for the `let` it is given to. The same goes for the arms of a `match`, and for `elif`. Where nothing gives the whole a type (a `let` without one), a branch that is itself an `if` or a `match` whose values are array literals is not laid out so: it is checked as a value of its own first, so `let v = if a { xs } else { if b { [1] } else { [] } }` is refused (`branches have different types: [] and [1]i32`), and with literals of one length it is a value such as `[2]i32`, which a slice does not take (`cannot convert [2]i32 to []i32 implicitly`). Where a type is given (a `let` with a type, a function's result, an argument), every literal is laid out for it, however deeply it is nested: a function `-> []i32` whose body is `if a { xs } else { if b { [1] } else { [] } }` is accepted. Otherwise use `elif`.
+A branch whose value has no type of its own takes the type of the others when that type holds it, as an element of an array literal does ([Array Literals](#array-literals)), and not as an operand does. A constant that type does not hold takes its own default instead, and the other branches widen to it when they can: with nothing to type the whole, `if c { 200:u8 } else { 300 }` is an `i32` and `if c { n } else { 5000000000 }` with `n: u32` an `i64`, while `if c { n } else { -1 }` is `branches have different types: int(-1) and u32 (cast one explicitly)`, since no `i32` holds every `u32`. (An operator refuses such a constant: `x + 300` with a `u8` `x` is `cannot assign int(300) to u8`.) Where a type is given for the whole, every branch is checked against it: `-> u8 => if c { 200:u8 } else { 300 }` is `cannot assign int(300) to u8`. Likewise an array literal next to a slice or a pointer is laid out as one, so `if c { xs } else { [] }` with `xs: []i32` is a `[]i32`, and so is `if c { xs } else { [7, 8] }`, with or without a type written for the `let` it is given to. The same goes for the arms of a `match`, and for `elif`. Where nothing gives the whole a type (a `let` without one), a branch that is itself an `if` or a `match` whose values are array literals is not laid out so: it is checked as a value of its own first, so `let v = if a { xs } else { if b { [1] } else { [] } }` is refused (`branches have different types: [] and [1]i32`), and with literals of one length it is a value such as `[2]i32`, which a slice does not take (`cannot convert [2]i32 to []i32 implicitly`). Where a type is given (a `let` with a type, a function's result, an argument), every literal is laid out for it, however deeply it is nested: a function `-> []i32` whose body is `if a { xs } else { if b { [1] } else { [] } }` is accepted. Otherwise use `elif`.
 
 <!-- spec:begin compile -->
 
@@ -6177,6 +6177,11 @@ func widest(small: bool, n: u8, big: u64) -> u64 {
 }
 
 func values(c: bool, xs: []i32) -> []i32 => if c { xs } else { [7, 8] }
+
+func pick(c: bool) -> i32 {
+  let v = if c { 200:u8 } else { 300 }   // an i32: 300 is no u8, so the u8 widens
+  return v
+}
 
 func first_positive(xs: []i32) -> i32 {
   for x in xs {
@@ -6191,6 +6196,7 @@ test "an if with an else is a value" {
   assert clamp(-3, 0, 10) == 0
   assert widest(true, 200, 9) == 200
   assert values(false, [1]).len == 2
+  assert pick(true) == 200 && pick(false) == 300
   assert first_positive([-1, 0, 4]) == 4
 }
 ```
@@ -6202,11 +6208,20 @@ func f(c: bool) -> i32 {
 }
 
 func g(c: bool, t: i32) -> i32 => if c { t } else { t = 0 }
+
+func byte(c: bool) -> u8 => if c { 200:u8 } else { 300 }
+
+func minus(c: bool, n: u32) -> i64 {
+  let v = if c { n } else { -1 }
+  return v
+}
 ```
 
 ```errors
 cannot assign () to i32
 this branch has no value: expected i32
+cannot assign int(300) to u8
+branches have different types: int(-1) and u32 (cast one explicitly)
 ```
 
 <!-- spec:end -->
@@ -6256,7 +6271,7 @@ A `for` binds one variable, `for x in xs`, or two, `for i, x in xs`: the index f
 
 #### Counting
 
-`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that counts up from 0 while it is below the count, so a negative count runs the loop zero times. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`.
+`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`, or `... not f64` for a float), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that counts up from 0 while it is below the count, so a negative count runs the loop zero times. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A count that is a variable gives `i` no range, a ranged one too: with `n: u32#4`, `for i in n` makes `i` a plain `u32`. To index with it, count to the constant and stop at the variable, `for i in 4 { break when i >= n ... }`, where `i` is a `u32#4`. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`. A count computed from constants with operators should be its value; the compiler takes the number furthest from zero among its operands instead (a known bug, [Comptime Literal Promotion](#comptime-literal-promotion)). So `for k in n / 4` with `def n = 8` gives `k` the range `u32#8`, and `two[k]` on a `*[2]u32` is refused. A negative count whose largest operand is positive, such as `2 - 3`, runs as the `u32` 4294967295 with `i` taken as a `u32#3`, so an index that range claims to prove is read past the array with no check. Write a constant count as a literal, a `.len`, or a `def` whose value is a literal (`def half = 4`).
 
 There is no range form: `for i in 2..10` is a syntax error. Count from 0 and add the start, or loop over the elements of a range of an array or slice ([4.8](#48-slicerange-syntax)). A count loop has one variable; with two, `for i, j in n`, the first is never set (a known bug).
 
@@ -6484,6 +6499,7 @@ func grid() -> u32 {
 
 global total: u32 = 0
 data bytes = [1:u8, 2, 3]
+data cells = [1:u32, 2, 3]
 
 func sum3() {
   for total in 3 {
@@ -6495,6 +6511,20 @@ func walk() -> (t: u32) {
     t += bytes
   }
 }
+
+func pick(i: u32) -> u32 {
+  if let v = cells[i] {
+    for v in 3 {
+    }
+    return v
+  }
+  return 0
+}
+
+func res() -> (t: u32) {
+  for t in 3 {
+  }
+}
 ```
 
 ```errors
@@ -6503,6 +6533,8 @@ func walk() -> (t: u32) {
 'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope
 'total' is already declared: a loop variable cannot reuse the name of a global
 'bytes' is already declared: a loop variable cannot reuse the name of a data block
+'v' is already declared: a loop variable cannot reuse the name of an if let binding in scope
+'t' is already declared: a loop variable cannot reuse the name of a named result
 ```
 
 After the loop its names are free again. A later loop can use them, for elements of another type, and a `let` after the loop declares a variable of its own. A function of the module has no value: a loop variable of its name hides it in the body.
