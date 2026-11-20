@@ -162,9 +162,14 @@ export func point-encode(out: *mut [32]u8, buf: *[slots]Point, i: u32#slots) {
 
 // The point an encoding names, into slot i, or false when it names none:
 // x is a square root of (y^2 - 1) / (d y^2 + 1), and bit 255 says which.
+// Each point has one encoding, and decode refuses the others, as RFC 8032
+// 5.1.3 does.
 export func point-decode(buf: *mut [slots]Point, i: u32#slots, encoded: *[32]u8) -> bool {
   let x-sign = encoded[31] >> 7
   let y = fe-frombytes(encoded)
+  // y is below p, whose limbs are 2^51 - 19 and then four of 2^51 - 1: the 19
+  // values from p up would name 0 to 18 a second time
+  return false when y.0 >= mask51 - 18 && y.1 & y.2 & y.3 & y.4 == mask51
   let y2 = fe-carry(fe-sq(y))
   let u = fe-carry(fe-sub(y2, fe-one()))
   let v = fe-carry(fe-add(fe-carry(fe-mul(fe-d(), y2)), fe-one()))
@@ -179,8 +184,11 @@ export func point-decode(buf: *mut [slots]Point, i: u32#slots, encoded: *[32]u8)
     return false when !fe-eq(fe-carry(fe-sq(x)), ratio)
   }
 
-  // Of x and -x, the one whose low bit is the sign
-  if fe-reduce(fe-carry(x)).0 & 1 != x-sign {
+  // Of x and -x, the one whose low bit is the sign. x = 0 is its own
+  // negative, and its only sign is 0.
+  let low = fe-reduce(fe-carry(x))
+  return false when x-sign == 1 && low.0 | low.1 | low.2 | low.3 | low.4 == 0
+  if low.0 & 1 != x-sign {
     x = fe-sub(fe-zero(), x)
   }
   buf[i] = (x, y, fe-one(), fe-carry(fe-mul(x, y)))
@@ -409,6 +417,25 @@ test "point operations" {
     // y = 2: (y^2 - 1) / (d y^2 + 1) has no square root
     enc[..] = 0
     enc[0] = 2
+    assert !point-decode(b, 1, enc)
+  }
+
+  test "point-decode takes y up to p - 1, not p" {
+    // p - 1 is y = -1, with x = 0. p would be y = 0 a second time.
+    enc[..] = 0xFF
+    enc[0] = 0xEC
+    enc[31] = 0x7F
+    assert point-decode(b, 1, enc)
+    enc[0] = 0xED
+    assert !point-decode(b, 1, enc)
+  }
+
+  test "point-decode refuses x = 0 with the sign bit" {
+    // The identity, y = 1, is encoded with the sign 0 only
+    enc[..] = 0
+    enc[0] = 1
+    assert point-decode(b, 1, enc)
+    enc[31] = 0x80
     assert !point-decode(b, 1, enc)
   }
 }
