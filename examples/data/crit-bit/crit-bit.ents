@@ -134,8 +134,8 @@ func best_match(key: []u8) -> u32 {
 // Whether two keys hold the same bytes.
 func same(a: []u8, b: []u8) -> bool {
   return false when a.len != b.len
-  for i, c in a {
-    return false when c != b.ptr[i]        // b is as long as a
+  for i in a.len {                         // a count, since i indexes both
+    return false when a.ptr[i] != b.ptr[i]  // b is as long as a
   }
   return true
 }
