@@ -67,17 +67,24 @@ func hash-mod-l(out: *mut [64]u8, from: u32, n: u32) {
   sc-reduce(out)
 }
 
+// out = A = a B encoded, for the a that expand has made
+func encode-public-key(out: *mut [32]u8) {
+  pt-set-base(points, 0)
+  scalar-mult(points, 1, 0, expanded as *[32]u8)
+  point-encode(out, points, 1)
+}
+
 // === Key derivation ===
 
 export func derive-pubkey(pubkey: *mut [32]u8, privkey: *[32]u8) {
   expand(privkey)
-  pt-set-base(points, 0)
-  scalar-mult(points, 1, 0, expanded as *[32]u8)
-  point-encode(pubkey, points, 1)
+  encode-public-key(pubkey)
 }
 
 // === Signing (RFC 8032 5.1.6) ===
 
+// sign computes A from privkey, and traps when pubkey is another key: two
+// signatures of one message under two public keys share r, and give a away.
 export func sign(sig: *mut [64]u8, msg: []u8, privkey: *[32]u8, pubkey: *[32]u8) {
   assert msg.len <= max-msg
   let signature = sig as *mut Signature
@@ -88,17 +95,23 @@ export func sign(sig: *mut [64]u8, msg: []u8, privkey: *[32]u8, pubkey: *[32]u8)
   transcript.key[..] = expanded[32..]
   hash-mod-l(r, 32, msg.len)
 
+  // A = a B, which pubkey must be
+  encode-public-key(&transcript.key)
+  for i in 32 {
+    assert transcript.key[i] == pubkey[i]
+  }
+
   // R = r B
   pt-set-base(points, 0)
   scalar-mult(points, 1, 0, r as *[32]u8)
-  point-encode(&signature.r, points, 1)
+  point-encode(&transcript.r, points, 1)
 
   // k = SHA-512(R || A || msg) mod L
-  transcript.r[..] = &signature.r
-  transcript.key[..] = pubkey
   hash-mod-l(k, 0, msg.len)
 
+  // The signature, written once every input has been read: R, and
   // S = r + k a mod L
+  signature.r[..] = &transcript.r
   sc-muladd(&signature.s, k as *[32]u8, expanded as *[32]u8, r as *[32]u8)
 }
 
