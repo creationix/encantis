@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - The WAT preview compiles again once typing stops for a moment, not on every keystroke: with a large program and `--release`, each key held VS Code up for up to a second.
 - The preview's status bar is shown while a preview is visible, with the size of the one in front, and no longer stays after the preview is closed.
