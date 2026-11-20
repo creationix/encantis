@@ -11,6 +11,11 @@ export const WAT_SCHEME = 'encantis-wat';
 
 const OPT_LEVELS: OptLevel[] = ['none', 'optimize', 'release'];
 
+// How long a preview waits after an edit before it compiles again. Compiling
+// (and optimizing) runs in the extension host: on each keystroke, a large
+// program (examples/browser/lantern.ents) would hold it up to a second.
+const REFRESH_DELAY_MS = 300;
+
 // The path the loader names a source file by. A program on disk is loaded
 // from file paths; one elsewhere (a web editor's virtual file system) from
 // the paths of its URIs, and its files are found again beside it.
@@ -30,6 +35,9 @@ export class WatPreviewProvider implements vscode.TextDocumentContentProvider {
   // The files each preview's program was read from, by the preview's URI:
   // a change to any of them changes the preview.
   private _programFiles = new Map<string, Set<string>>();
+  // The size of each preview's module, and the previews waiting to refresh
+  private _sizes = new Map<string, number | null>();
+  private _pending = new Map<string, ReturnType<typeof setTimeout>>();
   private _mode: WatDisplayMode = 'folded';
   private _optLevel: OptLevel = 'none';
   private _withTests = false;
@@ -48,6 +56,7 @@ export class WatPreviewProvider implements vscode.TextDocumentContentProvider {
     this._testsBar.command = 'encantis.toggleWatTests';
     this._sizeBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this._updateStatusBar();
+    this.syncStatusBar();
   }
 
   cycleMode(): void {
@@ -76,6 +85,8 @@ export class WatPreviewProvider implements vscode.TextDocumentContentProvider {
 
   private _refreshAll(): void {
     this._cache.clear();
+    for (const timer of this._pending.values()) clearTimeout(timer);
+    this._pending.clear();
     for (const doc of vscode.workspace.textDocuments) {
       if (doc.uri.scheme === WAT_SCHEME) {
         this._onDidChange.fire(doc.uri);
@@ -83,7 +94,7 @@ export class WatPreviewProvider implements vscode.TextDocumentContentProvider {
     }
   }
 
-  private _updateStatusBar(wasmSize?: number | null): void {
+  private _updateStatusBar(): void {
     this._modeBar.text = `WAT: ${this._mode}`;
     this._modeBar.tooltip = 'Click to cycle display mode (raw / flat / folded)';
     const optLabels: Record<OptLevel, string> = { none: 'opt: off', optimize: 'opt: -O', release: 'opt: release' };
@@ -91,50 +102,70 @@ export class WatPreviewProvider implements vscode.TextDocumentContentProvider {
     this._optBar.tooltip = 'Click to cycle optimization (off / -O as `encantis wasm -O` / release as `encantis wasm --release`)';
     this._testsBar.text = this._withTests ? '$(beaker) tests' : '$(beaker)';
     this._testsBar.tooltip = this._withTests ? 'Tests included — click to hide' : 'Tests hidden — click to show';
-    if (wasmSize !== undefined) {
-      if (wasmSize === null) {
-        this._sizeBar.text = '';
-        this._sizeBar.tooltip = undefined;
-      } else {
-        this._sizeBar.text = wasmSize < 1024 ? `${wasmSize} B` : `${(wasmSize / 1024).toFixed(1)} KB`;
-        this._sizeBar.tooltip = `WASM binary size: ${wasmSize.toLocaleString()} bytes`;
-      }
+  }
+
+  // The preview in front: the active editor, the preview of the active
+  // editor's file where it is visible, or else a visible one
+  private _shownPreview(): vscode.Uri | undefined {
+    const active = vscode.window.activeTextEditor?.document.uri;
+    if (active?.scheme === WAT_SCHEME) return active;
+    const visible = vscode.window.visibleTextEditors.map(e => e.document.uri).filter(uri => uri.scheme === WAT_SCHEME);
+    const own = active && WatPreviewProvider.encodeUri(active).toString();
+    return visible.find(uri => uri.toString() === own) ?? visible[0];
+  }
+
+  // The status bar is shown while a preview is visible, with the size of the
+  // module of the preview in front. (VS Code tells of a closed preview only
+  // when it lets go of the document, minutes later.)
+  syncStatusBar(): void {
+    const shown = this._shownPreview();
+    const items = [this._modeBar, this._optBar, this._testsBar, this._sizeBar];
+    if (!shown) {
+      for (const item of items) item.hide();
+      return;
+    }
+    const size = this._sizes.get(shown.toString());
+    if (size === undefined || size === null) {
+      this._sizeBar.text = '';
+      this._sizeBar.tooltip = undefined;
+    } else {
+      this._sizeBar.text = size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
+      this._sizeBar.tooltip = `WASM binary size: ${size.toLocaleString()} bytes`;
+    }
+    for (const item of items) {
+      if (item !== this._optBar || this._optimize) item.show();
     }
   }
 
-  showStatusBar(): void {
-    this._modeBar.show();
-    if (this._optimize) this._optBar.show();
-    this._testsBar.show();
-    this._sizeBar.show();
-  }
-
-  hideStatusBar(): void {
-    this._modeBar.hide();
-    this._optBar.hide();
-    this._testsBar.hide();
-    this._sizeBar.hide();
-  }
-
+  // The source's path and URI are kept as they are: a # or a ? in a file's
+  // name is part of the name.
   static encodeUri(sourceUri: vscode.Uri): vscode.Uri {
-    return vscode.Uri.parse(`${WAT_SCHEME}:${sourceUri.path}.wat?${encodeURIComponent(sourceUri.toString())}`);
+    return vscode.Uri.from({ scheme: WAT_SCHEME, path: `${sourceUri.path}.wat`, query: sourceUri.toString() });
   }
 
   static decodeUri(watUri: vscode.Uri): vscode.Uri {
-    return vscode.Uri.parse(decodeURIComponent(watUri.query));
+    return vscode.Uri.parse(watUri.query);
   }
 
-  // A source file changed: the previews whose programs have it change.
+  // A source file changed: the previews whose programs have it change, once
+  // the edits stop for a moment.
   refresh(sourceUri: vscode.Uri): void {
     const changed = sourceUri.toString();
     for (const doc of vscode.workspace.textDocuments) {
       if (doc.uri.scheme !== WAT_SCHEME) continue;
       const key = doc.uri.toString();
       const files = this._programFiles.get(key);
-      if (WatPreviewProvider.decodeUri(doc.uri).toString() === changed || files?.has(changed)) {
-        this._cache.delete(key);
-        this._onDidChange.fire(doc.uri);
-      }
+      if (WatPreviewProvider.decodeUri(doc.uri).toString() !== changed && !files?.has(changed)) continue;
+      clearTimeout(this._pending.get(key));
+      const uri = doc.uri;
+      this._pending.set(
+        key,
+        setTimeout(() => {
+          this._pending.delete(key);
+          this._cache.delete(key);
+          this._onDidChange.fire(uri);
+        }, REFRESH_DELAY_MS),
+      );
     }
   }
 
@@ -179,14 +210,19 @@ export class WatPreviewProvider implements vscode.TextDocumentContentProvider {
     files.add(entry.uri.toString());
     this._programFiles.set(cacheKey, files);
     this._cache.set(cacheKey, text);
-    this._updateStatusBar(wasmSize);
+    this._sizes.set(cacheKey, wasmSize);
+    this.syncStatusBar();
     return text;
   }
 
   // A preview was closed: what it was of is forgotten.
   forget(watUri: vscode.Uri): void {
-    this._cache.delete(watUri.toString());
-    this._programFiles.delete(watUri.toString());
+    const key = watUri.toString();
+    clearTimeout(this._pending.get(key));
+    this._pending.delete(key);
+    this._cache.delete(key);
+    this._programFiles.delete(key);
+    this._sizes.delete(key);
   }
 
   dispose(): void {
@@ -195,8 +231,11 @@ export class WatPreviewProvider implements vscode.TextDocumentContentProvider {
     this._optBar.dispose();
     this._testsBar.dispose();
     this._sizeBar.dispose();
+    for (const timer of this._pending.values()) clearTimeout(timer);
+    this._pending.clear();
     this._cache.clear();
     this._programFiles.clear();
+    this._sizes.clear();
   }
 }
 
@@ -211,7 +250,6 @@ export function registerWatPreview(context: vscode.ExtensionContext, optimize?: 
       return;
     }
     const watUri = WatPreviewProvider.encodeUri(editor.document.uri);
-    watProvider.showStatusBar();
     vscode.workspace.openTextDocument(watUri).then(doc => {
       vscode.window.showTextDocument(
         doc,
@@ -232,10 +270,9 @@ export function registerWatPreview(context: vscode.ExtensionContext, optimize?: 
       if (e.document.languageId === 'encantis') watProvider.refresh(e.document.uri);
     }),
     vscode.workspace.onDidCloseTextDocument(doc => {
-      if (doc.uri.scheme !== WAT_SCHEME) return;
-      watProvider.forget(doc.uri);
-      const hasWatDocs = vscode.workspace.textDocuments.some(d => d.uri.scheme === WAT_SCHEME && d !== doc);
-      if (!hasWatDocs) watProvider.hideStatusBar();
+      if (doc.uri.scheme === WAT_SCHEME) watProvider.forget(doc.uri);
     }),
+    vscode.window.onDidChangeVisibleTextEditors(() => watProvider.syncStatusBar()),
+    vscode.window.onDidChangeActiveTextEditor(() => watProvider.syncStatusBar()),
   );
 }

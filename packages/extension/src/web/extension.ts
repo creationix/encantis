@@ -25,6 +25,15 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   client = new LanguageClient('encantisLanguageServer', 'Encantis Language Server', clientOptions, worker);
+  // The server, in a worker, has no file system: it asks for the files a
+  // document imports, which are read through the workspace's.
+  client.onRequest('encantis/readFile', async (uri: string): Promise<string | null> => {
+    try {
+      return new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.parse(uri)));
+    } catch {
+      return null;
+    }
+  });
   client.start();
 
   // -------------------------------------------------------------------------

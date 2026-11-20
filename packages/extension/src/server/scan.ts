@@ -80,3 +80,12 @@ export function literalAt(text: string, offset: number): { word: string; start: 
   if (!piece || piece.kind === 'comment' || offset >= piece.end) return null;
   return { word: text.slice(piece.start, piece.end), start: piece.start, end: piece.end };
 }
+
+// Where a name is first written as a whole name in a text, from an offset on:
+// not as a part of a longer name (names have hyphens), or -1.
+export function nameAfter(text: string, name: string, from: number): number {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, 'g');
+  pattern.lastIndex = from;
+  return pattern.exec(text)?.index ?? -1;
+}

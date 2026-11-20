@@ -17,6 +17,19 @@ import {
   type Hover,
   type Location,
   type ReferenceParams,
+  type DocumentLink,
+  type DocumentLinkParams,
+  type DocumentSymbol,
+  type DocumentSymbolParams,
+  type PrepareRenameParams,
+  type CompletionItem,
+  type CompletionParams,
+  type SignatureHelp,
+  type SignatureHelpParams,
+  type RenameParams,
+  type WorkspaceEdit,
+  LSPErrorCodes,
+  ResponseError,
   MarkupKind,
   SemanticTokensBuilder,
   SemanticTokensLegend,
@@ -26,41 +39,20 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
-import type { Module, Span } from '@encantis/compiler/ast';
-import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, typecheckProgram } from '@encantis/compiler/checker';
-import { getSourceImports, loadModule } from '@encantis/compiler/loader';
+import type { ExportDecl, ImportDecl, ImportItem, Module, Span } from '@encantis/compiler/ast';
+import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, type TypeCheckResult, typecheck, typecheckProgram } from '@encantis/compiler/checker';
+import { getSourceImports, loadModule, resolveModulePath } from '@encantis/compiler/loader';
 import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 import * as nodePath from 'path';
 import { namesIn, recoverParse, untrusted } from './recover';
-import { literalAt } from './scan';
+import { leftOutSymbols, outline } from './outline';
+import { BUILTIN_DOCS, BUILTIN_SIGNATURES, TYPE_DOCS } from './words';
+import { complete, signatureHelp } from './complete';
+import { applyRename, planRename, type RenamePlan, refusedName } from './rename';
+import { rename } from '@encantis/compiler/queries';
+import { literalAt, nameAfter } from './scan';
 
-// Builtin function signatures for hover display
-// Polymorphic builtins show representative types
-const BUILTIN_SIGNATURES: Record<string, string> = {
-  // Comptime
-  sizeof: 'sizeof(T) -> u32',
-  // Memory operations
-  memset: 'builtin memset(dest: [*]u8, value: u8, len: u32)',
-  memcpy: 'builtin memcpy(dest: [*]u8, src: [*]u8, len: u32)',
-  memzero: 'builtin memzero(dest: *mut [N]T)',
-  // Float math (f32/f64)
-  sqrt: 'builtin sqrt(x: f64) -> f64',
-  abs: 'builtin abs(x: f64) -> f64',
-  ceil: 'builtin ceil(x: f64) -> f64',
-  floor: 'builtin floor(x: f64) -> f64',
-  trunc: 'builtin trunc(x: f64) -> f64',
-  nearest: 'builtin nearest(x: f64) -> f64',
-  copysign: 'builtin copysign(x: f64, y: f64) -> f64',
-  // Min/max (all numeric types)
-  min: 'builtin min(a: T, b: T) -> T',
-  max: 'builtin max(a: T, b: T) -> T',
-  // Integer bit operations
-  clz: 'builtin clz(x: i32) -> u8',
-  ctz: 'builtin ctz(x: i32) -> u8',
-  popcnt: 'builtin popcnt(x: i32) -> u8',
-  mul_hi: 'builtin mul_hi(a: u64, b: u64) -> u64',
-};
 
 // Convert symbol kind to display prefix
 function kindToPrefix(kind: MetaSymbol['kind']): string {
@@ -151,12 +143,42 @@ interface Analysis {
   text: string;
   meta: MetaOutput;
   module: Module;
+  // The checker's result the meta was built from
+  check: TypeCheckResult;
   // Where the text does not parse, what was left out for the rest to parse
   // (see recoverParse), and the declarations of the rest whose analysis can
   // differ from the one the text will have once that is written again (see
   // untrusted). No place in either is answered for, and the uses of a name
   // written in either are not all known.
   recovered?: { leftOut: Span[]; untrusted: Span[]; unseenNames: Set<string> };
+  // The text of each file of the document's program, by its path, where the
+  // document imports other source files
+  sources?: Map<string, string>;
+}
+
+// The source import an offset of a module's text is in, and the item of it
+function importItemAt(module: Module, offset: number): { decl: ImportDecl; item: ImportItem } | null {
+  for (const decl of getSourceImports(module, true)) {
+    const item = decl.items.find((i) => offset >= i.span.start && offset < i.span.end);
+    if (item) return { decl, item };
+  }
+  return null;
+}
+
+// Where a module's export of a name declares its name: the offset and the
+// name, or the export's start for one with no name of its own (a memory).
+function exportedAt(module: Module, text: string, name: string): { offset: number; length: number } | null {
+  const decl = module.decls.find((d): d is ExportDecl => d.kind === 'ExportDecl' && d.name === name);
+  if (!decl) return null;
+  const item = decl.item;
+  const ident =
+    item.kind === 'FuncDecl' || item.kind === 'TypeFuncDecl'
+      ? item.ident
+      : item.kind === 'GlobalDecl' && item.pattern.kind === 'IdentPattern'
+        ? item.pattern.name
+        : null;
+  const offset = ident ? nameAfter(text, ident, item.span.start) : -1;
+  return offset >= 0 && ident ? { offset, length: ident.length } : { offset: decl.span.start, length: 'export'.length };
 }
 
 // -----------------------------------------------------------------------------
@@ -244,9 +266,48 @@ function symbolKindToModifiers(kind: MetaSymbol['kind'], isDef: boolean, isInput
 
 export interface ServerOptions {
   // Reads a source file the editor does not have open: its text, or null.
-  // The desktop server reads the file system; the web one has none, and
-  // sees only the documents that are open.
+  // The desktop server reads the file system.
   readFile?: (path: string) => Promise<string | null>;
+  // Reads a file of another file system by its URI (a web editor's,
+  // vscode-vfs:), where readFile reads none: the web server asks the editor.
+  readUri?: (uri: string) => Promise<string | null>;
+}
+
+// The path the loader names a document's file by: a file's path (pathOf),
+// or for a document of another file system (a web editor's, vscode-vfs://),
+// the path of its URI, where the URI has one. Null for a document of no
+// file (untitled:).
+// It is resolved, as the loader resolves the paths it is given and those it
+// makes: on Windows it gets the drive of the current directory, which the
+// URI made from it again does not have.
+export function pathFor(uri: string, paths: Paths = nodePath): string | null {
+  if (uri.startsWith('file:')) return pathOf(uri, paths);
+  try {
+    const url = new URL(uri);
+    return url.pathname.startsWith('/') ? paths.resolve(decodeURIComponent(url.pathname)) : null;
+  } catch {
+    return null;
+  }
+}
+
+// The URI of a path the loader made, on the file system of a document
+export function uriFor(path: string, near: string, paths: Paths = nodePath): string {
+  if (near.startsWith('file:')) return uriOf(path, paths);
+  const url = new URL(near);
+  const slashed = paths.sep === '\\' ? path.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/') : path;
+  return `${url.protocol}//${url.host}${slashed.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+// Whether two documents are on one file system: of the same scheme and host
+function sameFileSystem(a: string, b: string): boolean {
+  if (a.startsWith('file:') || b.startsWith('file:')) return a.startsWith('file:') && b.startsWith('file:');
+  try {
+    const x = new URL(a);
+    const y = new URL(b);
+    return x.protocol === y.protocol && x.host === y.host;
+  } catch {
+    return false;
+  }
 }
 
 // What the paths of files are on the platform the server runs on: path's
@@ -296,6 +357,10 @@ export function startServer(connection: Connection, options: ServerOptions = {})
 
   // The last analysis of each document
   const analysisCache = new Map<string, Analysis>();
+  // The last analysis of each document's text where all of it parsed: what
+  // completion knows of the declarations of a function being written, which
+  // the analysis of the text as it is leaves out (see recoverParse)
+  const lastParsed = new Map<string, Analysis>();
 
   // The analysis of a document's text as it is now, or none: an analysis of
   // older text, where the name at a place was another one or meant
@@ -337,18 +402,19 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // The open document of a file, found by its path: a URI made again from
   // the path need not be the one the editor gave the document (VS Code
   // encodes a drive's colon, parentheses and more).
-  function documentAt(path: string): TextDocument | undefined {
-    return documents.all().find(document => pathOf(document.uri) === path);
+  function documentAt(path: string, near: string): TextDocument | undefined {
+    return documents.all().find(document => pathFor(document.uri) === path && sameFileSystem(document.uri, near));
   }
 
   async function programOf(uri: string, text: string): Promise<(MetaOptions & { module: Module }) | null> {
-    const path = pathOf(uri);
+    const path = pathFor(uri);
     if (!path) return null;
     const readFile = async (file: string): Promise<string | null> => {
       if (file === path) return text;
-      const open = documentAt(file);
+      const open = documentAt(file, uri);
       if (open) return open.getText();
-      return options.readFile ? options.readFile(file) : null;
+      if (uri.startsWith('file:')) return options.readFile ? options.readFile(file) : null;
+      return options.readUri ? options.readUri(uriFor(file, uri)).catch(() => null) : null;
     };
     try {
       const load = await loadModule(path, { includeTests: true, readFile });
@@ -374,6 +440,11 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         textDocumentSync: TextDocumentSyncKind.Incremental,
         hoverProvider: true,
         definitionProvider: true,
+        documentLinkProvider: { resolveProvider: false },
+        documentSymbolProvider: true,
+        renameProvider: { prepareProvider: true },
+        completionProvider: { triggerCharacters: ['.'] },
+        signatureHelpProvider: { triggerCharacters: ['(', ','], retriggerCharacters: [','] },
         referencesProvider: true,
         documentFormattingProvider: true,
         semanticTokensProvider: {
@@ -400,10 +471,10 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // The open documents whose programs have the file of this URI are checked
   // again: what it exports, and the instances it makes for them, may differ.
   function revalidateImporters(uri: string): void {
-    const path = pathOf(uri);
+    const path = pathFor(uri);
     if (!path) return;
     for (const document of documents.all()) {
-      if (document.uri !== uri && programFiles.get(document.uri)?.has(path)) validateTextDocument(document);
+      if (document.uri !== uri && sameFileSystem(document.uri, uri) && programFiles.get(document.uri)?.has(path)) validateTextDocument(document);
     }
   }
 
@@ -436,7 +507,8 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         if (latest && latest.version !== textDocument.version) return;
         programFiles.set(textDocument.uri, new Set(program?.sources?.keys()));
         const module = program?.module ?? recovered.module;
-        const meta = buildMeta(module, recovered.text, { srcPath: textDocument.uri, ...program });
+        const check = program?.checkResult ?? typecheck(module, { source: recovered.text });
+        const meta = buildMeta(module, recovered.text, { srcPath: textDocument.uri, ...program, checkResult: check });
         // Checked on its own, a module that imports generic types lists no
         // errors (see TypeCheckResult.partial): nothing would say what depends on what
         // was left out.
@@ -454,6 +526,8 @@ export function startServer(connection: Connection, options: ServerOptions = {})
           text,
           meta,
           module,
+          check,
+          sources: program?.sources,
           recovered: { leftOut: recovered.leftOut, untrusted: distrusted, unseenNames: namesIn(text, [...recovered.leftOut, ...distrusted]) },
         });
       } catch {
@@ -465,6 +539,8 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     // Build meta info (includes type checking)
     let meta: MetaOutput;
     let module = parseResult.module;
+    let sources: Map<string, string> | undefined;
+    let check: TypeCheckResult;
     try {
       // A document with no source import is checked at once, as it always was.
       const program = getSourceImports(parseResult.module, true).length > 0 ? await programOf(textDocument.uri, text) : null;
@@ -473,7 +549,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       if (latest && latest.version !== textDocument.version) return;
       programFiles.set(textDocument.uri, new Set(program?.sources?.keys()));
       if (program) module = program.module;
-      meta = buildMeta(module, text, { srcPath: textDocument.uri, ...program });
+      sources = program?.sources;
+      check = program?.checkResult ?? typecheck(module, { source: text });
+      meta = buildMeta(module, text, { srcPath: textDocument.uri, ...program, checkResult: check });
     } catch (e) {
       // Never crash on partially written code — show the error as a diagnostic
       diagnostics.push({
@@ -486,7 +564,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       return;
     }
 
-    analysisCache.set(textDocument.uri, { text, meta, module });
+    const analysis = { text, meta, module, check, sources };
+    analysisCache.set(textDocument.uri, analysis);
+    lastParsed.set(textDocument.uri, analysis);
 
     // Convert meta errors and warnings to diagnostics
     const tokenLen = (line: number, col: number): number => {
@@ -515,7 +595,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       notes && notes.length > 0
         ? {
             relatedInformation: notes.map(note => ({
-              location: note.path ? { uri: uriOf(note.path), range: rangeIn(note.pos) } : { uri: textDocument.uri, range: rangeAt(note.pos) },
+              location: note.path ? { uri: uriFor(note.path, textDocument.uri), range: rangeIn(note.pos) } : { uri: textDocument.uri, range: rangeAt(note.pos) },
               message: note.message,
             })),
           }
@@ -584,46 +664,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
 
     const { word } = wordInfo;
 
-    // Builtin docs
-    const builtinDocs: Record<string, string> = {
-      sizeof: 'Returns the byte size of a type at compile time.',
-      memset: 'Fill memory with a byte value.',
-      memcpy: 'Copy bytes from source to destination.',
-      memzero: 'Set all of a destination to zero; its size comes from its type.',
-      sqrt: 'Square root (f32/f64).',
-      abs: 'Absolute value (floats and signed integers).',
-      ceil: 'Round up to nearest integer (f32/f64).',
-      floor: 'Round down to nearest integer (f32/f64).',
-      trunc: 'Truncate toward zero (f32/f64).',
-      nearest: 'Round to nearest even (f32/f64).',
-      min: 'Minimum of two values (all numeric types).',
-      max: 'Maximum of two values (all numeric types).',
-      copysign: 'Copy sign of y to x (f32/f64).',
-      clz: 'Count leading zeros (i32/i64/u32/u64).',
-      ctz: 'Count trailing zeros (i32/i64/u32/u64).',
-      popcnt: 'Population count - number of 1 bits (i32/i64/u32/u64).',
-      mul_hi: 'High 64 bits of the 128-bit product of two u64.',
-    };
 
-    // Type docs
-    const typeDocs: Record<string, string> = {
-      i8: '8-bit signed integer',
-      u8: '8-bit unsigned integer',
-      i16: '16-bit signed integer',
-      u16: '16-bit unsigned integer',
-      i32: '32-bit signed integer',
-      u32: '32-bit unsigned integer',
-      i64: '64-bit signed integer',
-      u64: '64-bit unsigned integer',
-      i128: '128-bit signed integer (SIMD v128)',
-      u128: '128-bit unsigned integer (SIMD v128)',
-      i256: '256-bit signed integer (2x SIMD v128)',
-      u256: '256-bit unsigned integer (2x SIMD v128)',
-      i512: '512-bit signed integer (4x SIMD v128)',
-      u512: '512-bit unsigned integer (4x SIMD v128)',
-      f32: '32-bit floating point',
-      f64: '64-bit floating point',
-    };
 
     // Check if this is a type punning context (preceded by a dot)
     const isTypePunContext = wordInfo.start > 0 && text[wordInfo.start - 1] === '.';
@@ -747,14 +788,14 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       // or a local can take a builtin's name).
       const builtinSig = known ? BUILTIN_SIGNATURES[word] : undefined;
       if (builtinSig) {
-        const doc = builtinDocs[word];
+        const doc = BUILTIN_DOCS[word];
         const value = doc
           ? `\`\`\`encantis\n${builtinSig}\n\`\`\`\n\n${doc}`
           : `\`\`\`encantis\n${builtinSig}\n\`\`\``;
         return { contents: { kind: MarkupKind.Markdown, value }, range };
       }
 
-      const doc = typeDocs[word];
+      const doc = TYPE_DOCS[word];
       if (doc) {
         return { contents: { kind: MarkupKind.Markdown, value: doc }, range };
       }
@@ -791,9 +832,192 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return { uri, range: { start: { line, character }, end: { line, character: character + symbol.name.length } } };
   }
 
+  // On an import of another source file, at the name it is exported by or
+  // the name it is given here: where the other file declares what it
+  // exports. (A use of the name is defined at its import, the first step.)
+  function exportAt(params: TextDocumentPositionParams): Location | null {
+    const document = documents.get(params.textDocument.uri);
+    const path = pathFor(params.textDocument.uri);
+    if (!document || !path) return null;
+    const text = document.getText();
+    const analysis = analysisOf(params.textDocument.uri, text);
+    const word = getWordAtOffset(text, document.offsetAt(params.position));
+    if (!analysis || !word || !answersAt(analysis, word.start)) return null;
+    const found = importItemAt(analysis.module, word.start);
+    if (!found) return null;
+    const { decl, item } = found;
+    const local = item.item.ident;
+    const onName = word.start === item.span.start;
+    const onLocal = local !== null && word.start === nameAfter(text, local, item.item.span.start);
+    if (!onName && !onLocal) return null;
+    const target = resolveModulePath(decl.module, path);
+    const open = documentAt(target, params.textDocument.uri);
+    const source = open?.getText() ?? analysis.sources?.get(target);
+    if (source === undefined) return null;
+    const module = parse(source, { filePath: target }).module;
+    const at = module && exportedAt(module, source, item.name);
+    if (!at) return null;
+    const start = offsetToPosition(source, at.offset);
+    return { uri: open?.uri ?? uriFor(target, params.textDocument.uri), range: { start, end: { line: start.line, character: start.character + at.length } } };
+  }
+
   connection.onDefinition((params: TextDocumentPositionParams): Location | null => {
+    const exported = exportAt(params);
+    if (exported) return exported;
     const found = symbolAt(params);
     return found ? locationOf(found.uri, found.symbol, found.symbol.def) : null;
+  });
+
+  // ---------------------------------------------------------------------------
+  // Completion and signature help
+  // ---------------------------------------------------------------------------
+
+  // The analyses to complete from: of the text as it is, where there is one,
+  // and of the text when it last parsed
+  function sourcesOf(uri: string, text: string) {
+    const current = analysisOf(uri, text);
+    return { current, parsed: lastParsed.get(uri) ?? null, answers: (offset: number) => current !== null && answersAt(current, offset) };
+  }
+
+  connection.onCompletion((params: CompletionParams): CompletionItem[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return [];
+    const text = document.getText();
+    const { current, parsed, answers } = sourcesOf(params.textDocument.uri, text);
+    return complete(text, document.offsetAt(params.position), current, parsed, answers);
+  });
+
+  connection.onSignatureHelp((params: SignatureHelpParams): SignatureHelp | null => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return null;
+    const text = document.getText();
+    const { current, parsed, answers } = sourcesOf(params.textDocument.uri, text);
+    return signatureHelp(text, document.offsetAt(params.position), current, parsed, answers);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Rename
+  // ---------------------------------------------------------------------------
+
+  const refuse = (message: string) => new ResponseError(LSPErrorCodes.RequestFailed, message);
+
+  // What renaming the name at a place renames, in an analysis of the text as
+  // it is now, or null where no name of the module's is there to rename
+  function renamePlan(params: TextDocumentPositionParams): { plan: RenamePlan; analysis: Analysis; document: TextDocument; start: number } | null {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return null;
+    const text = document.getText();
+    const word = getWordAtOffset(text, document.offsetAt(params.position));
+    if (!word || !/^[A-Za-z_]/.test(word.word)) return null;
+    const analysis = analysisOf(params.textDocument.uri, text);
+    if (!analysis) throw refuse('The file is still being checked: try again in a moment');
+    if (!answersAt(analysis, word.start)) throw refuse(`'${word.word}' is in a declaration that does not parse yet`);
+    const planned = planRename(text, analysis.module, analysis.check, word.start);
+    if (!planned) return null;
+    if ('refused' in planned) throw refuse(planned.refused);
+    if (analysis.recovered?.unseenNames.has(planned.name)) throw refuse(`'${planned.name}' is also written where the text does not parse yet`);
+    return { plan: planned, analysis, document, start: word.start };
+  }
+
+  // Why the renamed text would not mean what the text does, or null: it adds
+  // an error, or the new name is not, at each place, what the old one was
+  // (another name of that spelling is seen there instead, or hides it).
+  async function renameProblem(uri: string, analysis: Analysis, renamed: { text: string; places: number[] }, name: string): Promise<string | null> {
+    const parsed = parse(renamed.text);
+    let module = parsed.module ?? recoverParse(renamed.text, parse, parsed)?.module;
+    if (!module) return 'the renamed text does not parse';
+    const program = parsed.module && getSourceImports(module, true).length > 0 ? await programOf(uri, renamed.text) : null;
+    if (program) module = program.module;
+    const check = program?.checkResult ?? typecheck(module, { source: renamed.text });
+    const before = new Set(analysis.check.errors.map((e) => e.message));
+    const added = check.errors.filter((e) => !before.has(e.message));
+    if (check.errors.length > analysis.check.errors.length || added.length > 0) {
+      return `renamed to '${name}', the program would not check: ${added[0]?.message ?? check.errors[0]?.message}`;
+    }
+    const found = renamed.places.length > 0 ? rename(renamed.text, module, check, renamed.places[0]) : null;
+    const places = (found?.locations ?? []).map((l) => l.offset).sort((a, b) => a - b);
+    if (places.join() !== renamed.places.join()) {
+      return `'${name}' is a name here already: renamed to it, some of its uses would mean another thing`;
+    }
+    return null;
+  }
+
+  connection.onPrepareRename((params: PrepareRenameParams) => {
+    const found = renamePlan(params);
+    if (!found) return null;
+    const { plan, document, start } = found;
+    return { range: { start: document.positionAt(start), end: document.positionAt(start + plan.name.length) }, placeholder: plan.name };
+  });
+
+  connection.onRenameRequest(async (params: RenameParams): Promise<WorkspaceEdit | null> => {
+    const found = renamePlan(params);
+    if (!found) return null;
+    const { plan, analysis, document } = found;
+    const why = refusedName(plan.name, params.newName);
+    if (why) throw refuse(why);
+    if (params.newName === plan.name) return { changes: {} };
+    const renamed = applyRename(analysis.text, plan, params.newName);
+    const problem = await renameProblem(params.textDocument.uri, analysis, renamed, params.newName);
+    if (problem) {
+      // A named result is also a field of what its function returns, which
+      // is read by its name where the result is taken apart.
+      const at = offsetToPosition(analysis.text, found.start);
+      const hint = analysis.meta.hints[`${at.line}:${at.character}`];
+      const result = hint?.symbol !== undefined && analysis.meta.symbols[hint.symbol]?.kind === 'return';
+      throw refuse(result ? `'${plan.name}' is a named result, a field of what its function returns, read by that name: ${problem}` : problem);
+    }
+    const edits = renamed.edits.map((e) => ({ range: { start: document.positionAt(e.start), end: document.positionAt(e.end) }, newText: e.newText }));
+    return { changes: { [params.textDocument.uri]: edits } };
+  });
+
+  // The declarations of the document, for the outline, the breadcrumbs and
+  // Go to Symbol. While a declaration does not parse, it is listed by its
+  // name, which is read from the words it starts with.
+  connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return [];
+    const text = document.getText();
+    const analysis = analysisOf(params.textDocument.uri, text);
+    // With no analysis of the text as it is, what of it parses
+    const parsed = analysis ? null : parse(text);
+    const recovered = parsed && !parsed.module ? recoverParse(text, parse, parsed) : null;
+    const module = analysis?.module ?? parsed?.module ?? recovered?.module;
+    if (!module) return [];
+    const positionAt = (offset: number) => document.positionAt(offset);
+    const detailOf = (offset: number) => {
+      if (!analysis || !answersAt(analysis, offset)) return undefined;
+      const at = offsetToPosition(text, offset);
+      const hint = analysis.meta.hints[`${at.line}:${at.character}`];
+      const type = hint && analysis.meta.types[hint.type]?.type;
+      return type ? formatLine(type) : undefined;
+    };
+    const symbols = outline(module, text, positionAt, detailOf);
+    const leftOut = leftOutSymbols(text, analysis?.recovered?.leftOut ?? recovered?.leftOut ?? [], positionAt);
+    const line = (s: DocumentSymbol) => s.range.start.line;
+    return [...symbols, ...leftOut].sort((a, b) => line(a) - line(b));
+  });
+
+  // The path of each import of another source file opens that file.
+  connection.onDocumentLinks((params: DocumentLinkParams): DocumentLink[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return [];
+    const text = document.getText();
+    const module = analysisOf(params.textDocument.uri, text)?.module ?? parse(text).module;
+    if (!module) return [];
+    const links: DocumentLink[] = [];
+    for (const decl of getSourceImports(module, true)) {
+      const open = text.indexOf('"', decl.span.start);
+      const close = open < 0 ? -1 : text.indexOf('"', open + 1);
+      if (close < 0 || text.slice(open + 1, close) !== decl.module) continue;
+      let target: string;
+      try {
+        target = new URL(decl.module.endsWith('.ents') ? decl.module : `${decl.module}.ents`, params.textDocument.uri).href;
+      } catch {
+        continue;
+      }
+      links.push({ range: { start: document.positionAt(open + 1), end: document.positionAt(close) }, target });
+    }
+    return links;
   });
 
   connection.onReferences((params: ReferenceParams): Location[] | null => {
@@ -930,6 +1154,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
 
   documents.onDidClose(e => {
     analysisCache.delete(e.document.uri);
+    lastParsed.delete(e.document.uri);
     connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
     // Closed, the file is read where it is saved, which can differ.
     programFiles.delete(e.document.uri);

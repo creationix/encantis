@@ -2,7 +2,7 @@
   "name": "encantis-vscode-ext",
   "displayName": "Encantis Language",
   "description": "Encantis language support (.ents): syntax highlighting, diagnostics, hover, go to definition, references, formatting, and a live WAT preview",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",

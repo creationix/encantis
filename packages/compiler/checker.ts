@@ -932,6 +932,9 @@ class CheckContext {
 
   // Track type names that are being defined (for recursive type detection)
   pendingTypeNames = new Set<string>()
+  // The uses of each type name met before the type was declared: recorded
+  // as its uses once it is (recordDefinition)
+  private typeUsesBefore = new Map<string, number[]>()
   // The forward references made to each of them, which get their target
   // when it is defined
   forwardRefs = new Map<string, ForwardRefRT[]>()
@@ -1383,6 +1386,7 @@ class CheckContext {
             this.error(item.span.start, `a host import cannot have comptime parameters`)
             break
           }
+          if (isSource) this.typeNamesUsedIn(item.item.signature)
           if (!depExports && isGenericSignature(item.item.signature)) {
             this.importSignature(name, item.item)
             break
@@ -1448,6 +1452,48 @@ class CheckContext {
         }
       }
     }
+  }
+
+  // The type names a signature an import of a source file writes uses, each
+  // recorded as a use of the type: checked with its program, an import is
+  // what the other module exports, and the signature written here is not
+  // resolved, nor is a generic's checked on its own (a generic type named
+  // there, `-> *mut Vec(T)`, is used there). A generic's own type
+  // parameters are its own.
+  private typeNamesUsedIn(signature: AST.FuncSignature): void {
+    const own = new Set<string>()
+    if (signature.input.kind === 'CompositeType') {
+      for (const field of signature.input.fields) if (field.comptime && field.ident) own.add(field.ident)
+    }
+    const visit = (type: AST.Type): void => {
+      switch (type.kind) {
+        case 'TypeRef':
+          if (!own.has(type.name)) this.recordReference(type.name, type.span.start, false)
+          break
+        case 'TypeApply':
+          if (!own.has(type.name)) this.recordReference(type.name, type.span.start, false)
+          for (const arg of type.args) if (arg.kind !== 'ValueArg') visit(arg)
+          break
+        case 'PointerType':
+          visit(type.pointee)
+          break
+        case 'IndexedType':
+          visit(type.element)
+          break
+        case 'OptionalType':
+          visit(type.type)
+          break
+        case 'CompositeType':
+          for (const field of type.fields) visit(field.type)
+          break
+        case 'FuncType':
+          visit(type.input)
+          visit(type.output)
+          break
+      }
+    }
+    visit(signature.input)
+    visit(signature.output)
   }
 
   // A generic of another module, under the name it is imported as here. It
@@ -10039,7 +10085,13 @@ class CheckContext {
     }
     if (local) this.localDefs.set(local, offset)
     else this.symbolDefOffsets.set(name, offset)
-    this.references.set(offset, [])
+    // The uses of a type met before it was declared
+    const before = local ? undefined : this.typeUsesBefore.get(name)
+    this.references.set(offset, before ?? [])
+    if (before) {
+      for (const use of before) this.symbolRefs.set(use, offset)
+      this.typeUsesBefore.delete(name)
+    }
   }
 
   // Record a use of a name: of what the name means where it is used, a
@@ -10068,6 +10120,12 @@ class CheckContext {
       // instance means, as everything else in the body is shown.
       if (!instance || instance.first || !this.firstUses.has(refOffset)) this.symbolRefs.set(refOffset, defOffset)
       if (instance?.first) this.firstUses.add(refOffset)
+    } else if (!scoped && !instance && this.pendingTypeNames.has(name)) {
+      // A type named before it is declared (in its own body, or in a type
+      // declared above it) is used there all the same.
+      const uses = this.typeUsesBefore.get(name) ?? []
+      if (!uses.includes(refOffset)) uses.push(refOffset)
+      this.typeUsesBefore.set(name, uses)
     }
   }
 }
@@ -10344,7 +10402,7 @@ function typeFuncForm(decl: AST.TypeFuncDecl): string {
 }
 
 // A type as it was written, for a message
-function typeText(type: AST.Type): string {
+export function typeText(type: AST.Type): string {
   switch (type.kind) {
     case 'PrimitiveType': {
       if (type.bound) {
