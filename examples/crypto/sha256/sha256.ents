@@ -105,19 +105,19 @@ export func sha256(input: []u8, output: *mut [32]u8) {
   // length does not fit after the 0x80, it takes a block of its own.
   let rest = input.len % block-size
   pad-block[..] = 0
-  memcpy(pad-block, ptr, rest)
+  memcpy(pad-block, ptr, rest) // rest is less than block-size, so it fits
   pad-block[rest] = 0x80
   if rest >= block-size - 8 {
     compress(pad-block)
     pad-block[..] = 0
   }
   let bits = input.len:u64 * 8
-  store-be32(pad-block as [*]mut u8, block-size - 8, (bits >> 32) as u32)
-  store-be32(pad-block as [*]mut u8, block-size - 4, bits as u32)
+  store-be32(pad-block, block-size - 8, (bits >> 32) as u32)
+  store-be32(pad-block, block-size - 4, bits as u32)
   compress(pad-block)
 
   for i in state.len {
-    store-be32(output as [*]mut u8, i * 4, state[i])
+    store-be32(output, i * 4, state[i])
   }
 }
 

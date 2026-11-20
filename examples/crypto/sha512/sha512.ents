@@ -121,17 +121,17 @@ export func sha512-with-iv(hash-iv: *[8]u64, input: []u8, output: *mut [64]u8) {
   // slice's length in bits fits 64 bits, so the first 8 of those bytes stay 0.
   let rest = input.len % block-size
   pad-block[..] = 0
-  memcpy(pad-block, ptr, rest)
+  memcpy(pad-block, ptr, rest) // rest is less than block-size, so it fits
   pad-block[rest] = 0x80
   if rest >= block-size - 16 {
     compress(pad-block)
     pad-block[..] = 0
   }
-  store-be64(pad-block as [*]mut u8, block-size - 8, input.len:u64 * 8)
+  store-be64(pad-block, block-size - 8, input.len:u64 * 8)
   compress(pad-block)
 
   for i in state.len {
-    store-be64(output as [*]mut u8, i * 8, state[i])
+    store-be64(output, i * 8, state[i])
   }
 }
 
