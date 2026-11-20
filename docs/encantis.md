@@ -1130,7 +1130,7 @@ cannot assign int(1) to bool
 <!-- spec:begin compile -->
 
 ```ents
-func wide(a: u64, b: u64) -> u128 => (a as u128) * b
+func wide(a: u64, b: u64) -> u128 => a:u128 * b
 func low(x: u128) -> u64 => x as u64
 func high(x: u128) -> u64 => (x >> 64) as u64
 func less(a: i128, b: i128) -> bool => a < b
@@ -1479,7 +1479,7 @@ Fixed arrays suit small data that is read by constant positions: the limbs of a 
 ```ents
 type Rgba = [4]u8
 
-func gray(c: Rgba) -> u8 => ((c[0] as u32 + c[1] + c[2]) / 3) as u8
+func gray(c: Rgba) -> u8 => ((c[0]:u32 + c[1] + c[2]) / 3) as u8
 func opaque(c: Rgba) -> Rgba {
   c[3] = 255
   return c
@@ -3832,12 +3832,14 @@ Data is const unless its literal is `mut`, and a mutable type needs a `mut` lite
 <!-- spec:begin compile -->
 
 ```ents
+def slots = 16
+
 data table = [1:u8, 2, 3]           // *[3]u8: may share its bytes
 data again = [1:u8, 2, 3]           // equal: may be the same bytes
-data buffer = mut [0:u8; 16]        // *mut [16]u8: its own bytes
+data buffer = mut [0:u8; slots]     // *mut [16]u8: its own bytes
 data counts: []mut u32 = mut [0, 0] // []mut u32: its own
 
-func bump(i: u32#16) -> u8 {
+func bump(i: u32#slots) -> u8 {
   buffer[i] += 1
   return buffer[i]
 }
@@ -4333,7 +4335,7 @@ func hash(k: u64) -> u32 => hash((k ^ (k >> 32)) as u32)
 func hash(k: []u8) -> (h: u32) {
   h = 0x811c9dc5
   for b in k {
-    h = (h ^ (b as u32)) * 0x01000193
+    h = (h ^ b) * 0x01000193
   }
 }
 
@@ -5321,14 +5323,12 @@ cannot assign u32 to u32#16 (the result of '<<=')
 ```ents
 data words = [10:u32, 20, 30, 40]
 
-func sum(p: [*]u32, n: u32) -> u32 {
-  let total: u32 = 0
+func sum(p: [*]u32, n: u32) -> (total: u32) {
   let end = p + n * p.wid
   while p < end {
     total += p[0]
     p += p.wid                  // 4 bytes on: the next u32
   }
-  return total
 }
 
 func gap(p: [*]u32, q: [*]u32) -> u32 => (q as u32) - (p as u32)
@@ -5848,7 +5848,6 @@ A range of a `*mut [N]T` or `[]mut T` is a `[]mut T`.
 ```ents
 data bytes = [1:u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
-func sizes() -> u32 => bytes[2..8].len * 1000 + bytes[8..].len * 100 + bytes[..4].len * 10 + bytes[..].len
 func head(n: u32#9) -> []u8 => bytes[..n]                  // n <= 8 < 16: proven
 func tail(i: u32#17) -> []u8 => bytes[i..]                 // i <= 16: proven
 func span4(i: u32#4, j: u32#4) -> u32 => (bytes[i..j] ?? "").len   // j may be below i
@@ -5856,7 +5855,10 @@ func rest(s: []u8, i: u32) -> []u8 => s[i..] ?? ""
 func span(p: [*]u8, n: u32) -> []u8 => p[0..n]             // unchecked
 
 test "ranges" {
-  assert sizes() == 6856
+  assert bytes[2..8].len == 6
+  assert bytes[8..].len == 8
+  assert bytes[..4].len == 4
+  assert bytes[..].len == 16
   assert head(3).len == 3
   assert rest("hello", 2).len == 3
   assert rest("hello", 9).len == 0
@@ -5960,8 +5962,12 @@ test "method calls" {
 
 ```ents
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
-func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+func last(comptime T: type, v: *Vec(T)) -> T {
+  assert v.len > 0
+  return v.ptr[v.len - 1]
+}
 func push(comptime T: type, v: *mut Vec(T), x: T) {
+  assert v.len < v.cap
   v.ptr[v.len] = x
   v.len += 1
 }
@@ -5978,8 +5984,12 @@ is the same module as the one written with plain calls:
 
 ```ents same-wasm
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
-func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+func last(comptime T: type, v: *Vec(T)) -> T {
+  assert v.len > 0
+  return v.ptr[v.len - 1]
+}
 func push(comptime T: type, v: *mut Vec(T), x: T) {
+  assert v.len < v.cap
   v.ptr[v.len] = x
   v.len += 1
 }
@@ -5997,6 +6007,7 @@ A value is held in registers and has no address, so a function that takes a poin
 ```ents
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
 func push(comptime T: type, v: *mut Vec(T), x: T) {
+  assert v.len < v.cap
   v.ptr[v.len] = x
   v.len += 1
 }
@@ -6162,12 +6173,12 @@ func pick(c: bool) -> i32 {
   return v
 }
 
-func first_positive(xs: []i32) -> i32 {
-  for x in xs {
-    let v = if x > 0 { x } else { continue }
-    return v
+// The number the leading digits of s spell.
+func leading(s: []u8) -> (n: u32) {
+  for c in s {
+    let d = if c >= '0' && c <= '9' { c - '0' } else { break }   // a branch that exits has no value
+    n = n * 10 + d
   }
-  return 0
 }
 
 test "an if with an else is a value" {
@@ -6176,7 +6187,7 @@ test "an if with an else is a value" {
   assert widest(true, 200, 9) == 200
   assert values(false, [1]).len == 2
   assert pick(true) == 200 && pick(false) == 300
-  assert first_positive([-1, 0, 4]) == 4
+  assert leading("42x7") == 42
 }
 ```
 
@@ -6260,21 +6271,17 @@ There is no range form: `for i in 2..10` is a syntax error. Count from 0 and add
 data weights = [1:u32, 10, 100]
 data counts = [4:u32, 2, 7]
 
-func total() -> u32 {
-  let t: u32 = 0
+func total() -> (t: u32) {
   for i in weights.len {
     t += weights[i] * counts[i]    // i is a u32#3: neither index needs a check
   }
-  return t
 }
 
 // The sum of the numbers from lo up to hi, hi left out.
-func span(lo: i32, hi: i32) -> i32 {
-  let t = 0
+func span(lo: i32, hi: i32) -> (t: i32) {
   for k in hi - lo {               // a negative count runs no pass
     t += lo + k as i32
   }
-  return t
 }
 
 test "counting" {
@@ -6303,12 +6310,10 @@ type Spot = (c: i32, di: i32, room: i32)
 
 data grid: *[2][3]u8 = [[1, 2, 3], [4, 5, 6]]
 
-func total(list: []Spot) -> i32 {
-  let t = 0
+func total(list: []Spot) -> (t: i32) {
   for s in list {
     t += s.c + s.di + s.room
   }
-  return t
 }
 
 // The index of the first c in s, or s.len.
@@ -6320,8 +6325,7 @@ func find(s: []u8, c: u8) -> u32 {
 }
 
 // How many times the values rise from one element to the next.
-func rises(xs: []i32) -> u32 {
-  let count: u32 = 0
+func rises(xs: []i32) -> (count: u32) {
   let prev = xs[0] ?? 0
   for x in xs[1..] ?? xs {
     if x > prev {
@@ -6329,17 +6333,14 @@ func rises(xs: []i32) -> u32 {
     }
     prev = x
   }
-  return count
 }
 
-func grid_sum() -> u32 {
-  let t: u32 = 0
+func grid_sum() -> (t: u32) {
   for row in grid {                // each row is a *[3]u8
     for x in row {
       t += x
     }
   }
-  return t
 }
 
 data names: *[3][!]u8 = ["ada", "grace", "alan"]
@@ -6400,23 +6401,19 @@ runtime index on *[3]u32 requires 'if let' or '??' (no optional type for u32)
 data name = "abc":*[!]u8
 data packed: *[2x3]i32 = [[1, 2, 3], [4, 5, 6]]
 
-func bytes(z: *[!]u8) -> u32 {
-  let t: u32 = 0
+func bytes(z: *[!]u8) -> (t: u32) {
   let s: []u8 = (z.ptr, z.len)     // scans for the length once
   for c in s {
     t += c
   }
-  return t
 }
 
-func cells() -> i32 {
-  let t = 0
+func cells() -> (t: i32) {
   for i in packed.len {
     for x in packed[i] {
       t += x
     }
   }
-  return t
 }
 
 data samples = [1:u32, 2, 3]
@@ -6561,26 +6558,30 @@ The body can assign its loop's variables. The element is a copy, so assigning to
 <!-- spec:begin compile -->
 
 ```ents
-data grid: *[3][2]u8 = [[1, 2], [3, 4], [5, 6]]
+data grid: *[3][3]u8 = [[1, 2, 0], [3, 0, 4], [0, 5, 6]]
+
+// The sum of each row's cells before its first 0.
+func leading() -> (t: u32) {
+  for row in grid {
+    for c in row {
+      break when c == 0            // leaves the loop over the cells
+      t += c
+    }                              // and the loop over the rows goes on
+  }
+}
 
 // The index of the first row of grid that holds x, or grid.len.
 func row_of(x: u8) -> u32 {
-  let row: u32 = 0
-  let found = false
-  for cells in grid {
-    for c in cells {
-      if c == x {
-        found = true
-        break                      // leaves the loop over the cells
-      }
+  for i, row in grid {
+    for c in row {
+      return i when c == x         // return leaves both loops
     }
-    break when found               // leaves the loop over the rows
-    row += 1
   }
-  return row
+  return grid.len
 }
 
 test "break leaves the innermost loop" {
+  assert leading() == 6
   assert row_of(4) == 1
   assert row_of(9) == 3
 }
@@ -6608,14 +6609,12 @@ func price(paid: bool) -> u32 {
 }
 
 // The sum of the even numbers of xs, up to the first negative one.
-func even_sum(xs: []i32) -> i32 {
-  let t = 0
+func even_sum(xs: []i32) -> (t: i32) {
   for x in xs {
     break when x < 0
     continue when x % 2 != 0
     t += x
   }
-  return t
 }
 
 global seen: u32 = 0
@@ -6789,7 +6788,7 @@ func mean(xs: []u32) -> u32 {
   for x in xs {
     t += x
   }
-  return (t / xs.len as u64) as u32
+  return (t / xs.len) as u32           // xs.len widens to the u64
 }
 
 test "mean" {
@@ -6866,8 +6865,7 @@ func status(code: u32) -> []u8 => match code {
 }
 
 // How many more brackets s opens than it closes.
-func depth(s: []u8) -> i32 {
-  let d = 0
+func depth(s: []u8) -> (d: i32) {
   for c in s {
     match c {
       '(', '[', '{' => { d += 1 }
@@ -6875,7 +6873,6 @@ func depth(s: []u8) -> i32 {
       _ => {}
     }
   }
-  return d
 }
 
 test "match" {
@@ -7608,7 +7605,7 @@ data buf = mut [0:u8; 100000]
 // Fills the buffer, and returns its last byte
 export func fill(v: u8) -> u8 {
   buf[..] = v
-  return buf[99999]
+  return buf[buf.len - 1]
 }
 
 test "the data ends at sizeof data" {
@@ -7698,7 +7695,10 @@ A call to a generic function is written in one of two forms.
 type Pt = (q: i32, r: i32)
 
 func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
-func head(comptime T: type, xs: []T) -> T => xs.ptr[0]
+func head(comptime T: type, xs: []T) -> T {
+  assert xs.len > 0
+  return xs.ptr[0]
+}
 
 export func a(c: bool, x: u8, y: u32) -> u32 => pick(u32, c, x, y)      // x is widened, as for any u32 parameter
 export func b(c: bool, p: Pt, q: Pt) -> Pt => pick(Pt, c, p, q)
@@ -7715,7 +7715,10 @@ In that position a name is read as a type even if a variable of the same name is
 
 ```ents
 func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
-func head(comptime T: type, xs: []T) -> T => xs.ptr[0]
+func head(comptime T: type, xs: []T) -> T {
+  assert xs.len > 0
+  return xs.ptr[0]
+}
 func swap(comptime T: type, a: *mut T, b: *mut T) {
   let tmp = a.*
   a.* = b.*
@@ -7862,14 +7865,14 @@ func hash(k: u32) -> u32 => k * 0x45d9f3b
 func hash(k: []u8) -> (h: u32) {
   h = 0x811c9dc5
   for w in k {
-    h = (h ^ (w as u32)) * 0x01000193
+    h = (h ^ w) * 0x01000193
   }
 }
 func eq(a: u32, b: u32) -> bool => a == b
 func eq(a: []u8, b: []u8) -> bool {
   return false when a.len != b.len
-  for i in a.len {
-    return false when a.ptr[i] != b.ptr[i]
+  for i, c in a {
+    return false when c != (b[i] ?? 0)
   }
   return true
 }
@@ -7887,14 +7890,14 @@ func hash_u32(k: u32) -> u32 => k * 0x45d9f3b
 func hash_bytes(k: []u8) -> (h: u32) {
   h = 0x811c9dc5
   for w in k {
-    h = (h ^ (w as u32)) * 0x01000193
+    h = (h ^ w) * 0x01000193
   }
 }
 func eq_u32(a: u32, b: u32) -> bool => a == b
 func eq_bytes(a: []u8, b: []u8) -> bool {
   return false when a.len != b.len
-  for i in a.len {
-    return false when a.ptr[i] != b.ptr[i]
+  for i, c in a {
+    return false when c != (b[i] ?? 0)
   }
   return true
 }
@@ -8005,7 +8008,10 @@ A generic type is a function from types to a type. It is declared with `func`, a
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
 func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
 
-func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+func last(comptime T: type, v: *Vec(T)) -> T {
+  assert v.len > 0
+  return v.ptr[v.len - 1]
+}
 func swapped(comptime A: type, comptime B: type, p: Pair(A, B)) -> Pair(B, A) => Pair(B, A)(p.second, p.first)
 
 export func a(v: *Vec(u32)) -> u32 => last(v)
@@ -8092,7 +8098,10 @@ func push(comptime T: type, v: *mut Vec(T), x: T) {
   v.len += 1
 }
 
-func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+func get(comptime T: type, v: *Vec(T), i: u32) -> T {
+  assert i < v.len
+  return v.ptr[i]
+}
 
 test "one vector for each element type" {
   let v = vec(u64, 4)
