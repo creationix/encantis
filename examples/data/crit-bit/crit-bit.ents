@@ -235,8 +235,9 @@ export func delete(key: []u8) -> bool {
 
 export func size() -> u32 => count
 
-// The smallest key (the tree must be nonempty).
+// The smallest key. The tree must not be empty: on an empty tree, first traps.
 export func first() -> []u8 {
+  assert root != 0
   let p = root
   while !is_external(p) {
     p = pool.u32[index(p) + 2]
