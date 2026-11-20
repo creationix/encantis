@@ -1,0 +1,13 @@
+--- a/examples/browser/lantern.ents
++++ b/examples/browser/lantern-sparks.ents
+@@ -470,8 +470,8 @@
+ func update-sparks(dt: f32) {
+   let p: *Player = &world.player
+   let shown: u32 = 0
+-  for i in max-sparks {
+-    if world.sparks[i].alive { shown += 1 }
++  for s in world.sparks {
++    if s.alive { shown += 1 }
+   }
+   for i in max-sparks {
+     let s = &world.sparks[i]

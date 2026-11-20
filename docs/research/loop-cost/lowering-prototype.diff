@@ -1,0 +1,294 @@
+--- a/packages/compiler/codegen.ts
++++ b/packages/compiler/codegen.ts
+@@ -2808,6 +2808,16 @@
+ function whileToWat(stmt: AST.WhileStmt, ctx: CodegenContext): string {
+   const cond = exprToWat(stmt.condition, ctx)
+   const body = bodyToWat(stmt.body, ctx, false, true)
++  if ((process.env.LOWER ?? '').split(',').includes('wrot')) {
++    const again = exprToWat(stmt.condition, ctx)
++    return `(if $break ${cond} (then
++    (loop $next
++      (block $continue
++      ${body}
++      )
++      (br_if $next ${again})
++    )))`
++  }
+ 
+   return `(block $break
+     (loop $continue
+@@ -2875,6 +2885,8 @@
+   return Object.entries(node).some(([k, v]) => k !== 'span' && typeof v === 'object' && makesCall(v))
+ }
+ 
++const LOWER = new Set((process.env.LOWER ?? '').split(',').filter(Boolean))
++
+ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
+   // The locals collectLocals gave the loop's variables, which its names stand
+   // for in the body only: neither in the iterable nor after the loop.
+@@ -2907,10 +2919,68 @@
+     const count = steady ? iterWat : scratchLocal(ctx, 'i32')
+     const negative = iterType.kind === 'primitive' && RT.isSigned(iterType) && !(constant && Number(constant[1]) >= 0)
+     const compare = negative ? 'i32.ge_s' : 'i32.ge_u'
+-    return `${steady ? '' : `(local.set ${count} ${iterWat})\n`}(local.set $${valueName} (i32.const 0))
++    const countRead = steady ? count : `(local.get ${count})`
++    const pre = steady ? '' : `(local.set ${count} ${iterWat})\n`
++    const unused = !body.includes(`(local.get $${valueName})`) && !body.includes(`(local.tee $${valueName}`)
++    const positive = constant !== null && Number(constant[1]) > 0
++    // rot: always rotated (L); rotk: rotated only for a constant count > 0
++    // (P); rotu: rotated unless the count is signed (P).
++    const rot = LOWER.has('rot') || (LOWER.has('rotk') && positive) || (LOWER.has('rotu') && !negative)
++    // The guard: none for a constant > 0 under rotk; else a block and br_if,
++    // or with gif an if labeled $break around the loop.
++    const needGuard = !(positive && !LOWER.has('rot') && !LOWER.has('rotu'))
++    const wrap = (nonEmpty: string, inner: string) => !needGuard
++      ? `(block $break\n${inner}\n)`
++      : LOWER.has('gif')
++        ? `(if $break ${nonEmpty} (then\n${inner}\n))`
++        : `(block $break\n(br_if $break (i32.eqz ${nonEmpty}))\n${inner}\n)`
++    const assigned = mayChange(stmt.body, stmt.binding.value)
++    const down = unused && !(LOWER.has('fixassign') && assigned) && (LOWER.has('down') || (LOWER.has('downv') && constant === null))
++    if (down) {
++      // P: the binding is never read: count a copy of the count down to 0.
++      const c = `$__for_end_${scratchId(stmt.span.start)}`
++      const empty = negative ? `(i32.le_s (local.get ${c}) (i32.const 0))` : `(i32.eqz (local.get ${c}))`
++      if (rot) {
++        const nonEmpty = negative ? `(i32.gt_s (local.get ${c}) (i32.const 0))` : `(local.get ${c})`
++        return `${pre}(local.set ${c} ${countRead})
++${wrap(nonEmpty, `(loop $next
++    (block $continue
++      ${body}
++    )
++    (br_if $next (local.tee ${c} (i32.sub (local.get ${c}) (i32.const 1))))
++  )`)}`
++      }
++      return `${pre}(local.set ${c} ${countRead})
++(block $break
++  (loop $next
++    (br_if $break ${empty})
++    (block $continue
++      ${body}
++    )
++    (local.set ${c} (i32.sub (local.get ${c}) (i32.const 1)))
++    (br $next)
++  )
++)`
++    }
++    if (rot) {
++      // L: test once before the loop whether there is a pass, then after each
++      // pass whether there is another one.
++      // ltu (challenge-fixes): after the gt_s guard the count is positive, so the
++      // bottom test compares unsigned, as 5.2 says i (a u32) is compared.
++      const lt = negative && !LOWER.has('ltu') ? 'i32.lt_s' : 'i32.lt_u'
++      const nonEmpty = negative ? `(i32.gt_s ${countRead} (i32.const 0))` : countRead
++      return `${pre}(local.set $${valueName} (i32.const 0))
++${wrap(nonEmpty, `(loop $next
++    (block $continue
++      ${body}
++    )
++    (br_if $next (${lt} (local.tee $${valueName} (i32.add (local.get $${valueName}) (i32.const 1))) ${countRead}))
++  )`)}`
++    }
++    return `${pre}(local.set $${valueName} (i32.const 0))
+ (block $break
+     (loop $next
+-      (br_if $break (${compare} (local.get $${valueName}) ${steady ? count : `(local.get ${count})`}))
++      (br_if $break (${compare} (local.get $${valueName}) ${countRead}))
+       (block $continue
+         ${body}
+       )
+@@ -2931,26 +3001,180 @@
+   const uid = scratchId(stmt.span.start)
+   const ptr = `$__for_ptr_${uid}`
+   const end = `$__for_end_${uid}`
+-  let setup: string
++  // S (elazy): load only the parts of the element the body reads, all at the
++  // start of the pass.
++  const reads = (n: string) => body.includes(`(local.get $${n})`) || body.includes(`(local.tee $${n}`)
++  const parts = valueLocals.length > 1 ? aggregateParts(elemType) : null
++  const wit = LOWER.has('ewit')
++  const lazy = (LOWER.has('elazy') || wit) && (valueLocals.length === 1 || (parts !== null && parts.length === valueLocals.length))
++  const bindAt = (addr: string): string => {
++    if (lazy) {
++      if (valueLocals.length === 1) return reads(valueLocals[0]) ? `(local.set $${valueLocals[0]} ${loadFromMemory(elemType, addr, ctx)})` : wit ? `(drop ${loadFromMemory(elemType, addr, ctx)})` : ''
++      const lastIdx = parts!.length - 1
++      const endOf = (q: RT.MemoryPart) => q.offset + (RT.byteSize(q.type) ?? 0)
++      if (wit && (endOf(parts![lastIdx]) !== stride || parts!.some((q) => endOf(q) > stride))) throw new Error('ewit: the last part does not end the element')
++      const used = parts!.map((p, i) => [p, valueLocals[i]] as const).filter(([, n], i) => reads(n) || (wit && i === lastIdx))
++      if (used.length === 0) return ''
++      let a = addr
++      let first = addr
++      if (used.length > 1 && !isSimple(addr)) {
++        const tmp = scratchLocal(ctx, 'i32')
++        first = `(local.tee ${tmp} ${addr})`
++        a = `(local.get ${tmp})`
++      }
++      return used.map(([p, n], k) => reads(n)
++        ? `(local.set $${n} (${loadOp(p.type)}${atOffset(p.offset)} ${k === 0 ? first : a}))`
++        : `(drop (${loadOp(p.type)}${atOffset(p.offset)} ${k === 0 ? first : a}))`).join('\n')
++    }
++    const load = loadFromMemory(elemType, addr, ctx)
++    return valueLocals.length === 1
++      ? `(local.set $${valueLocals[0]} ${load})`
++      : `${load}\n${[...valueLocals].reverse().map(n => `(local.set $${n})`).join('\n')}`
++  }
++  const index = indexName ? `$${indexName}` : null
++  let lenRead: string
++  let setupIdx: string
++  let baseLocal = ptr
+   if (u.kind === 'slice') {
+-    // The iterable leaves (ptr, len) on the stack.
+-    setup = `${iterWat}
+-(local.set ${end})
+-(local.set ${ptr})
+-(local.set ${end} (i32.add (local.get ${ptr}) (i32.mul (local.get ${end}) (i32.const ${stride}))))`
++    // esteady: a slice read from two locals the body does not change is read
++    // where it is used, not copied.
++    const two = /^\(local\.get (\$[\w-]+)\)\s*\(local\.get (\$[\w-]+)\)$/.exec(iterWat.trim())
++    let root = ungroup(stmt.iterable)
++    while (root.kind === 'MemberExpr' && root.member.kind === 'field') root = ungroup(root.object)
++    if (LOWER.has('esteady') && two && root.kind === 'IdentExpr' && !mayChange(stmt.body, root.name)) {
++      setupIdx = ''
++      baseLocal = two[1]
++      lenRead = `(local.get ${two[2]})`
++    } else {
++      setupIdx = `${iterWat}\n(local.set ${end})\n(local.set ${ptr})`
++      lenRead = `(local.get ${end})`
++    }
+   } else {
+     const pointee = u.kind === 'pointer' ? unwrap(u.pointee) : null
+     const count = pointee?.kind === 'array' ? pointee.sizes?.[0] : null
+     if (typeof count !== 'number') throw new Error(`cannot iterate over ${RT.typeToString(u)}`)
+-    setup = `(local.set ${ptr} ${iterWat})
+-(local.set ${end} (i32.add (local.get ${ptr}) (i32.const ${count * stride})))`
++    setupIdx = `(local.set ${ptr} ${iterWat})`
++    lenRead = `(i32.const ${count})`
+   }
+-  const load = loadFromMemory(elemType, `(local.get ${ptr})`, ctx)
+-  const bind = valueLocals.length === 1
+-    ? `(local.set $${valueLocals[0]} ${load})`
+-    : `${load}\n${[...valueLocals].reverse().map(n => `(local.set $${n})`).join('\n')}`
+-  const index = indexName ? `$${indexName}` : null
+-  return `${setup}
++  const base = `(local.get ${baseLocal})`
++  const constLen = /^\(i32\.const (\d+)\)$/.exec(lenRead)
++  const known = constLen !== null && Number(constLen[1]) > 0
++  // erot: every element loop rotated; erotk: only over a *[N]T (N > 0), with no guard
++  const erot = LOWER.has('erot') || (LOWER.has('erotk') && known)
++  // The rotated loop's guard: none for *[N]T with N > 0; else on the length.
++  const wrap = (setup: string, inner: string) => known
++    ? `(block $break\n${setup}\n${inner}\n)`
++    : LOWER.has('gif')
++      ? `(if $break ${lenRead} (then\n${setup}\n${inner}\n))`
++      : `(block $break\n(br_if $break (i32.eqz ${lenRead}))\n${setup}\n${inner}\n)`
++  // eidx: by index for every element; eidxs: by index for an element of one
++  // part, or where the loop has an index binding.
++  const idxAssigned = LOWER.has('fixassign') && index !== null && mayChange(stmt.body, stmt.binding.index!)
++  const byIndex = !idxAssigned && (LOWER.has('eidx') || (LOWER.has('eidxs') && (valueLocals.length === 1 || index !== null)) || (LOWER.has('eidxi') && index !== null))
++  if (byIndex) {
++    const i = index ?? scratchLocal(ctx, 'i32')
++    const addr = stride === 1 ? `(i32.add ${base} (local.get ${i}))` : `(i32.add ${base} (i32.mul (local.get ${i}) (i32.const ${stride})))`
++    if (erot) {
++      return `${setupIdx}
++(local.set ${i} (i32.const 0))
++${wrap('', `(loop $next
++    ${bindAt(addr)}
++    (block $continue
++      ${body}
++    )
++    (br_if $next (i32.lt_u (local.tee ${i} (i32.add (local.get ${i}) (i32.const 1))) ${lenRead}))
++  )`)}`
++    }
++    return `${setupIdx}
++(local.set ${i} (i32.const 0))
++(block $break
++  (loop $next
++    (br_if $break (i32.ge_u (local.get ${i}) ${lenRead}))
++    ${bindAt(addr)}
++    (block $continue
++      ${body}
++    )
++    (local.set ${i} (i32.add (local.get ${i}) (i32.const 1)))
++    (br $next)
++  )
++)`
++  }
++  if ((LOWER.has('eoff') || (LOWER.has('eoffk') && known)) && index === null) {
++    // eoff: a byte offset o from 0 by the element's size up to the array's
++    // size; the element at base + o. Rotated; a slice's guard on its length.
++    const o = scratchLocal(ctx, 'i32')
++    const limit = known ? `(i32.const ${Number(constLen![1]) * stride})` : `(local.get ${end})`
++    const setLimit = known ? '' : `(local.set ${end} (i32.mul ${lenRead} (i32.const ${stride})))`
++    return `${setupIdx}
++(local.set ${o} (i32.const 0))
++${wrap(setLimit, `(loop $next
++    ${bindAt(`(i32.add ${base} (local.get ${o}))`)}
++    (block $continue
++      ${body}
++    )
++    (br_if $next (i32.lt_u (local.tee ${o} (i32.add (local.get ${o}) (i32.const ${stride}))) ${limit}))
++  )`)}`
++  }
++  if (LOWER.has('ewalk') || (LOWER.has('ewalks') && u.kind === 'slice' && (index === null || LOWER.has('ewalksi')))) {
++    // ewalk: walk the pointer, and count the elements left down to 0 (in
++    // the end local).
++    const left = end
++    const setLeft = u.kind === 'slice'
++      ? `${iterWat}\n(local.set ${left})\n(local.set ${ptr})`
++      : `(local.set ${ptr} ${iterWat})\n(local.set ${left} ${lenRead})`
++    const bindW = bindAt(`(local.get ${ptr})`)
++    const stepIdx = index ? `(local.set ${index} (i32.add (local.get ${index}) (i32.const 1)))` : ''
++    if (erot) {
++      return `${index ? `(local.set ${index} (i32.const 0))\n` : ''}${setLeft}
++${(known ? (s: string, i: string) => `(block $break\n${s}\n${i}\n)` : LOWER.has('gif')
++  ? (s: string, i: string) => `(if $break (local.get ${left}) (then\n${s}\n${i}\n))`
++  : (s: string, i: string) => `(block $break\n(br_if $break (i32.eqz (local.get ${left})))\n${s}\n${i}\n)`)('', `(loop $next
++    ${bindW}
++    (block $continue
++      ${body}
++    )
++    (local.set ${ptr} (i32.add (local.get ${ptr}) (i32.const ${stride})))
++    ${stepIdx}
++    (br_if $next (local.tee ${left} (i32.sub (local.get ${left}) (i32.const 1))))
++  )`)}`
++    }
++    return `${index ? `(local.set ${index} (i32.const 0))\n` : ''}${setLeft}
++(block $break
++  (loop $next
++    (br_if $break (i32.eqz (local.get ${left})))
++    ${bindW}
++    (block $continue
++      ${body}
++    )
++    (local.set ${ptr} (i32.add (local.get ${ptr}) (i32.const ${stride})))
++    (local.set ${left} (i32.sub (local.get ${left}) (i32.const 1)))
++    ${stepIdx}
++    (br $next)
++  )
++)`
++  }
++  // The pointer walk (as now), setting ptr and end.
++  const setPtr = u.kind === 'slice'
++    ? `${iterWat}\n(local.set ${end})\n(local.set ${ptr})`
++    : `(local.set ${ptr} ${iterWat})`
++  const setEnd = u.kind === 'slice'
++    ? `(local.set ${end} (i32.add (local.get ${ptr}) (i32.mul (local.get ${end}) (i32.const ${stride}))))`
++    : `(local.set ${end} (i32.add (local.get ${ptr}) (i32.const ${Number(constLen![1]) * stride})))`
++  const bind = bindAt(`(local.get ${ptr})`)
++  if (erot) {
++    if (u.kind === 'slice') lenRead = `(local.get ${end})`
++    return `${index ? `(local.set ${index} (i32.const 0))\n` : ''}${setPtr}
++${wrap(setEnd, `(loop $next
++    ${bind}
++    (block $continue
++      ${body}
++    )
++    ${index ? `(local.set ${index} (i32.add (local.get ${index}) (i32.const 1)))` : ''}
++    (br_if $next (${known && LOWER.has('ene') ? 'i32.ne' : 'i32.lt_u'} (local.tee ${ptr} (i32.add (local.get ${ptr}) (i32.const ${stride}))) (local.get ${end})))
++  )`)}`
++  }
++  return `${setPtr}
++${setEnd}
+ ${index ? `(local.set ${index} (i32.const 0))` : ''}
+ (block $break
+     (loop $next
