@@ -67,7 +67,7 @@
   "examples/types/language-features.ents": "0ea4228b80c524453f5f75c7b290fad1d8aaf94ada3680853178bc1dc754170b",
   "examples/types/linked-list.ents": "53c00213573ea2a112b718c1b2d3e730a13f2c6586e96bae00ba1fce0dae48ea",
   "examples/types/match-subject.ents": "29f60f47c328b4aff7f0dc6ffde89b8142a593ea29e77b076b4761017e2d82ff",
-  "examples/types/named-results.ents": "cb7e0ea1eb0033619c553ed78273ac31e070e7c468b0196269514d5cf9b6241a",
+  "examples/types/named-results.ents": "a4a0e96a2a60015244d99d72e9aa3bae623533fdc5cb7c1dd1c4cf69dd508370",
   "examples/types/narrowing-casts.ents": "f9d8790d471cb5def6704a9667696ea54df9495731d1a341446ed6bc827762de",
   "examples/types/nested-operands.ents": "6e16c5d68e1de8fe661a78390fe280b85e8aaf5578613fc8bca6b8d3873a3686",
   "examples/types/optional.ents": "cfcb82471a90f0cc1dc271326c2298cfcf63c8571d45b33fe55f9b126c7cc7c1",
