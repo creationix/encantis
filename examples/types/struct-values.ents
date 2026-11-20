@@ -1,7 +1,7 @@
-// Struct values in registers and on the stack: a field of a call's result,
-// fields of fields, and assignments that read the value they replace.
+// Struct values in registers: a field of a call's result, fields of fields,
+// and assignments that read the value they replace.
 
-data space = mut [0:u8; 64]
+data space = mut [0:i32; 16]
 
 type Point = (x: i32, y: i32)
 type Rect = (origin: Point, size: Point)
@@ -14,12 +14,10 @@ func rect() -> Rect {
   return Rect(Point(1, 2), Point(3, 4))
 }
 
+// Two slices of space: its first element, and its first two.
 func lists() -> Lists {
-  let w = space as [*]mut i32
-  w[1] = 42
-  let a: []i32 = (w, 1:u32)
-  let b: []i32 = (w, 2:u32)
-  return Lists(a, b)
+  space[1] = 42
+  return Lists(space[..1], space[..2])
 }
 
 func chains() -> u32 => lists().chain.len
@@ -27,7 +25,7 @@ func chains() -> u32 => lists().chain.len
 test "a slice field of a call's result" {
   assert chains() == 2
   assert lists().tight.len == 1
-  assert lists().chain.ptr[1] == 42
+  assert (lists().chain[1] ?? 0) == 42
 }
 
 test "a field of a field of a call's result" {
