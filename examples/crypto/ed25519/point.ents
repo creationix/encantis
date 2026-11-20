@@ -160,8 +160,9 @@ export func point-decode(buf: *mut [slots]Point, i: u32#slots, encoded: *[32]u8)
   let v = fe-carry(fe-add(fe-carry(fe-mul(fe-d(), y2)), fe-one()))
   let ratio = fe-carry(fe-mul(u, fe-inv(v)))
 
-  // ratio^((p + 3) / 8) squares to ratio or to -ratio; times sqrt(-1), the
-  // second squares to ratio. If neither, ratio has no root.
+  // Where ratio has a root, ratio^((p + 3) / 8) squares to ratio or to
+  // -ratio, and in the second case times sqrt(-1) it squares to ratio.
+  // Where neither squares to ratio, ratio has no root.
   let x = fe-carry(fe-pow252m2(ratio))
   if !fe-eq(fe-carry(fe-sq(x)), ratio) {
     x = fe-carry(fe-mul(x, fe-sqrtm1()))
