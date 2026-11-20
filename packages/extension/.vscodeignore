@@ -7,6 +7,4 @@ node_modules/
 **/*.map
 tsconfig.json
 .gitignore
-color-palette-preview.html
-icon-196.png
 *.vsix

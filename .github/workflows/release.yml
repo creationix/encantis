@@ -122,6 +122,21 @@ jobs:
             --title "Encantis ${TAG#v}" \
             --generate-notes \
             $target $prerelease
+
+  # The extension's upload is a job of its own: once the GitHub release
+  # exists (it cannot be made again), a failed upload is retried by
+  # re-running this job alone. A version already there is skipped.
+  marketplace:
+    name: Marketplace
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
       - name: Publish the VS Code extension to the Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
