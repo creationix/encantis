@@ -9,6 +9,7 @@ func sum(s: []u32) -> u32 {
   for x in s { t += x }
   return t
 }
+// Whether a and b hold the same bytes.
 func eq(a: []u8, b: []u8) -> bool {
   return false when a.len != b.len
   for i, c in a {
@@ -41,19 +42,21 @@ test "ranges of slices" {
   let s: []u8 = text
   assert s[..].len == 12
   let i: u32 = 7
-  if let w = s[i..] {
-    assert eq(w, "world")
-  }
+  let found = if let w = s[i..] { eq(w, "world") } else { false }
+  assert found
   assert eq(s[0..20] ?? "too far", "too far")
 }
 test "writing through a mutable range" {
-  let part = nums[0..2]
-  let p = part.ptr
-  assert sum(part) == 3
+  let part = nums[0..2]            // a []mut u32 over the first two of nums
+  part[..] = 9
+  assert nums[0] == 9 && nums[1] == 9 && nums[2] == 3
+  assert sum(part) == 18
 }
 
 export func tail_len() -> u32 => text[7..].len
 export func rest_len(s: []u8, i: u32) -> u32 => (s[i..] ?? "").len
+// The bytes of s before its first zero, plus the bytes of s[1..]: an index
+// of a parameter in a loop's condition, and a range of one in a loop's header.
 export func count(s: []u8) -> u32 {
   let n: u32 = 0
   while (s[n] ?? 0) != 0 { n += 1 }
