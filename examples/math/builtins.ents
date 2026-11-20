@@ -1,4 +1,4 @@
-// The builtin functions of the reference (§9): what they compute, how their
+// The builtin functions of the reference (10): what they compute, how their
 // operands are typed, and that each operand is evaluated once, in order.
 
 // === Operands that are expressions ===
@@ -95,13 +95,13 @@ test "min and max evaluate their operands in order" {
 
 test "integer abs evaluates its operand once" {
   calls = 0
-  assert abs(0 - next()) == 1
+  assert abs(-next()) == 1
   assert calls == 1
 }
 
 test "nested builtins evaluate each operand once" {
   calls = 0
-  assert max(min(next(), 9), abs(0 - next())) == 2
+  assert max(min(next(), 9), abs(-next())) == 2
   assert calls == 2
 }
 
@@ -146,8 +146,8 @@ test "a literal takes the type of the other operand" {
 
 // === An `if` or a `match` as an operand ===
 
-func mirror(x: i64, flip: bool) -> i64 => max(x, if flip { 0 - x } else { x })
-func mirror_first(x: i64, flip: bool) -> i64 => max(if flip { 0 - x } else { x }, x)
+func mirror(x: i64, flip: bool) -> i64 => max(x, if flip { -x } else { x })
+func mirror_first(x: i64, flip: bool) -> i64 => max(if flip { -x } else { x }, x)
 func stepped(x: i64, k: i32) -> i64 => max(x, match k {
   0 => x + 1
   _ => 5
@@ -212,12 +212,13 @@ test "a narrower operand is widened, by its own signedness" {
   assert high(0x80000000, 0x400000000) == 2
 }
 
-// A length is a constant, but not a literal: it is an i32 that widens.
+// A length has no type of its own: it takes the other operand's type, as a
+// literal does (reference 2.5). A bit count is a u8 that widens (reference 10).
 func at_least_a_row(x: i64, row: *[4]u32) -> i64 => max(x, row.len)
 func rows_or_fewer(x: f64, row: *[4]u32) -> f64 => min(row.len, x)
 func bits_or(x: u64, n: u64) -> u64 => max(popcnt(x), n)
 
-test "a length or a bit count is widened as an operand" {
+test "a length takes the other operand's type, a bit count widens" {
   assert at_least_a_row(1, words) == 4
   assert at_least_a_row(5000000000, words) == 5000000000
   assert rows_or_fewer(2.5, words) == 2.5
@@ -265,7 +266,7 @@ test "clz, ctz and popcnt" {
 
 // === Wide integers ===
 
-func pow2(n: u64) -> i128 => (1 as i128) << (n as i128)
+func pow2(n: u64) -> i128 => 1:i128 << n
 func max128(a: i128, b: i128) -> i128 => max(a, b)
 func min128(a: i128, b: i128) -> i128 => min(a, b)
 func max_u128(a: u128, b: u128) -> u128 => max(a, b)
@@ -312,19 +313,19 @@ func stamp_found(text: []u8, at: u32) { memcpy(bytes, if let found = text[at] { 
 
 test "memcpy, memset and memzero" {
   stamp(true)
-  assert bytes[3] == 68
+  assert bytes[3] == 'D'
   stamp(false)
-  assert bytes[3] == 100
+  assert bytes[3] == 'd'
   stamp_found("xy", 1)
-  assert bytes[1] == 66
+  assert bytes[1] == 'B'
   stamp_found("xy", 2)
-  assert bytes[1] == 98
+  assert bytes[1] == 'b'
   memcpy(bytes, "abcdefgh", 8)
-  assert bytes[0] == 97
-  assert bytes[7] == 104
+  assert bytes[0] == 'a'
+  assert bytes[7] == 'h'
   memset(bytes, 7, 2)
   assert bytes[1] == 7
-  assert bytes[2] == 99
+  assert bytes[2] == 'c'
   memzero(quad)
   assert quad[0] == 0
   assert quad[3] == 0

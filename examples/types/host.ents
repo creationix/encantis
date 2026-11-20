@@ -37,3 +37,11 @@ export func tick() -> u32 {
   }
   return 0
 }
+
+// The tests run with no host: an imported function throws when it is called,
+// so they reach only what calls none.
+test "a tick before mount shows nothing" {
+  assert label == 0 && ticker == 0
+  assert tick() == 0
+  assert count == 0
+}

@@ -1,6 +1,8 @@
 // Generic functions: max, min, clamp, swap. Operators on T are checked for each
 // instance: `a > b` is i32.gt_u for u32, i32.gt_s for i32, f64.gt for f64.
 // clamp is a generic calling generics; swap infers T through `*mut T`.
+// Declared here, max and min take the place of the builtins of those names in
+// this module (reference 10): every call of them is a call of an instance.
 
 func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 func min(comptime T: type, a: T, b: T) -> T => if a < b { a } else { b }

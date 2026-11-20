@@ -21,6 +21,9 @@ import {
   type DocumentLinkParams,
   type DocumentSymbol,
   type DocumentSymbolParams,
+  type DocumentHighlight,
+  type DocumentHighlightParams,
+  DocumentHighlightKind,
   type PrepareRenameParams,
   type CompletionItem,
   type CompletionParams,
@@ -442,6 +445,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         definitionProvider: true,
         documentLinkProvider: { resolveProvider: false },
         documentSymbolProvider: true,
+        documentHighlightProvider: true,
         renameProvider: { prepareProvider: true },
         completionProvider: { triggerCharacters: ['.'] },
         signatureHelpProvider: { triggerCharacters: ['(', ','], retriggerCharacters: [','] },
@@ -995,6 +999,24 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     const leftOut = leftOutSymbols(text, analysis?.recovered?.leftOut ?? recovered?.leftOut ?? [], positionAt);
     const line = (s: DocumentSymbol) => s.range.start.line;
     return [...symbols, ...leftOut].sort((a, b) => line(a) - line(b));
+  });
+
+  // The places of the symbol at a position, for the editor to highlight: where
+  // it is declared and where it is assigned are writes, the other uses reads.
+  // Answered as references are (see onReferences).
+  connection.onDocumentHighlight((params: DocumentHighlightParams): DocumentHighlight[] | null => {
+    const found = symbolAt(params);
+    if (!found) return null;
+    const { symbol, uri, analysis } = found;
+    if (analysis.recovered?.unseenNames.has(symbol.name)) return null;
+    const assigned = /^\s*(?:[-+*/%&|^]\|?|<<<?|>>>?)?=(?!=)/;
+    const lines = analysis.text.split('\n');
+    return [symbol.def, ...symbol.refs].map((key, i) => {
+      const { range } = locationOf(uri, symbol, key);
+      const after = lines[range.end.line]?.slice(range.end.character) ?? '';
+      const write = i === 0 || assigned.test(after);
+      return { range, kind: write ? DocumentHighlightKind.Write : DocumentHighlightKind.Read };
+    });
   });
 
   // The path of each import of another source file opens that file.

@@ -6,7 +6,7 @@ export func pair(n: u32) -> (count: u32, clipped: bool) {
 }
 
 export func in_func(n: u32) -> u32 {
-  let (count:, clipped:) = pair(n)
+  let (count:) = pair(n)
   return count
 }
 

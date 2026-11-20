@@ -308,6 +308,8 @@ Once 1–7 are green and the docs in 8 exist, the seed repo is a packaging exerc
 
 ## Status & Context (updated 2026-05-04)
 
+*A log of the work as it stood on 2026-05-04. The test counts, the Ed25519 progress and the architecture notes below are of that date: `examples/crypto/ed25519/` has been rewritten since (points are a `[slots]Point` array of structs, scalar-mult works in place, signing hashes one transcript struct), so read its files for what they are now.*
+
 **All 10 sections above are complete.** The checklist items are done. The work has shifted to stress-testing the compiler by writing real crypto code and fixing every bug that surfaces.
 
 ### Purpose

@@ -1,33 +1,39 @@
-// Ring buffer (circular queue) — practical data structure example
-// Exercises: modular arithmetic, pointer indexing, global state, conditionals
+// A ring buffer (a circular queue) of bytes: push adds at the tail, pop takes
+// from the head, and both wrap at the end of the buffer. head and tail are
+// ranged globals, below the capacity, so every index is proven and compiles
+// to a plain load or store.
 
 export "mem" memory
 
-data buf = mut [0:u8; 256]
-def capacity = 256:u32
+def capacity = 256
 
-global head: u32 = 0
-global tail: u32 = 0
+data buf = mut [0:u8; capacity]
+
+global head: u32#capacity = 0
+global tail: u32#capacity = 0
 global count: u32 = 0
 
+// Adds a byte at the tail; false, with nothing changed, when the buffer is full.
 export func push(value: u8) -> bool {
   return false when count >= capacity
-  buf.u8[tail] = value
+  buf[tail] = value
   tail = (tail + 1) % capacity
   count += 1
   return true
 }
 
+// Takes the byte at the head, or 0 when the buffer is empty.
 export func pop() -> (value: u8) {
   return 0 when count == 0
-  value = buf.u8[head]
+  value = buf[head]
   head = (head + 1) % capacity
   count -= 1
 }
 
+// The byte at the head, left in place, or 0 when the buffer is empty.
 export func peek() -> u8 {
   return 0 when count == 0
-  return buf.u8[head]
+  return buf[head]
 }
 
 export func size() -> u32 => count
@@ -41,7 +47,6 @@ func reset() {
 }
 
 test "ring buffer" {
-
   test "push and pop FIFO" {
     reset()
     push(10)
@@ -64,7 +69,7 @@ test "ring buffer" {
 
   test "wraparound" {
     reset()
-    // Fill and drain to advance head/tail past the boundary
+    // Fill and drain to advance head and tail past the middle
     for i in 200 {
       push(i as u8)
     }
@@ -72,22 +77,22 @@ test "ring buffer" {
       pop()
     }
     assert is-empty()
-    // Now push again — this wraps around the 256-byte buffer
+    // Now push again: this wraps around the end of the buffer
     for i in 100 {
       push((i + 50) as u8)
     }
     assert size() == 100
-    assert pop() == 50  // first pushed value
+    assert pop() == 50       // the first pushed
   }
 
   test "full rejects push" {
     reset()
-    for i in 256 {
+    for i in capacity {
       assert push(i as u8)
     }
     assert is-full()
-    assert push(99) == false
-    assert size() == 256
+    assert !push(99)
+    assert size() == capacity
   }
 
   test "empty pop returns zero" {

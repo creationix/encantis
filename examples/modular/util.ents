@@ -1,2 +1,6 @@
+// The functions main.ents imports. In the program main.ents is the entry of,
+// only main.ents's exports reach the host: here, export makes add and mul
+// importable.
+
 export func add(a: i32, b: i32) -> i32 => a + b
 export func mul(a: i32, b: i32) -> i32 => a * b

@@ -58,10 +58,11 @@ encantis check <file.ents>                # Check for errors
 
 ```bash
 bun run build:cli        # Build CLI package
-bun run build:ext        # Build extension (Node.js mode)
-bun run build:ext-web    # Build extension (WebWorker mode)
+bun run build:ext        # Bundle the extension: desktop (Node.js) and web (WebWorker)
+bun run build:ext-web    # Bundle the web extension only
 bun run watch:ext        # Watch extension (Node.js)
 bun run watch:ext-web    # Watch extension (WebWorker)
+bun run reinstall:ext    # Package the .vsix and install it in VS Code
 bun test                 # Run tests
 ```
 

@@ -1,0 +1,49 @@
+// Operations on u128, a wide integer: two i64s, the low half first, in
+// registers, in memory and to the host (reference 2.2, 7.2). ^, &, |, ~ and
+// == work on each half in place, with no call; + is a call of a helper the
+// compiler adds to the module, as mul_hi is (11.5).
+
+export func xor128(a: u128, b: u128) -> u128 => a ^ b
+export func add128(a: u128, b: u128) -> u128 => a + b
+export func and128(a: u128, b: u128) -> u128 => a & b
+export func or128(a: u128, b: u128) -> u128 => a | b
+export func not128(a: u128) -> u128 => ~a
+export func eq128(a: u128, b: u128) -> bool => a == b
+
+// The u128 at p.
+export func load128(p: *u128) -> u128 => p.*
+
+// A u64 widens to a u128 where one is wanted; a cast to a u64 keeps the low
+// half.
+export func widen64(a: u64) -> u128 => a
+export func narrow128(a: u128) -> u64 => a as u64
+
+// The high 64 bits of the 128-bit product of a and b.
+export func hi(a: u64, b: u64) -> u64 => mul_hi(a, b)
+
+test "a carry crosses into the high half" {
+  let big = add128(0xFFFFFFFFFFFFFFFF, 1)
+  assert big == 18446744073709551616
+  assert narrow128(big) == 0
+  assert narrow128(big >> 64) == 1
+}
+
+test "bitwise operations take both halves" {
+  let a: u128 = 0xFF00FF00FF00FF00FF00FF00FF00FF00
+  assert xor128(a, not128(a)) == ~0
+  assert and128(a, not128(a)) == 0
+  assert or128(a, 0xFF) == a + 0xFF
+  assert eq128(a, a) && !eq128(a, a >> 64)
+}
+
+test "widening, narrowing and a load" {
+  assert widen64(0xFFFFFFFFFFFFFFFF) == 0xFFFFFFFFFFFFFFFF
+  assert narrow128(0x123456789ABCDEF00FEDCBA987654321) == 0x0FEDCBA987654321
+  assert load128(&0x10000000000000002) == 0x10000000000000002
+}
+
+test "the high half of a product" {
+  assert hi(0xFFFFFFFFFFFFFFFF, 2) == 1
+  assert hi(0x100000000, 0x100000000) == 1
+  assert hi(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF) == 0xFFFFFFFFFFFFFFFE
+}

@@ -2,6 +2,8 @@
 // Advent of Code 2023, day 1, part 1: on each line, the first and last digits
 // make a two-digit number; print the sum of those numbers.
 // Usage: encantis run day1.ents < input.txt
+// The input is read into 64 KiB, which a puzzle input, about 22 KB, fits; the
+// bytes of a longer one past 64 KiB are not read, and its sum is wrong.
 
 import "../../lib/io" (
   "read_all" func read_all(buf: []mut u8) -> []u8
@@ -15,19 +17,25 @@ export memory
 
 data input = mut [0:u8; 65536]
 
+// The two-digit number of a line's first and last digits, or 0 for a line
+// with no digit.
 func calibration(line: []u8) -> u64 {
-  let first: u64 = 10
+  let first: u64 = 0
   let last: u64 = 0
+  let seen = false
   for c in line {
-    continue when c < 48 || c > 57
-    let d = (c - 48) as u64
-    if first == 10 { first = d }
+    continue when c < '0' || c > '9'
+    let d = c - '0'
+    if !seen {
+      first = d
+      seen = true
+    }
     last = d
   }
-  return 0 when first == 10
   return first * 10 + last
 }
 
+// The sum of the calibrations of the lines of text.
 func total(text: []u8) -> u64 {
   let sum: u64 = 0
   let rest = text
@@ -49,4 +57,8 @@ test "the example from the puzzle" {
 
 test "no trailing newline, and lines with no digits" {
   assert total("a1\nxyz\n9") == 11 + 99
+}
+
+test "a 0 is a digit like any other" {
+  assert total("0ab7\n80\n0\n") == 7 + 80 + 0
 }

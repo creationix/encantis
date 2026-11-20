@@ -1,8 +1,9 @@
-// Language features kitchen sink — exercises documented constructs
+// A tour of the basic constructs: struct types, named results, globals,
+// control flow, loops, floats, a table in data and sizeof.
 
 export "mem" memory
 
-// === Type aliases ===
+// === Struct types ===
 
 type Point = (x: i32, y: i32)
 type Color = (r: u8, g: u8, b: u8)
@@ -21,20 +22,14 @@ func divmod(a: u32, b: u32) -> (quot: u32, rem: u32) {
 
 // === Struct construction and field access ===
 
-func make_point(x: i32, y: i32) -> Point => (x: x, y: y)
+func make_point(x: i32, y: i32) -> Point => (x:, y:)
 
-func manhattan(p: Point) -> i32 {
-  let ax = p.x
-  let ay = p.y
-  if ax < 0 { ax = 0 - ax }
-  if ay < 0 { ay = 0 - ay }
-  return ax + ay
-}
+func manhattan(p: Point) -> i32 => abs(p.x) + abs(p.y)
 
-// === Inline functions ===
+// === Expression bodies ===
 
-inline func double(x: i32) -> i32 => x + x
-inline func square(x: i32) -> i32 => x * x
+func double(x: i32) -> i32 => x + x
+func square(x: i32) -> i32 => x * x
 
 // === Globals ===
 
@@ -48,8 +43,9 @@ func get_counter() -> i32 => counter
 
 // === Control flow ===
 
+// abs(x) written out, to show an early return
 func iabs(x: i32) -> i32 {
-  if x < 0 { return 0 - x }
+  return -x when x < 0
   return x
 }
 
@@ -59,16 +55,12 @@ func clamp(x: i32, lo: i32, hi: i32) -> i32 {
   return x
 }
 
+// 0 for a plain number, 1 for fizz (a multiple of 3), 2 for buzz (of 5),
+// 3 for both
 func fizzbuzz_type(n: u32) -> u32 {
-  // 0=normal, 1=fizz, 2=buzz, 3=fizzbuzz
-  let f = n % 3 == 0
-  let b = n % 5 == 0
-  if f {
-    if b { return 3 }
-    return 1
-  }
-  if b { return 2 }
-  return 0
+  let fizz = n % 3 == 0
+  let buzz = n % 5 == 0
+  return if fizz && buzz { 3 } elif fizz { 1 } elif buzz { 2 } else { 0 }
 }
 
 // === Loops ===
@@ -84,26 +76,16 @@ func sum_range(n: u32) -> u32 {
 func fibonacci(n: u32) -> u32 {
   let a: u32 = 0
   let b: u32 = 1
-  let i: u32 = 0
-  while i < n {
-    let tmp = a + b
-    a = b
-    b = tmp
-    i += 1
+  for i in n {
+    set a, b = (b, a + b)  // both are computed before either is set
   }
   return a
 }
 
-func collatz_steps(start: u32) -> u32 {
-  let n = start
+func collatz_steps(n: u32) -> u32 {
   let steps: u32 = 0
-  loop {
-    break when n <= 1
-    if n % 2 == 0 {
-      n /= 2
-    } else {
-      n = n * 3 + 1
-    }
+  while n > 1 {
+    n = if n % 2 == 0 { n / 2 } else { n * 3 + 1 }
     steps += 1
   }
   return steps
@@ -111,25 +93,25 @@ func collatz_steps(start: u32) -> u32 {
 
 // === Float operations ===
 
+def tolerance = 0.0001
+
 func lerp(a: f64, b: f64, t: f64) -> f64 => a + (b - a) * t
 
-func approx_eq(a: f64, b: f64) -> bool {
-  let diff = a - b
-  if diff < 0.0 { diff = 0.0 - diff }
-  return diff < 0.0001
-}
+func approx_eq(a: f64, b: f64) -> bool => abs(a - b) < tolerance
 
-// === Memory: def with arrays, sizeof ===
+// === Memory: a table in data ===
 
+// init_lookup fills it with each byte value's square, cut to its low 8 bits
 data lookup = mut [0:u8; 256]
 
 func init_lookup() {
-  for i in 256 {
-    lookup.u8[i] = (i * i) as u8
+  for i in lookup.len {
+    lookup[i] = (i * i) as u8
   }
 }
 
-func lookup_square(x: u8) -> u8 => lookup.u8[x]
+// A u8 is below 256, so it indexes the table with no check
+func lookup_square(x: u8) -> u8 => lookup[x]
 
 // === Sizeof ===
 
@@ -139,36 +121,28 @@ func u64_size() -> u32 => sizeof(u64)
 // === Tests ===
 
 test "language features" {
-
-  func check_swap() -> bool {
+  test "swap returns its arguments the other way round" {
     let (x:, y:) = swap(10, 20)
-    return x == 20
+    assert x == 20 && y == 10
   }
 
-  func check_divmod() -> bool {
+  test "divmod returns the quotient and the remainder" {
     let (quot:, rem:) = divmod(17, 5)
-    return quot == 3
+    assert quot == 3 && rem == 2
   }
 
-  test "swap" {
-    assert check_swap()
-  }
-
-  test "divmod" {
-    assert check_divmod()
-  }
-
-  test "struct construction" {
+  test "a point is built from its fields and read back" {
     let p = make_point(3, -4)
+    assert p.x == 3 && p.y == -4
     assert manhattan(p) == 7
   }
 
-  test "inline functions" {
+  test "an expression body is the function's result" {
     assert double(21) == 42
     assert square(7) == 49
   }
 
-  test "globals" {
+  test "a global keeps its value from one call to the next" {
     counter = 0
     increment()
     increment()
@@ -176,7 +150,7 @@ test "language features" {
     assert get_counter() == 3
   }
 
-  test "conditional return" {
+  test "an early return gives iabs and clamp their results" {
     assert iabs(-42) == 42
     assert iabs(42) == 42
     assert clamp(5, 0, 10) == 5
@@ -184,40 +158,40 @@ test "language features" {
     assert clamp(15, 0, 10) == 10
   }
 
-  test "fizzbuzz" {
+  test "fizzbuzz_type tells multiples of 3, of 5 and of both" {
     assert fizzbuzz_type(1) == 0
     assert fizzbuzz_type(3) == 1
     assert fizzbuzz_type(5) == 2
     assert fizzbuzz_type(15) == 3
   }
 
-  test "sum range" {
+  test "sum_range(n) is 0 + 1 + ... + (n - 1)" {
     assert sum_range(0) == 0
     assert sum_range(1) == 0
     assert sum_range(10) == 45
     assert sum_range(100) == 4950
   }
 
-  test "fibonacci" {
+  test "fibonacci(n) is the nth Fibonacci number" {
     assert fibonacci(0) == 0
     assert fibonacci(1) == 1
     assert fibonacci(10) == 55
     assert fibonacci(20) == 6765
   }
 
-  test "collatz" {
+  test "collatz_steps counts the steps down to 1" {
     assert collatz_steps(1) == 0
     assert collatz_steps(2) == 1
     assert collatz_steps(27) == 111
   }
 
-  test "float lerp" {
+  test "lerp at 0, 0.5 and 1 gives the start, the middle and the end" {
     assert approx_eq(lerp(0.0, 10.0, 0.5), 5.0)
     assert approx_eq(lerp(0.0, 10.0, 0.0), 0.0)
     assert approx_eq(lerp(0.0, 10.0, 1.0), 10.0)
   }
 
-  test "lookup table" {
+  test "the table holds each byte's square, cut to 8 bits" {
     init_lookup()
     assert lookup_square(0) == 0
     assert lookup_square(1) == 1
@@ -225,8 +199,9 @@ test "language features" {
     assert lookup_square(16) == 0  // 256 wraps to 0 in u8
   }
 
-  test "sizeof" {
+  test "sizeof gives the bytes of a type" {
     assert point_size() == 8
     assert u64_size() == 8
+    assert sizeof(Color) == 3
   }
 }

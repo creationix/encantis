@@ -1,24 +1,33 @@
 import { grammar } from './encantis-grammar'
 import { MAX_NESTING, nesting } from './parser'
 
-const assertionSemantics = grammar.createSemantics().addOperation<number[]>('assertionStarts', {
-  TestBlock(_open, items, _close) {
-    const offsets: number[] = []
-    for (const item of items.children) {
-      const statement = item.child(0)
-      if (statement.ctorName === 'Statement' && statement.child(0).ctorName === 'AssertStmt') {
-        offsets.push(statement.source.startIdx)
-      }
-    }
-    return offsets
+const assertionSemantics = grammar.createSemantics().addOperation<void>('collectAssertions(offsets)', {
+  AssertStmt(keyword, expr) {
+    this.args.offsets.add(keyword.source.startIdx)
+    expr.collectAssertions(this.args.offsets)
   },
+  _nonterminal(...children) {
+    for (const child of children) child.collectAssertions(this.args.offsets)
+  },
+  _iter(...children) {
+    for (const child of children) child.collectAssertions(this.args.offsets)
+  },
+  _terminal() {},
 })
 
-function blockAssertionStarts(text: string): number[] | undefined {
+// Formatting is synchronous in the language server. Bound both the size of
+// a grammar probe and the total work across unrelated or broken blocks.
+const MAX_ASSERTION_PROBE_CHARS = 2048
+const ASSERTION_PROBE_BUDGET = 4096
+
+function blockAssertionStarts(text: string): Set<number> | undefined {
   if (nesting(text, MAX_NESTING).over !== null) return undefined
   try {
     const match = grammar.match(text, 'TestBlock')
-    if (match.succeeded()) return assertionSemantics(match).assertionStarts()
+    if (match.failed()) return undefined
+    const offsets = new Set<number>()
+    assertionSemantics(match).collectAssertions(offsets)
+    return offsets
   } catch (error) {
     if (!(error instanceof RangeError)) throw error
   }
@@ -29,12 +38,21 @@ export function formatEncantis(source: string): string {
   const bracketPositions: number[] = []
   const bracketChars: string[] = []
   const templateStack: number[] = []
+  const previousCodeAt = new Map<number, number>()
+  const comments: { start: number; end: number; removed: number }[] = []
   // The line breaks inside a string or a template, each with where the text
   // it is in starts: the lines they begin are part of the literal, and are
   // left as they are written.
   const breaksInLiteral = new Map<number, number>()
 
   let i = 0
+  let previousCode = -1
+  let removed = 0
+
+  function recordComment(start: number) {
+    removed += i - start - 1
+    comments.push({ start, end: i, removed })
+  }
 
   function skipString(q: string) {
     const start = i
@@ -68,20 +86,40 @@ export function formatEncantis(source: string): string {
   while (i < source.length) {
     const ch = source[i]
     if (ch === '/' && source[i + 1] === '/') {
+      const start = i
       while (i < source.length && source[i] !== '\n') i++
+      recordComment(start)
       continue
     }
     if (ch === '/' && source[i + 1] === '*') {
+      const start = i
       inBlockComment[i] = 1; i++; inBlockComment[i] = 1; i++
       while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) { inBlockComment[i] = 1; i++ }
-      if (i < source.length) { inBlockComment[i] = 1; i++; inBlockComment[i] = 1; i++ }
+      if (i < source.length) {
+        inBlockComment[i] = 1; i++; inBlockComment[i] = 1; i++
+        recordComment(start)
+      }
       continue
     }
-    if (ch === '"' || ch === "'") { skipString(ch); continue }
-    if ((ch === 'x' || ch === 'b') && source[i + 1] === '"') { i++; skipString('"'); continue }
+    if ((ch === 'a' && source.startsWith('assert', i)) || (ch === 'd' && source.startsWith('data', i)) ||
+      (ch === '*' && source[previousCode] === '.')) {
+      previousCodeAt.set(i, previousCode)
+    }
+    if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r') previousCode = i
+    if (ch === '"' || ch === "'") {
+      skipString(ch)
+      previousCode = i - 1
+      continue
+    }
+    if ((ch === 'x' || ch === 'b') && source[i + 1] === '"') {
+      i++; skipString('"')
+      previousCode = i - 1
+      continue
+    }
     if (ch === '`') {
       i++
       if (scanTemplateContent()) templateStack.push(1)
+      previousCode = i - 1
       continue
     }
     if (ch === '{' || ch === '(' || ch === '[') {
@@ -101,6 +139,7 @@ export function formatEncantis(source: string): string {
           templateStack.pop()
           i++
           if (scanTemplateContent()) templateStack.push(1)
+          previousCode = i - 1
           continue
         }
       }
@@ -189,61 +228,127 @@ export function formatEncantis(source: string): string {
     }
   }
 
-  // `assert` is also an identifier. Probe its enclosing block, whose
-  // statements distinguish `assert -n` from `return assert - n`.
-  // The tokenizer examines candidates in source order.
+  // `assert` is also an identifier. A successful probe covers all the
+  // assertions in its block, including nested statements. The formatter
+  // visits them in source order.
   let nextBracket = 0
-  const braces: number[] = []
-  const blockAssertions = new Map<number, Set<number>>()
-  const nearbyAssertions = new Map<string, Set<number> | undefined>()
+  const openBrackets: number[] = []
+  const failedProbes = new Set<number>()
+  let probeBudget = ASSERTION_PROBE_BUDGET
+  let parsedBlock: { start: number; end: number; assertions: Set<number> } | undefined
 
-  function nearbyAssertion(start: number, end: number, position: number): boolean | undefined {
-    const line = posToLine(position)
-    const lineEnd = Math.min(end, lineStarts[line + 1] ?? source.length)
-    let origin = start
-    let prefix = ''
-    if (line > posToLine(start) + 1) {
-      // A leading `let` can start a statement or an if/elif binding. Its
-      // initializer parses the same expression in either context.
-      const previous = lineStarts[line - 1]
-      const previousCode = source.slice(previous, lineStarts[line]).trimStart()
-      if (!/^let[ \t]/.test(previousCode) || inBlockComment[lineStarts[line] - previousCode.length]
-        || breaksInLiteral.has(previous - 1)) return undefined
-      origin = previous - 1
-      prefix = '{'
+  // Comments are whitespace in the grammar. Replace them with one space
+  // for probes, so a long comment cannot hide an otherwise tiny block.
+  let probeSource: string | undefined
+  function probeOffset(position: number): number {
+    let lo = 0, hi = comments.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (comments[mid].end <= position) lo = mid + 1
+      else hi = mid
     }
-    const key = `${origin}:${lineEnd}`
-    if (!nearbyAssertions.has(key)) {
-      const offsets = blockAssertionStarts(prefix + source.slice(origin + prefix.length, lineEnd) + '\n}')
-      nearbyAssertions.set(key, offsets && new Set(offsets))
-    }
-    return nearbyAssertions.get(key)?.has(position - origin)
+    return position - (comments[lo - 1]?.removed ?? 0)
   }
 
-  function isAssertionAt(position: number): boolean {
+  function sourceForProbe(): string {
+    if (probeSource !== undefined) return probeSource
+    let lastEnd = 0
+    const parts: string[] = []
+    for (const { start, end } of comments) {
+      parts.push(source.slice(lastEnd, start), ' ')
+      lastEnd = end
+    }
+    probeSource = parts.join('') + source.slice(lastEnd)
+    return probeSource
+  }
+
+  function assertionFromContext(position: number): boolean | undefined {
+    // At statement depth a finished expression cannot take a juxtaposed
+    // identifier. An operand after an infix operator or a keyword such as
+    // return can still use `assert` as an ordinary name.
+    let previous = previousCodeAt.get(position)
+    let afterAssert = false
+    while (previous !== undefined && previous >= 0) {
+      const ch = source[previous]
+      if ('{)}]"\'`'.includes(ch) || (ch === '*' && previousCodeAt.has(previous))) return !afterAssert
+      if ('.=+*/%<>!~&|^,:#'.includes(ch) || (ch === '?' && source[previous - 1] === '?')) return afterAssert
+      if (!/[a-zA-Z0-9_-]/.test(ch)) return undefined
+      let start = previous
+      while (start > 0 && /[a-zA-Z0-9_-]/.test(source[start - 1])) start--
+      const run = source.slice(start, previous + 1)
+      // A leading minus is a prefix, not part of a name. A trailing
+      // minus after a numeral still awaits its right-hand operand.
+      const word = run.replace(/^-+/, '')
+      if (word !== run) return !word || /^\d.*-$/.test(word) ? afterAssert : !afterAssert
+      if (word === 'assert') {
+        // Adjacent `assert`s alternate between a keyword and its operand,
+        // starting with the role the first one takes in this context.
+        afterAssert = !afterAssert
+        previous = previousCodeAt.get(start)
+        continue
+      }
+      if (word === 'data') {
+        // `sizeof data` is a completed expression even though `data` by
+        // itself can introduce a declaration in a test.
+        const prefix = previousCodeAt.get(start)
+        if (prefix !== undefined && source.slice(prefix - 5, prefix + 1) === 'sizeof'
+          && !/[a-zA-Z0-9_-]/.test(source[prefix - 6] ?? '')) return !afterAssert
+        return undefined
+      }
+      if (word === 'break' || word === 'continue' || word === 'true' || word === 'false') return !afterAssert
+      if (KEYWORDS.has(word) || word === 'defer' || /^\d.*-$/.test(word)) return afterAssert
+      if (/^[a-zA-Z0-9_]/.test(word)) return !afterAssert
+      return undefined
+    }
+  }
+
+  function isAssertionAt(position: number): boolean | undefined {
+    const previous = previousCodeAt.get(position)
+    // The right of a match or body arrow expects an expression (or a
+    // block), even though an enclosing match arm list is not a TestBlock.
+    if (previous !== undefined && source[previous] === '>' && source[previous - 1] === '=') return false
+    const probePosition = probeOffset(position)
+    if (parsedBlock && position < parsedBlock.end) return parsedBlock.assertions.has(probePosition - parsedBlock.start)
     while (nextBracket < bracketPositions.length && bracketPositions[nextBracket] < position) {
       const bracket = bracketChars[nextBracket]
-      if (bracket === '{') braces.push(bracketPositions[nextBracket])
-      if (bracket === '}') braces.pop()
+      const bracketPosition = bracketPositions[nextBracket]
+      if (bracket === '{' || bracket === '(' || bracket === '[') openBrackets.push(bracketPosition)
+      else if (matchMap.get(bracketPosition) === openBrackets.at(-1)) openBrackets.pop()
       nextBracket++
     }
-    const start = braces.at(-1)
-    if (start === undefined || source[start - 1] === '$') return false
+    const start = openBrackets.at(-1)
+    if (start === undefined) return false
     const end = matchMap.get(start)
-    if (end === undefined) return false
+    if (end === undefined || failedProbes.has(start)) return undefined
+    if (source[start] !== '{' || source[start - 1] === '$') return false
 
-    let offsets = blockAssertions.get(start)
-    if (!offsets) {
-      const nearby = nearbyAssertion(start, end, position)
-      if (nearby !== undefined) return nearby
-      offsets = new Set(blockAssertionStarts(source.slice(start, end + 1)))
-      blockAssertions.set(start, offsets)
+    // At statement depth neither the opening brace nor a complete
+    // parenthesized expression can take an identifier as a continuation.
+    if (previous === start || (previous !== undefined && ')}'.includes(source[previous]) &&
+      (matchMap.get(previous) ?? -1) > start)) return true
+
+    const length = probeOffset(end) - probeOffset(start) + 1
+    if (length > MAX_ASSERTION_PROBE_CHARS || length > probeBudget) return assertionFromContext(position)
+    for (const opener of openBrackets) {
+      if (source[opener] !== '{' || source[opener - 1] === '$' || failedProbes.has(opener)) continue
+      const closer = matchMap.get(opener)
+      if (closer === undefined) continue
+      const probeStart = probeOffset(opener)
+      const probeEnd = probeOffset(closer) + 1
+      const size = probeEnd - probeStart
+      if (size > MAX_ASSERTION_PROBE_CHARS || size > probeBudget) continue
+      probeBudget -= size
+      const assertions = blockAssertionStarts(sourceForProbe().slice(probeStart, probeEnd))
+      if (assertions) {
+        parsedBlock = { start: probeStart, end: closer, assertions }
+        return assertions.has(probePosition - probeStart)
+      }
+      failedProbes.add(opener)
     }
-    return offsets.has(position - start)
   }
 
   type TokKind = 'word' | 'num' | 'str' | 'op' | 'open' | 'close' | 'comma' | 'colon' | 'semi' | 'dot' | 'comment'
-  interface Tok { kind: TokKind; text: string; assertPosition?: number }
+  interface Tok { kind: TokKind; text: string; assertPosition?: number; operatorIndex?: number }
 
   const KEYWORDS = new Set([
     'if', 'elif', 'else', 'while', 'for', 'in', 'loop', 'match',
@@ -385,7 +490,7 @@ export function formatEncantis(source: string): string {
       const c2 = line.slice(j, j + 2)
       if (TWO_OPS.has(c2)) { tokens.push({ kind: 'op', text: c2 }); j += 2; continue }
 
-      tokens.push({ kind: 'op', text: line[j] }); j++
+      tokens.push({ kind: 'op', text: line[j], operatorIndex: j }); j++
     }
     return tokens
   }
@@ -399,17 +504,17 @@ export function formatEncantis(source: string): string {
       || (prev.kind === 'word' && KEYWORDS.has(prev.text))
   }
 
-  function followsAssertion(tokens: Tok[], index: number): boolean {
+  function previousCodeToken(tokens: Tok[], index: number): Tok | undefined {
     while (tokens[index]?.kind === 'comment') index--
-    const position = tokens[index]?.assertPosition
-    return position !== undefined && isAssertionAt(position)
+    return tokens[index]
   }
 
-  function formatTokens(tokens: Tok[], checkAssertions = true): { text: string; hasAssertion: boolean } {
+  function formatTokens(tokens: Tok[], line: string, resumeBlockComments: boolean, checkAssertions = true): { text: string; hasAssertion: boolean; unknownAssertion: boolean } {
     let result = tokens[0]?.text ?? ''
     let hasAssertion = false
+    let unknownAssertion = false
     for (let k = 1; k < tokens.length; k++) {
-      const L = tokens[k - 1], R = tokens[k], LL = tokens[k - 2] as Tok | undefined
+      const L = tokens[k - 1], R = tokens[k]
 
       // Never space before
       if (R.kind === 'comma' || R.kind === 'semi') { result += R.text; continue }
@@ -446,23 +551,39 @@ export function formatEncantis(source: string): string {
 
       // Unary operators: no space after
       if (L.kind === 'op' && '&*-!~?'.includes(L.text)) {
-        const assertion = checkAssertions && R.kind !== 'comment' && followsAssertion(tokens, k - 2)
-        hasAssertion ||= assertion
-        if (assertion || isUnaryPosition(LL)) { result += R.text; continue }
+        const previous = previousCodeToken(tokens, k - 2)
+        const position = previous?.assertPosition
+        if (checkAssertions && position !== undefined && R.kind !== 'comment' && '&-!~'.includes(L.text)) {
+          // ! and ~ have no infix form. A grammar probe is only needed for
+          // them when it determines whether to resume after a block comment.
+          const assertion = !resumeBlockComments && (L.text === '!' || L.text === '~') ? true : isAssertionAt(position)
+          hasAssertion ||= assertion === true
+          if (assertion === undefined) {
+            unknownAssertion = true
+            const start = L.operatorIndex! + 1
+            let end = start
+            while (line[end] === ' ' || line[end] === '\t') end++
+            result += line.slice(start, end) + R.text
+            continue
+          }
+          if (assertion && !TWO_OPS.has(L.text + R.text[0])) { result += R.text; continue }
+        }
+        if (isUnaryPosition(previous) && !TWO_OPS.has(L.text + R.text[0])) { result += R.text; continue }
       }
 
       // Default: space
       result += ' ' + R.text
     }
-    return { text: result, hasAssertion }
+    return { text: result, hasAssertion, unknownAssertion }
   }
 
   function formatLineTokens(line: string, start: number, leadingBlockComment = false): string | undefined {
     const resumeBlockComments = line.includes('/*') && line.includes('assert')
-    const formatted = formatTokens(tokenizeLine(line, start, resumeBlockComments))
+    const formatted = formatTokens(tokenizeLine(line, start, resumeBlockComments), line, resumeBlockComments)
     if (!resumeBlockComments || formatted.hasAssertion) return formatted.text
+    if (formatted.unknownAssertion) return line
     // Keep the usual handling of comments on lines without an assertion.
-    if (!leadingBlockComment) return formatTokens(tokenizeLine(line, start, false), false).text
+    if (!leadingBlockComment) return formatTokens(tokenizeLine(line, start, false), line, false, false).text
   }
 
   const out: string[] = []
@@ -485,7 +606,9 @@ export function formatEncantis(source: string): string {
     const literal = breaksInLiteral.get(offset + raw.length)
     const trimmed = literal !== undefined ? raw.trimStart() : raw.trim()
     if (literal !== undefined) {
-      const line = '  '.repeat(lineDepths[lineIdx]) + formatLineTokens(trimmed, offset + raw.length - trimmed.length)
+      const start = offset + raw.length - trimmed.length
+      const formatted = inBlockComment[start] ? undefined : formatLineTokens(trimmed, start)
+      const line = formatted === undefined ? raw : '  '.repeat(lineDepths[lineIdx]) + formatted
       out.push(line.endsWith(source.slice(literal, offset + raw.length)) ? line : raw)
       prevBlank = false
       offset += raw.length + 1

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The other uses of the name under the cursor are highlighted, its declaration and assignments as writes.
+- A backtick closes itself and surrounds a selection, as a template string's quotes; `<` and `>` no longer do. Toggle Line Comment works in VS Code versions before 1.96.
+
 ## 0.3.1
 
 - The WAT preview compiles again once typing stops for a moment, not on every keystroke: with a large program and `--release`, each key held VS Code up for up to a second.

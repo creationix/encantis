@@ -155,9 +155,10 @@ function oz(binaryen: Binaryen, wasm: Uint8Array): Uint8Array {
 // came, since binaryen's rewriting of multi-value code can make a module
 // larger than it was. Ties go to the first.
 //
-// Over the 93 programs of examples/ and lib/ (57192 bytes at -O) this takes
-// 3.5% off -O: repeating 0.7%, keeping a module as it came 2.6% (ed25519's
-// point.ents, which -Oz grows from 7572 bytes to 8885), the -O3 try 0.2%.
+// Measured when this was added, over the 93 programs then in examples/ and
+// lib/ (57192 bytes at -O), it took 3.5% off -O: repeating 0.7%, keeping a
+// module as it came 2.6%, the -O3 try 0.2%. ed25519's point.ents is a module
+// kept as it came: -Oz grows it from 7162 bytes to 8090.
 // Stripping custom sections would take nothing off: wabt writes none, and
 // binaryen without debug info adds none.
 function release(binaryen: Binaryen, wasm: Uint8Array): Uint8Array {

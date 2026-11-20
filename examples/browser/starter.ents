@@ -4,7 +4,7 @@
 
 export memory
 
-// ---- The host's side: input bits and drawing commands (as in lantern.ents) ---
+// === The host's side: input bits and drawing commands (as in lantern.ents) ===
 
 def btn-left = 1
 def btn-right = 2
@@ -13,9 +13,19 @@ def btn-down = 8
 def btn-dash = 16
 def btn-start = 32
 
+def op-clear = 1   // the whole canvas in `color`
+def op-rect = 2    // a b c d = x y w h
+def op-circle = 3  // a b c = x y radius
+def op-ring = 4    // a b c d = x y radius width
+def op-text = 5    // a b c d = x y size align (0 left, 1 centre); p n = bytes
+def op-sound = 6   // a b c d = start Hz, end Hz, seconds, volume; p = wave
+
+// 32 bytes, read by the host at a fixed stride. Colours are 0xRRGGBBAA.
 type Cmd = (op: u32, a: f32, b: f32, c: f32, d: f32, color: u32, p: u32, n: u32)
-type Commands = (count: u32, list: [256]Cmd)    // past 256, commands are dropped
-data cmds: Commands = mut (0, [(0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0); 256])
+
+def max-cmds = 256   // past these, commands are dropped
+type Commands = (count: u32, list: [max-cmds]Cmd)
+data cmds: Commands = mut (0, [(0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0); max-cmds])
 
 func emit(op: u32, a: f32, b: f32, c: f32, d: f32, color: u32, p: u32, n: u32) {
   if let k = &cmds.list[cmds.count] {
@@ -24,18 +34,28 @@ func emit(op: u32, a: f32, b: f32, c: f32, d: f32, color: u32, p: u32, n: u32) {
   }
 }
 
-func clear(color: u32) { emit(1, 0.0, 0.0, 0.0, 0.0, color, 0, 0) }
-func circle(x: f32, y: f32, r: f32, color: u32) { emit(3, x, y, r, 0.0, color, 0, 0) }
-func text(x: f32, y: f32, size: f32, color: u32, s: []u8) { emit(5, x, y, size, 1.0, color, s.ptr as u32, s.len) }
-func sound(from: f32, to: f32, secs: f32, volume: f32, wave: u32) { emit(6, from, to, secs, volume, 0, wave, 0) }
+func clear(color: u32) { emit(op-clear, 0.0, 0.0, 0.0, 0.0, color, 0, 0) }
+func circle(x: f32, y: f32, r: f32, color: u32) { emit(op-circle, x, y, r, 0.0, color, 0, 0) }
+// Text is centred on x, with its baseline at y.
+func text(x: f32, y: f32, size: f32, color: u32, s: []u8) { emit(op-text, x, y, size, 1.0, color, s.ptr as u32, s.len) }
+func sound(from: f32, to: f32, secs: f32, volume: f32, wave: u32) { emit(op-sound, from, to, secs, volume, 0, wave, 0) }
 
 export func commands() -> u32 => (&cmds.list) as u32
 
-// ---- The game: positions are in [0, 1] across the canvas --------------------
+// === The game: positions are in [0, 1] across the canvas ===
+
+def speed = 0.5      // of the canvas a second
+def reach = 0.002    // the squared distance at which the dot is on the target
+
+def ink = 0x101322ff
+def green = 0x6fe3b4ff
+def amber = 0xffcf6bff
+def pale = 0xfff4d6ff
 
 type Game = (x: f32, y: f32, tx: f32, ty: f32, hits: u32, seed: u32)
 data game: Game = mut (0.5, 0.5, 0.2, 0.3, 0, 1)
 
+// A number in [0, 1), by xorshift32: the same seed places the same targets.
 func rand01() -> f32 {
   let x = game.seed
   x ^= x << 13
@@ -45,35 +65,39 @@ func rand01() -> f32 {
   return (x >> 8) as f32 * (1.0 / 16777216.0)
 }
 
+// The dot in the middle and the first target at (0.2, 0.3). xorshift keeps
+// a seed of 0 at 0, so that one starts from 1.
 export func init(seed: u32) {
   game.* = Game(0.5, 0.5, 0.2, 0.3, 0, if seed == 0 { 1 } else { seed })
 }
 
+// Plays one frame. A time step counts up to 50 ms, and one that is NaN or
+// negative as none; a stick value outside [-1, 1] counts as 0.
 export func frame(dt-ms: f32, width: f32, height: f32, buttons: u32, ax: f32, ay: f32) -> u32 {
   cmds.count = 0
   let dt = if dt-ms >= 0.0 { min(dt-ms, 50.0) * 0.001 } else { 0.0 }
   let dx = if ax >= -1.0 && ax <= 1.0 { ax } else { 0.0 }
   let dy = if ay >= -1.0 && ay <= 1.0 { ay } else { 0.0 }
-  if (buttons & btn-left) != 0 { dx -= 1.0 }
-  if (buttons & btn-right) != 0 { dx += 1.0 }
-  if (buttons & btn-up) != 0 { dy -= 1.0 }
-  if (buttons & btn-down) != 0 { dy += 1.0 }
-  game.x = min(max(game.x + dx * 0.5 * dt, 0.0), 1.0)
-  game.y = min(max(game.y + dy * 0.5 * dt, 0.0), 1.0)
+  if buttons & btn-left != 0 { dx -= 1.0 }
+  if buttons & btn-right != 0 { dx += 1.0 }
+  if buttons & btn-up != 0 { dy -= 1.0 }
+  if buttons & btn-down != 0 { dy += 1.0 }
+  game.x = min(max(game.x + dx * speed * dt, 0.0), 1.0)
+  game.y = min(max(game.y + dy * speed * dt, 0.0), 1.0)
 
   let ex = game.x - game.tx
   let ey = game.y - game.ty
-  if ex * ex + ey * ey < 0.002 {
+  if ex * ex + ey * ey < reach {
     game.hits += 1
     game.tx = 0.1 + rand01() * 0.8
     game.ty = 0.1 + rand01() * 0.8
     sound(440.0, 880.0, 0.15, 0.2, 0)
   }
 
-  clear(0x101322ff)
-  circle(game.tx * width, game.ty * height, 14.0, 0x6fe3b4ff)
-  circle(game.x * width, game.y * height, 10.0, 0xffcf6bff)
-  text(width * 0.5, 40.0, 20.0, 0xfff4d6ff, if game.hits == 0 { "reach the green dot" } else { "again!" })
+  clear(ink)
+  circle(game.tx * width, game.ty * height, 14.0, green)
+  circle(game.x * width, game.y * height, 10.0, amber)
+  text(width * 0.5, 40.0, 20.0, pale, if game.hits == 0 { "reach the green dot" } else { "again!" })
   return cmds.count
 }
 
@@ -82,5 +106,22 @@ test "the dot reaches the target" {
   // Head for the target at (0.2, 0.3) from the middle, with the stick.
   for i in 50 { frame(16.0, 640.0, 480.0, 0, -0.832, -0.555) }
   assert game.hits == 1
-  assert cmds.count == 4
+  assert cmds.count == 4                   // clear, two circles and the text
+  assert game.tx != 0.2 && game.ty != 0.3  // a new target
+}
+
+test "a bad time step or stick moves nothing" {
+  init(5)
+  frame(0.0 / 0.0, 640.0, 480.0, btn-right, 0.0, 0.0)
+  frame(-16.0, 640.0, 480.0, btn-right, 0.0, 0.0)
+  frame(16.0, 640.0, 480.0, 0, 5.0, 0.0 / 0.0)
+  assert game.x == 0.5 && game.y == 0.5
+  frame(16.0, 640.0, 480.0, btn-right, 0.0, 0.0)
+  assert game.x > 0.5
+}
+
+test "the dot stays on the canvas" {
+  init(5)
+  for i in 200 { frame(50.0, 640.0, 480.0, btn-left | btn-up, 0.0, 0.0) }
+  assert game.x == 0.0 && game.y == 0.0
 }

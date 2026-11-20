@@ -240,6 +240,101 @@ func i(assert:i32, n:i32) -> i32 {
     expect(shape(formatted)).toEqual(shape(source))
   })
 
+  test('incomplete blocks keep the gap after an ambiguous assert operator', () => {
+    const broken = `func f(n:i32) {
+  assert !ok(0)
+  foo()
+  assert -n < 0
+  assert &  n != &n
+  let =
+}
+`
+    expect(formatEncantis(broken)).toBe(broken)
+    const unclosed = broken.replace('  let =\n}\n', '')
+    expect(formatEncantis(unclosed)).toBe(unclosed)
+    const complete = broken.replace('let =', 'let x = 1')
+    const formatted = formatEncantis(complete)
+    expect(formatted).toBe(complete.replace('&  n', '&n'))
+    expect(shape(formatted)).toEqual(shape(complete))
+  })
+
+  test('unary spacing looks past inline comments while binary spacing stays binary', () => {
+    const source = `func f(n:i32) {
+  assert -n == f(1, /* c */ /* d */ -2, /* e */ ! false, /* f */ & &n, n /* g */ -2)
+}
+`
+    const expected = source.replace('! false', '!false').replace('/* g */ -2', '/* g */ - 2')
+    const formatted = formatEncantis(source)
+    expect(formatted).toBe(expected)
+    expect(formatEncantis(formatted)).toBe(formatted)
+    expect(shape(formatted)).toEqual(shape(source))
+  })
+
+  test('a block comment closing before a multiline literal stays intact', () => {
+    const source = "func f() {\n  /* comment\n  end */ let s = `abc  \ndef`\n  /* next\nend */ let q = \"a\n b\"\n}\n"
+    expect(formatEncantis(source)).toBe(source)
+    expect(shape(formatEncantis(source))).toEqual(shape(source))
+  })
+
+  test('large blocks distinguish assertions from continuation expressions', () => {
+    const source = `func f(n:i32, assert:i32) {
+${'  foo()\n'.repeat(300)}  if true {
+    assert & n != 0
+  }
+  assert - n < 0
+  break
+  assert - n < 1
+  return n
+  assert - n < 2
+  let n = assert
+  assert - n < 3
+  let size = sizeof /* data size */ data
+  assert - n < 4
+  let negated = -1
+  assert - n < 5
+  let ranged = n as u32#assert
+  assert - n < 6
+  let other = n ??
+  assert &n
+  let cell = p. *
+  assert & n != 0
+  assert assert &n
+  defer /* continuation */
+  assert -n
+}
+func arms(n:i32, assert:i32) -> i32 {
+${'  foo()\n'.repeat(300)}  return match n { 1 => assert -n, _ => n }
+}
+`
+    const expected = source.replaceAll('assert & n', 'assert &n')
+      .replaceAll('assert - n <', 'assert -n <')
+      .replace('  assert &n\n', '  assert & n\n')
+      .replace('assert assert &n', 'assert assert & n')
+      .replace('p. *', 'p.*')
+      .replace('  assert -n\n', '  assert - n\n')
+      .replace('=> assert -n', '=> assert - n')
+    const formatted = formatEncantis(source)
+    expect(formatted).toBe(expected)
+    expect(formatEncantis(formatted)).toBe(formatted)
+    expect(shape(formatted)).toEqual(shape(source))
+  })
+
+  test('comments with more text than a probe can use do not change its classification', () => {
+    const padding = 'words not code '.repeat(300)
+    const source = `func f(n:i32, assert:i32) {
+  /* ${padding} */
+  let name = assert
+  assert - n < 0
+  return /* continuation */
+  assert -n
+}
+`
+    const formatted = formatEncantis(source)
+    expect(formatted).toBe(source.replace('assert - n < 0', 'assert -n < 0').replace('  assert -n\n', '  assert - n\n'))
+    expect(formatEncantis(formatted)).toBe(formatted)
+    expect(shape(formatted)).toEqual(shape(source))
+  })
+
   // A member's name is a whole identifier, hyphens included: p.u32-1 is a
   // member called u32-1. A subtraction is printed with spaces, so the two
   // read apart, and the formatter never joins or splits a hyphenated name.

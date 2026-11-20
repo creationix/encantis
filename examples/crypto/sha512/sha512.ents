@@ -1,7 +1,11 @@
-// SHA-512 (FIPS 180-4)
-// Produces a 64-byte (512-bit) hash
+// SHA-512 (FIPS 180-4): the 64-byte (512-bit) hash of a message.
+// sha512-with-iv takes the initial hash value, so the variants that differ
+// from SHA-512 only in it and in a shorter output (SHA-384, SHA-512/224,
+// SHA-512/256) use it too: sha512-256.ents beside this file.
 
-// Initial hash values (first 64 bits of fractional parts of sqrt of first 8 primes)
+def block-size = 128
+
+// The first 64 bits of the fractional parts of the square roots of the first 8 primes
 data iv = [
   0x6a09e667f3bcc908:u64, 0xbb67ae8584caa73b,
   0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
@@ -9,58 +13,50 @@ data iv = [
   0x1f83d9abfb41bd6b, 0x5be0cd19137e2179
 ]
 
-// Round constants (first 64 bits of fractional parts of cube roots of first 80 primes)
+// The first 64 bits of the fractional parts of the cube roots of the first 80 primes
 data k = [
-  0x428a2f98d728ae22:u64, 0x7137449123ef65cd:u64, 0xb5c0fbcfec4d3b2f:u64, 0xe9b5dba58189dbbc:u64,
-  0x3956c25bf348b538:u64, 0x59f111f1b605d019:u64, 0x923f82a4af194f9b:u64, 0xab1c5ed5da6d8118:u64,
-  0xd807aa98a3030242:u64, 0x12835b0145706fbe:u64, 0x243185be4ee4b28c:u64, 0x550c7dc3d5ffb4e2:u64,
-  0x72be5d74f27b896f:u64, 0x80deb1fe3b1696b1:u64, 0x9bdc06a725c71235:u64, 0xc19bf174cf692694:u64,
-  0xe49b69c19ef14ad2:u64, 0xefbe4786384f25e3:u64, 0x0fc19dc68b8cd5b5:u64, 0x240ca1cc77ac9c65:u64,
-  0x2de92c6f592b0275:u64, 0x4a7484aa6ea6e483:u64, 0x5cb0a9dcbd41fbd4:u64, 0x76f988da831153b5:u64,
-  0x983e5152ee66dfab:u64, 0xa831c66d2db43210:u64, 0xb00327c898fb213f:u64, 0xbf597fc7beef0ee4:u64,
-  0xc6e00bf33da88fc2:u64, 0xd5a79147930aa725:u64, 0x06ca6351e003826f:u64, 0x142929670a0e6e70:u64,
-  0x27b70a8546d22ffc:u64, 0x2e1b21385c26c926:u64, 0x4d2c6dfc5ac42aed:u64, 0x53380d139d95b3df:u64,
-  0x650a73548baf63de:u64, 0x766a0abb3c77b2a8:u64, 0x81c2c92e47edaee6:u64, 0x92722c851482353b:u64,
-  0xa2bfe8a14cf10364:u64, 0xa81a664bbc423001:u64, 0xc24b8b70d0f89791:u64, 0xc76c51a30654be30:u64,
-  0xd192e819d6ef5218:u64, 0xd69906245565a910:u64, 0xf40e35855771202a:u64, 0x106aa07032bbd1b8:u64,
-  0x19a4c116b8d2d0c8:u64, 0x1e376c085141ab53:u64, 0x2748774cdf8eeb99:u64, 0x34b0bcb5e19b48a8:u64,
-  0x391c0cb3c5c95a63:u64, 0x4ed8aa4ae3418acb:u64, 0x5b9cca4f7763e373:u64, 0x682e6ff3d6b2b8a3:u64,
-  0x748f82ee5defb2fc:u64, 0x78a5636f43172f60:u64, 0x84c87814a1f0ab72:u64, 0x8cc702081a6439ec:u64,
-  0x90befffa23631e28:u64, 0xa4506cebde82bde9:u64, 0xbef9a3f7b2c67915:u64, 0xc67178f2e372532b:u64,
-  0xca273eceea26619c:u64, 0xd186b8c721c0c207:u64, 0xeada7dd6cde0eb1e:u64, 0xf57d4f7fee6ed178:u64,
-  0x06f067aa72176fba:u64, 0x0a637dc5a2c898a6:u64, 0x113f9804bef90dae:u64, 0x1b710b35131c471b:u64,
-  0x28db77f523047d84:u64, 0x32caab7b40c72493:u64, 0x3c9ebe0a15c9bebc:u64, 0x431d67c49c100d4c:u64,
-  0x4cc5d4becb3e42b6:u64, 0x597f299cfc657e2a:u64, 0x5fcb6fab3ad6faec:u64, 0x6c44198c4a475817:u64
+  0x428a2f98d728ae22:u64, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
+  0x3956c25bf348b538, 0x59f111f1b605d019, 0x923f82a4af194f9b, 0xab1c5ed5da6d8118,
+  0xd807aa98a3030242, 0x12835b0145706fbe, 0x243185be4ee4b28c, 0x550c7dc3d5ffb4e2,
+  0x72be5d74f27b896f, 0x80deb1fe3b1696b1, 0x9bdc06a725c71235, 0xc19bf174cf692694,
+  0xe49b69c19ef14ad2, 0xefbe4786384f25e3, 0x0fc19dc68b8cd5b5, 0x240ca1cc77ac9c65,
+  0x2de92c6f592b0275, 0x4a7484aa6ea6e483, 0x5cb0a9dcbd41fbd4, 0x76f988da831153b5,
+  0x983e5152ee66dfab, 0xa831c66d2db43210, 0xb00327c898fb213f, 0xbf597fc7beef0ee4,
+  0xc6e00bf33da88fc2, 0xd5a79147930aa725, 0x06ca6351e003826f, 0x142929670a0e6e70,
+  0x27b70a8546d22ffc, 0x2e1b21385c26c926, 0x4d2c6dfc5ac42aed, 0x53380d139d95b3df,
+  0x650a73548baf63de, 0x766a0abb3c77b2a8, 0x81c2c92e47edaee6, 0x92722c851482353b,
+  0xa2bfe8a14cf10364, 0xa81a664bbc423001, 0xc24b8b70d0f89791, 0xc76c51a30654be30,
+  0xd192e819d6ef5218, 0xd69906245565a910, 0xf40e35855771202a, 0x106aa07032bbd1b8,
+  0x19a4c116b8d2d0c8, 0x1e376c085141ab53, 0x2748774cdf8eeb99, 0x34b0bcb5e19b48a8,
+  0x391c0cb3c5c95a63, 0x4ed8aa4ae3418acb, 0x5b9cca4f7763e373, 0x682e6ff3d6b2b8a3,
+  0x748f82ee5defb2fc, 0x78a5636f43172f60, 0x84c87814a1f0ab72, 0x8cc702081a6439ec,
+  0x90befffa23631e28, 0xa4506cebde82bde9, 0xbef9a3f7b2c67915, 0xc67178f2e372532b,
+  0xca273eceea26619c, 0xd186b8c721c0c207, 0xeada7dd6cde0eb1e, 0xf57d4f7fee6ed178,
+  0x06f067aa72176fba, 0x0a637dc5a2c898a6, 0x113f9804bef90dae, 0x1b710b35131c471b,
+  0x28db77f523047d84, 0x32caab7b40c72493, 0x3c9ebe0a15c9bebc, 0x431d67c49c100d4c,
+  0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817
 ]
 
-// Working state
 data state = mut [0:u64; 8]
 data w = mut [0:u64; 80]
-data pad_block = mut [0:u8; 128]
+data pad-block = mut [0:u8; block-size]
 
-// SHA-512 helper functions
-inline func ch(x: u64, y: u64, z: u64) -> u64 => (x & y) ^ (~x & z)
-inline func maj(x: u64, y: u64, z: u64) -> u64 => (x & y) ^ (x & z) ^ (y & z)
-inline func big-sigma0(x: u64) -> u64 => (x <<< 36) ^ (x <<< 30) ^ (x <<< 25)
-inline func big-sigma1(x: u64) -> u64 => (x <<< 50) ^ (x <<< 46) ^ (x <<< 23)
-inline func small-sigma0(x: u64) -> u64 => (x <<< 63) ^ (x <<< 56) ^ (x >> 7)
-inline func small-sigma1(x: u64) -> u64 => (x <<< 45) ^ (x <<< 3) ^ (x >> 6)
+// The functions of FIPS 180-4 4.1.3
+func ch(x: u64, y: u64, z: u64) -> u64 => (x & y) ^ (~x & z)
+func maj(x: u64, y: u64, z: u64) -> u64 => (x & y) ^ (x & z) ^ (y & z)
+func big-sigma0(x: u64) -> u64 => (x >>> 28) ^ (x >>> 34) ^ (x >>> 39)
+func big-sigma1(x: u64) -> u64 => (x >>> 14) ^ (x >>> 18) ^ (x >>> 41)
+func small-sigma0(x: u64) -> u64 => (x >>> 1) ^ (x >>> 8) ^ (x >> 7)
+func small-sigma1(x: u64) -> u64 => (x >>> 19) ^ (x >>> 61) ^ (x >> 6)
 
-// Load 64-bit big-endian from byte pointer
+// The big-endian u64 at ptr + offset
 func load-be64(ptr: [*]u8, offset: u32) -> u64 {
   let p = ptr + offset
-  let b0 = p[0] as u64
-  let b1 = p[1] as u64
-  let b2 = p[2] as u64
-  let b3 = p[3] as u64
-  let b4 = p[4] as u64
-  let b5 = p[5] as u64
-  let b6 = p[6] as u64
-  let b7 = p[7] as u64
-  return (b0 << 56) | (b1 << 48) | (b2 << 40) | (b3 << 32) | (b4 << 24) | (b5 << 16) | (b6 << 8) | b7
+  return (p[0]:u64 << 56) | (p[1]:u64 << 48) | (p[2]:u64 << 40) | (p[3]:u64 << 32)
+    | (p[4]:u64 << 24) | (p[5]:u64 << 16) | (p[6]:u64 << 8) | p[7]
 }
 
-// Store 64-bit big-endian to byte pointer
+// Stores value big-endian at ptr + offset
 func store-be64(ptr: [*]mut u8, offset: u32, value: u64) {
   let p = ptr + offset
   p[0] = (value >> 56) as u8
@@ -73,21 +69,16 @@ func store-be64(ptr: [*]mut u8, offset: u32, value: u64) {
   p[7] = value as u8
 }
 
-// Process one 128-byte block
-func compress(block: *[128]u8) {
-  // Load message schedule from block (big-endian)
+// Mixes one block of the message into the state
+func compress(block: *[block-size]u8) {
   for i in 16 {
-    w[i] = load-be64(block as [*]u8, (i * 8) as u32)
+    w[i] = load-be64(block.ptr, i * 8)
+  }
+  // w[t] for t from 16 to 79, from the words 16, 15, 7 and 2 before it
+  for i in 64 {
+    w[i + 16] = small-sigma1(w[i + 14]) + w[i + 9] + small-sigma0(w[i + 1]) + w[i]
   }
 
-  // Extend message schedule
-  let j: u32 = 16
-  while j < 80 {
-    w.u64[j] = small-sigma1(w.u64[j - 2]) + w.u64[j - 7] + small-sigma0(w.u64[j - 15]) + w.u64[j - 16]
-    j += 1
-  }
-
-  // Working variables
   let a = state[0]
   let b = state[1]
   let c = state[2]
@@ -97,21 +88,12 @@ func compress(block: *[128]u8) {
   let g = state[6]
   let h = state[7]
 
-  // 80 rounds
-  for round in 80 {
-    let t1 = h + big-sigma1(e) + ch(e, f, g) + k[round] + w[round]
+  for t in k.len {
+    let t1 = h + big-sigma1(e) + ch(e, f, g) + k[t] + w[t]
     let t2 = big-sigma0(a) + maj(a, b, c)
-    h = g
-    g = f
-    f = e
-    e = d + t1
-    d = c
-    c = b
-    b = a
-    a = t1 + t2
+    set a, b, c, d, e, f, g, h = (t1 + t2, a, b, c, d + t1, e, f, g)
   }
 
-  // Add compressed chunk to running hash
   state[0] += a
   state[1] += b
   state[2] += c
@@ -122,96 +104,76 @@ func compress(block: *[128]u8) {
   state[7] += h
 }
 
-// Core hash function: takes IV, input, writes full 64-byte state to output
-export func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *mut [64]u8) {
-  for i in 8 {
-    state[i] = hash_iv[i]
-  }
+// Hashes input from the initial hash value hash-iv, and writes the whole
+// 64-byte state to output
+export func sha512-with-iv(hash-iv: *[8]u64, input: []u8, output: *mut [64]u8) {
+  state[..] = hash-iv
 
   let ptr = input.ptr
-  let remaining = input.len
-  let total_len = input.len
-  let total_bits: u64 = total_len as u64
-  total_bits *= 8
-
-  // Process full 128-byte blocks
-  while remaining >= 128 {
-    compress(ptr as *[128]u8)
-    ptr += 128
-    remaining -= 128
+  for i in input.len / block-size {
+    compress(ptr as *[block-size]u8)
+    ptr += block-size
   }
 
-  // Pad final block(s)
-  // Copy remaining bytes
-  memset(pad_block, 0, 128)
-  let n: u32 = 0
-  while n < remaining {
-    pad_block.u8[n] = ptr[n]
-    n += 1
+  // Padding: the bytes after the last whole block, the byte 0x80, zeros, and
+  // the message's length in bits in the last 16 bytes of a block. When the
+  // length does not fit after the 0x80, it takes a block of its own. A
+  // slice's length in bits fits 64 bits, so the first 8 of those bytes stay 0.
+  let rest = input.len % block-size
+  pad-block[..] = 0
+  memcpy(pad-block, ptr, rest) // rest is less than block-size, so it fits
+  pad-block[rest] = 0x80
+  if rest >= block-size - 16 {
+    compress(pad-block)
+    pad-block[..] = 0
   }
+  store-be64(pad-block, block-size - 8, input.len:u64 * 8)
+  compress(pad-block)
 
-  // Append 0x80 byte
-  pad_block.u8[remaining] = 0x80 as u8
-
-  if remaining >= 112 {
-    // Need two blocks: current + one more
-    compress(pad_block)
-    memset(pad_block, 0, 128)
-  }
-
-  // Append length in bits as big-endian u64 at end of block
-  store-be64(pad_block as [*]mut u8, 120 as u32, total_bits)
-
-  compress(pad_block)
-
-  // Write hash output as big-endian
-  for i in 8 {
-    store-be64(output as [*]mut u8, (i * 8) as u32, state[i])
+  for i in state.len {
+    store-be64(output, i * 8, state[i])
   }
 }
 
-// Public API: SHA-512
+// Writes the SHA-512 hash of input to output
 export func sha512(input: []u8, output: *mut [64]u8) {
   sha512-with-iv(iv, input, output)
 }
 
-// === Tests ===
-
 test "sha512" {
-  data hash_out = mut [0:u8; 64]
+  // Each digest is written to out and compared whole, as one u512: its 64
+  // bytes, little-endian.
+  data out = mut [0:u8; 64]
 
-  // Helper: compare hash output to expected hex bytes
-  func check_hash(input: []u8, expected: *[64]u8) -> bool {
-    sha512(input, hash_out)
-    let i: u32 = 0
-    while i < 64 {
-      return false when hash_out.u8[i] != expected.u8[i]
-      i += 1
-    }
-    return true
+  data expected-abc = x"ddaf35a193617aba cc417349ae204131 12e6fa4e89a97ea2 0a9eeee64b55d39a 2192992a274fc1a8 36ba3c23a3feebbd 454d4423643ce80e 2a9ac94fa54ca49f"
+
+  test "abc hashes to its known digest" {
+    sha512("abc", out)
+    assert out.u512[0] == expected-abc.u512[0]
   }
 
-  // NIST test vector: SHA-512("abc")
-  data tv_abc = "abc"
-  data expected_abc = x"ddaf35a193617aba cc417349ae204131 12e6fa4e89a97ea2 0a9eeee64b55d39a 2192992a274fc1a8 36ba3c23a3feebbd 454d4423643ce80e 2a9ac94fa54ca49f"
+  data expected-empty = x"cf83e1357eefb8bd f1542850d66d8007 d620e4050b5715dc 83f4a921d36ce9ce 47d0d13c5d85f2b0 ff8318d2877eec2f 63b931bd47417a81 a538327af927da3e"
 
-  test "abc" {
-    assert check_hash(tv_abc, expected_abc)
+  test "the empty message hashes to its known digest" {
+    sha512("", out)
+    assert out.u512[0] == expected-empty.u512[0]
   }
 
-  // NIST test vector: SHA-512("")
-  data tv_empty = ""
-  data expected_empty = x"cf83e1357eefb8bd f1542850d66d8007 d620e4050b5715dc 83f4a921d36ce9ce 47d0d13c5d85f2b0 ff8318d2877eec2f 63b931bd47417a81 a538327af927da3e"
+  data expected-448 = x"204a8fc6dda82f0a 0ced7beb8e08a416 57c16ef468b228a8 279be331a703c335 96fd15c13b1b07f9 aa1d3bea57789ca0 31ad85c7a71dd703 54ec631238ca3445"
 
-  test "empty" {
-    assert check_hash(tv_empty, expected_empty)
+  test "a 448-bit message hashes to its known digest" {
+    sha512("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", out)
+    assert out.u512[0] == expected-448.u512[0]
   }
 
-  // NIST test vector: SHA-512("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
-  data tv_448 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
-  data expected_448 = x"204a8fc6dda82f0a 0ced7beb8e08a416 57c16ef468b228a8 279be331a703c335 96fd15c13b1b07f9 aa1d3bea57789ca0 31ad85c7a71dd703 54ec631238ca3445"
+  // 112 bytes: the length no longer fits the block, so it takes a second one
+  data expected-896 = x"8e959b75dae313da 8cf4f72814fc143f 8f7779c6eb9f7fa1 7299aeadb6889018 501d289e4900f7e4 331b99dec4b5433a c7d329eeb6dd2654 5e96e55b874be909"
 
-  test "448 bit message" {
-    assert check_hash(tv_448, expected_448)
+  test "an 896-bit message hashes to its known digest" {
+    sha512(
+      "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
+      out
+    )
+    assert out.u512[0] == expected-896.u512[0]
   }
 }

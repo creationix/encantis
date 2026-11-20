@@ -13,17 +13,16 @@ func sum(comptime n: u32, xs: *[n]u32) -> (total: u32) {
 // n and T from a value array held in registers: v[n - 1] is a constant index.
 func last(comptime n: u32, comptime T: type, v: [n]T) -> T => v[n - 1]
 
-// A number in arithmetic: a rotation by a constant.
+// A number in arithmetic: a rotation by a constant, spelled out with shifts to
+// show k in arithmetic (the operator `x <<< k` is one instruction).
 func rotl(comptime k: u32, x: u32) -> u32 => (x << k) | (x >> (32 - k))
 
-// Two lengths, and a third computed from them.
+// Two lengths, and a third computed from them: out[a..] has b elements, as y
+// has, which each instance checks when it is compiled. Each copy is one
+// memory.copy.
 func join(comptime a: u32, comptime b: u32, x: *[a]u8, y: *[b]u8, out: *mut [a + b]u8) {
-  for i in a {
-    out[i] = x[i]
-  }
-  for j in b {
-    out[a + j] = y[j]
-  }
+  out[..a] = x
+  out[a..] = y
 }
 
 // The proof that i is in range is the caller's: a u32#n.
@@ -73,8 +72,8 @@ test "rotations" {
 }
 
 test "joined" {
-  assert hello() == 111
-  assert greeting[0] == 104
+  assert hello() == 'o'
+  assert greeting[0] == 'h'
 }
 
 test "an index proven by its range" {
