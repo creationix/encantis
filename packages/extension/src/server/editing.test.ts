@@ -189,6 +189,32 @@ export func f(n: u32) -> u32 {
   })
 })
 
+describe('highlights', () => {
+  type Highlight = { range: { start: { line: number; character: number } }; kind: number }
+  const at = (h: Highlight) => `${h.range.start.line}:${h.range.start.character}:${h.kind === 3 ? 'write' : 'read'}`
+
+  test("a name's declaration and assignments are writes, its other uses reads", async () => {
+    const text = `export func f(n: u32) -> u32 {
+  let total = n
+  total += 1
+  total = total * 2
+  if total == 4 { return 0 }
+  return total
+}
+`
+    const s = server()
+    await s.open(uri, text)
+    const highlights = s.at<Highlight[]>('onDocumentHighlight', uri, text, text.indexOf('total == 4'))
+    expect(highlights.map(at)).toEqual(['1:6:write', '2:2:write', '3:2:write', '3:10:read', '4:5:read', '5:9:read'])
+  })
+
+  test('a field and a builtin have none', async () => {
+    const s = server()
+    await s.open(uri, SHAPES)
+    expect(s.at('onDocumentHighlight', uri, SHAPES, SHAPES.indexOf('p.x') + 2)).toBeNull()
+  })
+})
+
 describe('completion', () => {
   // Opens the text, edits it to the text with | taken out, and completes at |
   async function complete(edited: string) {
