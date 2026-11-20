@@ -105,7 +105,7 @@ export func sign(sig: *mut [64]u8, msg: []u8, privkey: *[32]u8, pubkey: *[32]u8)
 
   // A = a B, which pubkey must be
   encode-public-key(&transcript.key)
-  for i in 32 {
+  for i in pubkey.len {
     assert transcript.key[i] == pubkey[i]
   }
 
@@ -163,9 +163,7 @@ test "ed25519 key derivation" {
   test "RFC 8032 test vector 1" {
     data pubkey = mut [0:u8; 32]
     derive-pubkey(pubkey, tv1-privkey)
-    for i in 32 {
-      assert pubkey[i] == tv1-expected[i]
-    }
+    assert pubkey.u256[0] == tv1-expected.u256[0]
   }
 }
 
@@ -180,9 +178,7 @@ test "ed25519 signing" {
   test "sign empty message" {
     data sig = mut [0:u8; 64]
     sign(sig, tv1-msg, tv1-privkey, tv1-pubkey)
-    for i in 64 {
-      assert sig[i] == tv1-expected-sig[i]
-    }
+    assert sig.u512[0] == tv1-expected-sig.u512[0]
   }
 
   test "verify empty message" {
@@ -225,9 +221,7 @@ test "ed25519 test vector 2" {
   test "sign 0x72" {
     data sig2 = mut [0:u8; 64]
     sign(sig2, tv2-msg, tv2-privkey, tv2-pubkey)
-    for i in 64 {
-      assert sig2[i] == tv2-expected-sig[i]
-    }
+    assert sig2.u512[0] == tv2-expected-sig.u512[0]
   }
 
   test "verify 0x72" {
@@ -246,13 +240,9 @@ test "ed25519 test vector 3" {
 
   test "derive, sign and verify 0xaf82" {
     derive-pubkey(pubkey3, tv3-privkey)
-    for i in 32 {
-      assert pubkey3[i] == tv3-pubkey[i]
-    }
+    assert pubkey3.u256[0] == tv3-pubkey.u256[0]
     sign(sig3, tv3-msg, tv3-privkey, tv3-pubkey)
-    for i in 64 {
-      assert sig3[i] == tv3-expected-sig[i]
-    }
+    assert sig3.u512[0] == tv3-expected-sig.u512[0]
     assert verify(sig3, tv3-msg, tv3-pubkey)
   }
 
@@ -265,9 +255,7 @@ test "ed25519 test vector 3" {
       long[i] = (i % 251) as u8
     }
     sign(sig3, long, tv3-privkey, tv3-pubkey)
-    for i in 64 {
-      assert sig3[i] == long-sig[i]
-    }
+    assert sig3.u512[0] == long-sig.u512[0]
     assert verify(sig3, long, tv3-pubkey)
   }
 }

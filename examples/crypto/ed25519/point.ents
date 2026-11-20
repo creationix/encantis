@@ -95,14 +95,18 @@ export func point-eq(buf: *[slots]Point, p: u32#slots, q: u32#slots) -> bool {
 // === The base point B (RFC 8032 5.1): y = 4/5, and x the even root ===
 
 func base-x() -> Fe => (
-  0x62D608F25D51A, 0x412A4B4F6592A,
-  0x75B7171A4B31D, 0x1FF60527118FE,
+  0x62D608F25D51A,
+  0x412A4B4F6592A,
+  0x75B7171A4B31D,
+  0x1FF60527118FE,
   0x216936D3CD6E5
 )
 
 func base-y() -> Fe => (
-  0x6666666666658, 0x4CCCCCCCCCCCC,
-  0x1999999999999, 0x3333333333333,
+  0x6666666666658,
+  0x4CCCCCCCCCCCC,
+  0x1999999999999,
+  0x3333333333333,
   0x6666666666666
 )
 
@@ -116,7 +120,7 @@ export func pt-set-base(buf: *mut [slots]Point, i: u32#slots) {
 // top bit down. scalar is 32 bytes, little-endian. out is any slot but base.
 export func scalar-mult(buf: *mut [slots]Point, out: u32#slots, base: u32#slots, scalar: *[32]u8) {
   buf[out] = identity()
-  for i in 32 {
+  for i in scalar.len {
     // The bytes from the last down: i is below 32, so the & changes nothing,
     // and it gives the index the range that scalar[...] needs.
     let byte = scalar[(31 - i) & 31]
@@ -212,15 +216,9 @@ test "point operations" {
     s.u64[0] = n
   }
 
-  // Whether enc holds the 32 bytes expected
-  func encodes(expected: *[32]u8) -> bool {
-    for i in 32 {
-      return false when enc[i] != expected[i]
-    }
-    return true
-  }
+  // An encoding is compared whole, as one u256 (32 bytes, little-endian).
 
-  test "store and load identity" {
+  test "the identity reads back from its slot" {
     b[0] = identity()
     let (x:, y:, z:, t:) = b[0]
     assert fe-eq(fe-carry(x), fe-zero())
@@ -229,32 +227,32 @@ test "point operations" {
     assert fe-eq(fe-carry(t), fe-zero())
   }
 
-  test "double identity gives identity" {
+  test "the double of the identity is the identity" {
     b[0] = identity()
     point-double(b, 1, 0)
     assert point-eq(b, 1, 0)
   }
 
-  test "identity + identity = identity" {
+  test "the identity plus itself is the identity" {
     b[0] = identity()
     point-add(b, 1, 0, 0)
     assert point-eq(b, 1, 0)
   }
 
-  test "neg identity = identity" {
+  test "the negation of the identity is the identity" {
     b[0] = identity()
     point-neg(b, 1, 0)
     assert point-eq(b, 1, 0)
   }
 
-  test "p + neg(p) = identity for identity" {
+  test "the identity plus its negation is the identity" {
     b[0] = identity()
     point-neg(b, 1, 0)
     point-add(b, 2, 0, 1)
     assert point-eq(b, 2, 0)
   }
 
-  test "base point is on the curve" {
+  test "G, the base point, is on the curve" {
     // -x^2 + y^2 == 1 + d x^2 y^2
     let x2 = fe-carry(fe-sq(base-x()))
     let y2 = fe-carry(fe-sq(base-y()))
@@ -263,15 +261,18 @@ test "point operations" {
     assert fe-eq(lhs, rhs)
   }
 
-  test "G + G == 2*G (double matches add)" {
+  test "G plus G is the double of G, and the two encode alike" {
     pt-set-base(b, 0)
     pt-set-base(b, 3)
     point-double(b, 1, 0)
     point-add(b, 2, 0, 3)
     assert point-eq(b, 1, 2)
+    point-encode(enc, b, 1)
+    point-encode(enc2, b, 2)
+    assert enc.u256[0] == enc2.u256[0]
   }
 
-  test "G + neg(G) = identity" {
+  test "G plus its negation is the identity" {
     pt-set-base(b, 0)
     point-neg(b, 1, 0)
     point-add(b, 2, 0, 1)
@@ -279,41 +280,27 @@ test "point operations" {
     assert point-eq(b, 2, 3)
   }
 
-  test "encode base point" {
+  test "G encodes as y = 4/5 with an even x" {
     pt-set-base(b, 0)
     point-encode(enc, b, 0)
-    assert encodes(x"5866666666666666 6666666666666666 6666666666666666 6666666666666666")
+    assert enc.u256[0] == x"5866666666666666 6666666666666666 6666666666666666 6666666666666666".u256[0]
   }
 
-  test "scalar mult by 1 gives G" {
+  test "1 times G is G" {
     set-scalar(1)
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, s)
     assert point-eq(b, 1, 0)
   }
 
-  test "double G encodes correctly" {
+  test "the double of G encodes as 2G" {
     pt-set-base(b, 0)
     point-double(b, 2, 0)
     point-encode(enc, b, 2)
-    assert encodes(x"c9a3f86aae465f0e 56513864510f3997 561fa2c9e85ea21d c2292309f3cd6022")
+    assert enc.u256[0] == x"c9a3f86aae465f0e 56513864510f3997 561fa2c9e85ea21d c2292309f3cd6022".u256[0]
   }
 
-  test "add G+G eq double G" {
-    pt-set-base(b, 0)
-    pt-set-base(b, 3)
-    point-add(b, 1, 0, 3)
-    point-double(b, 2, 0)
-    assert point-eq(b, 1, 2)
-    // Equal points encode alike
-    point-encode(enc, b, 1)
-    point-encode(enc2, b, 2)
-    for i in 32 {
-      assert enc[i] == enc2[i]
-    }
-  }
-
-  test "scalar mult by 2 gives 2G" {
+  test "2 times G is the double of G" {
     set-scalar(2)
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, s)
@@ -321,63 +308,63 @@ test "point operations" {
     assert point-eq(b, 1, 2)
   }
 
-  test "encode 2G" {
+  test "2 times G encodes as 2G" {
     set-scalar(2)
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, s)
     point-encode(enc, b, 1)
-    assert encodes(x"c9a3f86aae465f0e 56513864510f3997 561fa2c9e85ea21d c2292309f3cd6022")
+    assert enc.u256[0] == x"c9a3f86aae465f0e 56513864510f3997 561fa2c9e85ea21d c2292309f3cd6022".u256[0]
   }
 
-  test "scalar mult by 3" {
+  test "3 times G encodes as 3G" {
     set-scalar(3)
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, s)
     point-encode(enc, b, 1)
-    assert encodes(x"d4b4f5784868c302 0403246717ec169f f79e26608ea126a1 ab69ee77d1b16712")
+    assert enc.u256[0] == x"d4b4f5784868c302 0403246717ec169f f79e26608ea126a1 ab69ee77d1b16712".u256[0]
   }
 
-  test "scalar mult by 4" {
+  test "4 times G encodes as 4G" {
     set-scalar(4)
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, s)
     point-encode(enc, b, 1)
-    assert encodes(x"2f1132ca61ab38df f00f2fea3228f24c 6c71d58085b80e47 e19515cb27e8d047")
+    assert enc.u256[0] == x"2f1132ca61ab38df f00f2fea3228f24c 6c71d58085b80e47 e19515cb27e8d047".u256[0]
   }
 
-  test "scalar mult by 8" {
+  test "8 times G encodes as 8G" {
     set-scalar(8)
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, s)
     point-encode(enc, b, 1)
-    assert encodes(x"b4b937fca95b2f1e 93e41e62fc3c7881 8ff38a66096fad6e 7973e5c90006d321")
+    assert enc.u256[0] == x"b4b937fca95b2f1e 93e41e62fc3c7881 8ff38a66096fad6e 7973e5c90006d321".u256[0]
   }
 
-  test "scalar mult by 255" {
+  test "255 times G encodes as 255G" {
     set-scalar(255)
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, s)
     point-encode(enc, b, 1)
-    assert encodes(x"cc613540cd8c99fa 4647e6e83e969761 b17515dbe1896fd0 a3e4358ebca65c31")
+    assert enc.u256[0] == x"cc613540cd8c99fa 4647e6e83e969761 b17515dbe1896fd0 a3e4358ebca65c31".u256[0]
   }
 
-  test "scalar mult by 256" {
+  test "256 times G encodes as 256G" {
     set-scalar(256)
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, s)
     point-encode(enc, b, 1)
-    assert encodes(x"c7f66c563120140e a8d927c19a3d1b7d 0e26d381aaebf56b 7902f1515c75550f")
+    assert enc.u256[0] == x"c7f66c563120140e a8d927c19a3d1b7d 0e26d381aaebf56b 7902f1515c75550f".u256[0]
   }
 
-  test "scalar mult by large value" {
+  test "a 57-bit scalar times G encodes as expected" {
     set-scalar(0x0102030405060708)
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, s)
     point-encode(enc, b, 1)
-    assert encodes(x"f8d56452348bbe1a 35c7b4313474aa27 49db88981d05da46 a2bd5ec592cdd59b")
+    assert enc.u256[0] == x"f8d56452348bbe1a 35c7b4313474aa27 49db88981d05da46 a2bd5ec592cdd59b".u256[0]
   }
 
-  test "fe-frombytes roundtrip" {
+  test "y read from an encoding writes back the same bytes, less the sign" {
     pt-set-base(b, 0)
     point-encode(enc, b, 0)
     // y read back from the encoding, and written out again
@@ -389,14 +376,14 @@ test "point operations" {
     assert enc2[31] == enc[31] & 0x7F
   }
 
-  test "point-decode roundtrip with base point" {
+  test "G decodes from its encoding" {
     pt-set-base(b, 0)
     point-encode(enc, b, 0)
     assert point-decode(b, 1, enc)
     assert point-eq(b, 0, 1)
   }
 
-  test "point-decode roundtrip with 2G" {
+  test "2G decodes from its encoding" {
     pt-set-base(b, 0)
     point-double(b, 1, 0)
     point-encode(enc, b, 1)
@@ -404,7 +391,7 @@ test "point operations" {
     assert point-eq(b, 1, 2)
   }
 
-  test "point-decode roundtrip with 3G" {
+  test "3G decodes from its encoding" {
     set-scalar(3)
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, s)

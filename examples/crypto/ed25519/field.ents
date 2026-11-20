@@ -176,8 +176,10 @@ export func fe-2d() -> Fe => fe-carry(fe-add(fe-d(), fe-d()))
 
 // sqrt(-1) mod p = 2^((p - 1) / 4) mod p
 export func fe-sqrtm1() -> Fe => (
-  0x61B274A0EA0B0, 0xD5A5FC8F189D,
-  0x7EF5E9CBD0C60, 0x78595A6804C9E,
+  0x61B274A0EA0B0,
+  0xD5A5FC8F189D,
+  0x7EF5E9CBD0C60,
+  0x78595A6804C9E,
   0x2B8324804FC1D
 )
 

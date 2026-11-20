@@ -18,20 +18,21 @@ func mod-l() {
   // Limbs 63 down to 32 are folded into the 20 limbs 32 to 13 places below
   // them: 2^256 is 16 * 2^252, which is -16 (L - 2^252) mod L. The indexes
   // stay below 64, but they are made by subtraction or from two variables,
-  // which give no range (reference 2.2): the type view .i64[...] reads and
-  // writes them without a check.
+  // which give no range (reference 2.2): they index limbs, x-work as a
+  // many-pointer, which checks no index (reference 4.7).
+  let limbs = x-work as [*]mut i64
   let carry: i64 = 0
   for n in 32 {
     let i = 63 - n
     carry = 0
     for k in 20 {
       let at = i - 32 + k
-      x-work.i64[at] += carry - 16 * x-work.i64[i] * l-bytes[k]
-      carry = (x-work.i64[at] + 128) >> 8
-      x-work.i64[at] -= carry << 8
+      limbs[at] += carry - 16 * limbs[i] * l-bytes[k]
+      carry = (limbs[at] + 128) >> 8
+      limbs[at] -= carry << 8
     }
-    x-work.i64[i - 12] += carry
-    x-work.i64[i] = 0
+    limbs[i - 12] += carry
+    limbs[i] = 0
   }
 
   // Less L times the top 4 bits of limb 31, carrying into bytes
@@ -52,7 +53,7 @@ func mod-l() {
 
 // s mod L for a 64-byte little-endian s, into its first 32 bytes
 export func sc-reduce(s: *mut [64]u8) {
-  for i in 64 {
+  for i in s.len {
     x-work[i] = s[i]
   }
   mod-l()
@@ -63,24 +64,25 @@ export func sc-reduce(s: *mut [64]u8) {
 
 // out = a * b + c mod L
 export func sc-muladd(out: *mut [32]u8, a: *[32]u8, b: *[32]u8, c: *[32]u8) {
+  let limbs = x-work as [*]mut i64           // i + j is below 63, unproven
   x-work[..] = 0
-  for i in 32 {
-    for j in 32 {
-      x-work.i64[i + j] += a[i]:i64 * b[j] // i + j is below 63
+  for i in a.len {
+    for j in b.len {
+      limbs[i + j] += a[i]:i64 * b[j]
     }
   }
-  for i in 32 {
+  for i in c.len {
     x-work[i] += c[i]
   }
   mod-l()
-  for i in 32 {
+  for i in out.len {
     out[i] = x-work[i] as u8
   }
 }
 
 // Whether s is below L, as RFC 8032 asks of the S of a signature
 export func sc-is-canonical(s: *[32]u8) -> bool {
-  for n in 32 {
+  for n in s.len {
     // The bytes from the top down: n is below 32, so the & changes nothing,
     // and it gives the index the range that s[...] needs.
     let i = (31 - n) & 31
@@ -98,72 +100,54 @@ test "scalar mod L" {
   data c = mut [0:u8; 32]
   data out = mut [0:u8; 32]
 
-  // Whether the first 32 bytes of x are expected
-  func reduces-to(expected: *[32]u8) -> bool {
-    for i in 32 {
-      return false when x[i] != expected[i]
-    }
-    return true
-  }
-
-  test "reduce zero is zero" {
+  // Each result is read as one u256: the first 32 bytes, little-endian.
+  test "zero reduces to zero" {
     x[..] = 0
     sc-reduce(x)
-    for i in 32 {
-      assert x[i] == 0
-    }
+    assert x.u256[0] == 0
   }
 
-  test "reduce 1 is 1" {
+  test "1 reduces to 1" {
     x[..] = 0
     x[0] = 1
     sc-reduce(x)
-    assert x[0] == 1
-    for i in 31 {
-      assert x[i + 1] == 0
-    }
+    assert x.u256[0] == 1
   }
 
-  test "reduce L is zero" {
+  test "L reduces to zero" {
     x[..] = 0
     x[..32] = l-bytes
     sc-reduce(x)
-    for i in 32 {
-      assert x[i] == 0
-    }
+    assert x.u256[0] == 0
   }
 
-  test "reduce 2^512 - 1" {
+  test "2^512 - 1 reduces to its remainder mod L" {
+    data expected = x"000f9c44e31106a4 47938568a71b0ed0 65bef517d273ecce 3d9a307c1b419903"
     x[..] = 0xFF
     sc-reduce(x)
-    assert reduces-to(x"000f9c44e31106a4 47938568a71b0ed0 65bef517d273ecce 3d9a307c1b419903")
+    assert x.u256[0] == expected.u256[0]
   }
 
-  test "muladd 1*1+0 = 1" {
+  test "1 * 1 + 0 is 1" {
     a[..] = 0
     b[..] = 0
     c[..] = 0
     a[0] = 1
     b[0] = 1
     sc-muladd(out, a, b, c)
-    assert out[0] == 1
-    assert out[1] == 0
-    assert out[31] == 0
+    assert out.u256[0] == 1
   }
 
-  test "muladd with ed25519 scalars" {
-    // k, a and r of RFC 8032's first test vector give its S
+  test "k * a + r of RFC 8032's first test vector is its S" {
     data mk = x"86eabc8e4c96193d 290504e7c600df6c f8d8256131ec2c13 8a3e7e162e525404"
     data ma = x"307c83864f2833cb 427a2ef1c00a013c fdff2768d980c0a3 a520f006904de94f"
     data mr = x"f38907308c893dea f244787db4af5368 2249107418afc2ed c58f75ac58a07404"
     data expected-s = x"5fb8821590a33bac c61e39701cf9b46b d25bf5f0595bbe24 655141438e7a100b"
     sc-muladd(out, mk, ma, mr)
-    for j in 32 {
-      assert out[j] == expected-s[j]
-    }
+    assert out.u256[0] == expected-s.u256[0]
   }
 
-  test "muladd 0*a+c = c" {
+  test "0 * b + c is c" {
     a[..] = 0
     b[..] = 0
     c[..] = 0
@@ -171,8 +155,7 @@ test "scalar mod L" {
     c[0] = 7
     c[1] = 3
     sc-muladd(out, a, b, c)
-    assert out[0] == 7
-    assert out[1] == 3
+    assert out.u256[0] == c.u256[0]
   }
 
   test "below L is canonical, L and more are not" {
