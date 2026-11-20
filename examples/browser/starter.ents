@@ -36,7 +36,7 @@ func emit(op: u32, a: f32, b: f32, c: f32, d: f32, color: u32, p: u32, n: u32) {
 
 func clear(color: u32) { emit(op-clear, 0.0, 0.0, 0.0, 0.0, color, 0, 0) }
 func circle(x: f32, y: f32, r: f32, color: u32) { emit(op-circle, x, y, r, 0.0, color, 0, 0) }
-// Text is centred on (x, y).
+// Text is centred on x, with its baseline at y.
 func text(x: f32, y: f32, size: f32, color: u32, s: []u8) { emit(op-text, x, y, size, 1.0, color, s.ptr as u32, s.len) }
 func sound(from: f32, to: f32, secs: f32, volume: f32, wave: u32) { emit(op-sound, from, to, secs, volume, 0, wave, 0) }
 

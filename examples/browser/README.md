@@ -49,7 +49,7 @@ A game is a wasm module that **imports nothing**. The host calls it; it never ca
 | Export | |
 | --- | --- |
 | `memory` | Its linear memory, one page, which never grows. |
-| `init(seed: u32)` | Starts a game with this seed. The host calls it before the first frame (Lantern traps without it), and calls it again to start over: a game started over plays as one just loaded and started with the same seed, keeping only Lantern's best score. |
+| `init(seed: u32)` | Sets the game up with this seed: Lantern at its title screen, the starter playing. The host calls it before the first frame (Lantern traps without it), and calls it again to start over: a game started over plays as one just loaded and started with the same seed, keeping only Lantern's best score. |
 | `frame(dt_ms: f32, width: f32, height: f32, buttons: u32, stick_x: f32, stick_y: f32) -> u32` | Plays one frame and gives the number of commands it wrote. `dt_ms` counts up to 50 (an infinite one as 50), and one that is NaN or negative counts as none; the size is the canvas in CSS pixels; the stick is in [-1, 1], and a value outside it (NaN or infinite too) counts as 0. |
 | `commands() -> u32` | The address of the first command. |
 
@@ -67,7 +67,7 @@ Each command is 32 bytes, little-endian, one after another:
 | 2 rect | A rectangle at (`a`, `b`), `c` wide and `d` high. |
 | 3 circle | A disc at (`a`, `b`) of radius `c`. |
 | 4 ring | A circle's outline: centre (`a`, `b`), radius `c`, line width `d`. |
-| 5 text | `n` bytes of UTF-8 at address `p`, at (`a`, `b`), `c` pixels high, centred when `d` is 1. |
+| 5 text | `n` bytes of UTF-8 at address `p`, `c` pixels high, with its baseline at `b`, starting at `a`, or centred on `a` when `d` is 1. |
 | 6 sound | A tone from `a` Hz to `b` Hz over `c` seconds at volume `d`; `p` is the wave (0 sine, 1 square, 2 triangle, 3 sawtooth). |
 
 What crosses the boundary, and for how long:
