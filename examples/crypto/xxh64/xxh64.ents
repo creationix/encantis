@@ -22,6 +22,7 @@ func merge-round64(acc: u64, value: u64) -> (acc: u64) {
   acc = acc * prime64-1 + prime64-4
 }
 
+// The xxHash64 of input, with seed
 export func xxh64(input: []u8, seed: u64) -> (h64: u64) {
   let ptr = input.ptr
   let end = ptr + input.len
@@ -109,5 +110,12 @@ test "xxh64" {
   test "stripes" {
     assert xxh64("Nobody inspects the spammish repetition", 0) == 0xfbcea83c8a378bf1
     assert xxh64("Nobody inspects the spammish repetition", 42) == 0x44582824ca1018b5
+  }
+
+  // 64 bytes: exactly two stripes, and nothing after them
+  test "whole stripes" {
+    let m = "abcdefghijklmnopqrstuvwxyz012345ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+    assert xxh64(m, 0) == 0xb83a14e6c64ce05e
+    assert xxh64(m, 42) == 0x41d36396c6cdf70a
   }
 }

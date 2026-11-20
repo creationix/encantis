@@ -16,6 +16,7 @@ func round32(acc: u32, lane: u32) -> (acc: u32) {
   acc *= prime32-1
 }
 
+// The xxHash32 of input, with seed
 export func xxh32(input: []u8, seed: u32) -> (h32: u32) {
   let ptr = input.ptr
   let end = ptr + input.len
@@ -92,5 +93,11 @@ test "xxh32" {
   test "stripes" {
     assert xxh32("Nobody inspects the spammish repetition", 0) == 0xe2293b2f
     assert xxh32("Nobody inspects the spammish repetition", 42) == 0x4ae5ae3a
+  }
+
+  // 32 bytes: exactly two stripes, and nothing after them
+  test "whole stripes" {
+    assert xxh32("abcdefghijklmnopqrstuvwxyz012345", 0) == 0x353145a3
+    assert xxh32("abcdefghijklmnopqrstuvwxyz012345", 42) == 0xeda39121
   }
 }
