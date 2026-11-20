@@ -1,31 +1,82 @@
+// The ways a function hands the host a string: each kind of pointer or slice
+// a string literal converts to, a table of strings, and templates. The host
+// reads the bytes through the exported memory.
+//
+// Every string is laid out in the data section when the module is built
+// (reference 1.5). A template given for a slice of slices is one cell for its
+// place in the source, into which each ${...} is stored when the function
+// runs, so the slice a call returns is overwritten by the next call.
+
+export memory
+
+// An address and a length: two i32s
 export func return-slice() -> []u8 {
   return "Test"
 }
 
-export func return-ptr() -> *[_]u8 {
+// An address, with the length in the type
+export func return-ptr() -> *[6]u8 {
   return "simple"
 }
 
-export func return-cstr() -> [!]u8 {
+// An address, with a zero byte after the text
+export func return-cstr() -> *[!]u8 {
   return "c style string"
 }
 
-export func return-lstr() -> [?]u8 {
+// An address, with the length before the text as a LEB128 number. The module
+// only lays it out: reading a *[?]T is not implemented (reference 2.5), so only
+// a host decodes the length.
+export func return-lstr() -> *[?]u8 {
   return "length-prefixed string"
 }
 
+// The address and length of two slices, each an address and a length
 export func return-slice-of-slices() -> [][]u8 {
   return ["Hello", "World"]
 }
 
-export func return-nested-cstr() -> [!x!]u8 {
+// The address of two row pointers, each the address of a zero-terminated text
+export func return-nested-cstr() -> *[2][!]u8 {
   return ["Hello", "World"]
 }
 
-export func template-literal(name:[]u8, color:[]u8) -> [][]u8 {
+// Five slices: three of constant text, name's and color's
+export func template-literal(name: []u8, color: []u8) -> [][]u8 {
   return `Welcome ${name} who likes ${color}.`
 }
 
-export func template-null-literal(name:[!]u8, color:[!]u8) -> [][!]u8 {
+// Five zero-terminated texts
+export func template-null-literal(name: *[!]u8, color: *[!]u8) -> []*[!]u8 {
   return `Welcome ${name} who likes ${color}.`
+}
+
+test "each kind of string has its length" {
+  assert return-slice().len == 4
+  assert return-ptr().len == 6
+  assert return-ptr()[0] == 's'
+  assert return-cstr().len == 14
+  let both = return-slice-of-slices()
+  assert both.len == 2
+  assert (both[0] ?? "").len == 5
+  assert (both[1] ?? "").len == 5
+  let rows = return-nested-cstr()
+  assert rows.len == 2
+  assert rows[1].len == 5
+  assert (rows[1][0] ?? 0) == 'W'
+}
+
+test "a template is its fragments" {
+  let parts = template-literal("Ann", "red")
+  assert parts.len == 5
+  assert (parts[0] ?? "").len == 8     // "Welcome "
+  assert (parts[1] ?? "").len == 3     // name
+  assert (parts[2] ?? "").len == 11    // " who likes "
+  assert (parts[3] ?? "").len == 3     // color
+  assert (parts[4] ?? "").len == 1     // "."
+  let texts = template-null-literal("Ann", "red")
+  assert texts.len == 5
+  let name = texts[1] ?? "?"
+  assert name.len == 3
+  assert (name[0] ?? 0) == 'A'
 }

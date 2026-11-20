@@ -5627,7 +5627,7 @@ describe('examples/generics', () => {
 
   test('vec.ents: a generic type, its instances, and nothing for the type or for what only tests use', async () => {
     const wat = await compileExample('vec.ents')
-    expect(funcs(wat)).toEqual(['alloc', 'vec<u32>', 'push<u32>', 'items<u32>', 'sum_to'])
+    expect(funcs(wat)).toEqual(['alloc', 'reset', 'vec<u32>', 'push<u32>', 'items<u32>', 'sum_to'])
     expect(funcWat(wat, 'vec<u32>')).toContain('(call $alloc (i32.const 12))')
   })
 
@@ -5641,7 +5641,7 @@ describe('examples/generics', () => {
   })
 
   test('the tests of vec.ents and sort.ents pass', async () => {
-    for (const [name, count] of [['vec.ents', 4], ['sort.ents', 3]] as const) {
+    for (const [name, count] of [['vec.ents', 6], ['sort.ents', 4]] as const) {
       const { ran, failed } = await runTestsOfSource(await Bun.file(join(dir, name)).text())
       expect(failed).toEqual([])
       expect(ran).toHaveLength(count)
@@ -5651,7 +5651,7 @@ describe('examples/generics', () => {
   test('methods.ents: the receiver decides T, and each chain is nested direct calls', async () => {
     const wat = await compileExample('methods.ents')
     // What only the tests use (u8 vectors, pop, get, find, unique) is absent.
-    expect(funcs(wat)).toEqual(['alloc', 'vec<u32>', 'push<u32>', 'items<u32>', 'double', 'sum_to'])
+    expect(funcs(wat)).toEqual(['alloc', 'reset', 'vec<u32>', 'push<u32>', 'items<u32>', 'double', 'sum_to'])
     expect(funcWat(wat, 'sum_to')).toContain('(call $push<u32> (local.get $v) (local.get $i))')
     const source = await Bun.file(join(dir, 'methods.ents')).text()
     // v.push(i) and push(v, i) are the same instruction, and so is every other pair.
@@ -5707,47 +5707,60 @@ describe('examples/generics', () => {
     expect(funcs(await compileExample('set.ents'))).toEqual(['alloc', 'hash', 'eq', "hash:''u32", "eq:''u32|''u32"])
     const { ran, failed } = await runTestsOfSource(await Bun.file(join(dir, 'set.ents')).text())
     expect(failed).toEqual([])
-    expect(ran).toEqual(['a set of u32', 'a set of slices compares contents'])
+    expect(ran).toEqual(['a set of u32', 'a set of slices compares contents', 'a set of 2^bits slots holds 2^bits - 1 keys'])
   })
 
-  // The two examples are written with an explicit `.*`, a u32 for a flag and
-  // one store for each field, as they were before structs and bools could be
-  // stored through a pointer. Their natural spelling passes the same tests.
-  test('methods.ents and set.ents pass their tests with fields through the pointer too', async () => {
-    const edit = (source: string, edits: [string, string][]) => {
+  // The two examples reach fields through the pointer (`v.len`), store a
+  // struct whole and keep a flag as a bool. Written as they were before
+  // structs and bools could be stored through a pointer, with an explicit
+  // `.*`, a u32 for the flag and one store for each field, they pass the same
+  // tests, and so they do with more of their calls written as method calls.
+  test('methods.ents and set.ents pass their tests with an explicit .* and one store for each field, and with method calls', async () => {
+    const edit = (source: string, edits: [string | RegExp, string][]) => {
       for (const [from, to] of edits) {
-        expect(source).toContain(from)
+        if (typeof from === 'string') expect(source).toContain(from)
+        else expect(source).toMatch(from)
         source = source.replaceAll(from, to)
       }
       return source
     }
     // The edits are written with \n: a checkout on Windows has \r\n.
     const text = async (name: string) => (await Bun.file(join(dir, name)).text()).replaceAll('\r\n', '\n')
-    const methods = edit(await text('methods.ents'), [
-      ['  let made = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)\n  v.*.ptr = made.ptr\n  v.*.len = made.len\n  v.*.cap = made.cap\n',
-        '  v.* = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)\n'],
-      ['.*.', '.'],
+    const methods = await text('methods.ents')
+    const explicitMethods = edit(methods, [
+      [/\b([uv])\.(len|cap|ptr)\b/g, '$1.*.$2'],
+      ['  v.* = Vec(T)(alloc(room * sizeof(T)) as [*]mut T, 0, room)\n',
+        '  let made = Vec(T)(alloc(room * sizeof(T)) as [*]mut T, 0, room)\n  v.*.ptr = made.ptr\n  v.*.len = made.len\n  v.*.cap = made.cap\n'],
+    ])
+    expect(explicitMethods).toContain('v.*.len += 1')
+    expect((await runTestsOfSource(explicitMethods)).failed).toEqual([])
+    const methodCalls = edit(methods, [
       ['find(xs, x) < xs.len', 'xs.find(x) < xs.len'],
       ['unique(repeats)', 'repeats.unique()'],
       ['unique(letters)', 'letters.unique()'],
     ])
-    expect(methods).not.toContain('.*.')
-    expect((await runTestsOfSource(methods)).failed).toEqual([])
-    const set = edit(await text('set.ents'), [
-      ['(used: u32, hash: u32, key: K)', '(used: bool, hash: u32, key: K)'],
-      ['  s.*.slots = p as [*]mut Slot(K)\n  s.*.mask = size - 1\n  s.*.count = 0\n', '  s.* = Set(K)(p as [*]mut Slot(K), size - 1, 0)\n'],
-      ['  s.*.slots[i].used = 1\n  s.*.slots[i].hash = h\n  s.*.slots[i].key = k\n', '  s.*.slots[i] = (true, h, k)\n'],
-      ['return i when s.*.slots[i].used == 0', 'return i when !s.*.slots[i].used'],
-      ['return false when s.*.slots[i].used != 0', 'return false when s.*.slots[i].used'],
-      ['.used != 0', '.used'],
-      ['eq(s.*.slots[i].key, k)', 's.*.slots[i].key.eq(k)'],
-      ['let h = hash(k)', 'let h = k.hash()'],
-      ['.*.', '.'],
+    expect((await runTestsOfSource(methodCalls)).failed).toEqual([])
+    const set = await text('set.ents')
+    const explicitSet = edit(set, [
+      ['(used: bool, hash: u32, key: K)', '(used: u32, hash: u32, key: K)'],
+      ['  s.* = Set(K)(p as [*]mut Slot(K), size - 1, 0)\n', '  s.slots = p as [*]mut Slot(K)\n  s.mask = size - 1\n  s.count = 0\n'],
+      ['  s.slots[i] = (used: true, hash: h, key: k)\n', '  s.slots[i].used = 1\n  s.slots[i].hash = h\n  s.slots[i].key = k\n'],
+      ['return i when !s.slots[i].used', 'return i when s.slots[i].used == 0'],
+      ['return false when s.slots[i].used\n', 'return false when s.slots[i].used != 0\n'],
+      ['s.slot(k.hash(), k)].used\n', 's.slot(k.hash(), k)].used != 0\n'],
+      [/\bs\.(slots|mask|count)\b/g, 's.*.$1'],
     ])
-    expect(set).not.toContain('.*.')
-    const { ran, failed } = await runTestsOfSource(set)
-    expect(failed).toEqual([])
-    expect(ran).toHaveLength(2)
+    expect(explicitSet).toContain('s.*.slots[i].used = 1')
+    const explicitRun = await runTestsOfSource(explicitSet)
+    expect(explicitRun.failed).toEqual([])
+    expect(explicitRun.ran).toHaveLength(3)
+    const setCalls = edit(set, [
+      ['eq(s.slots[i].key, k)', 's.slots[i].key.eq(k)'],
+      ['let h = hash(k)', 'let h = k.hash()'],
+    ])
+    const callsRun = await runTestsOfSource(setCalls)
+    expect(callsRun.failed).toEqual([])
+    expect(callsRun.ran).toHaveLength(3)
   })
 
   test('no offset of an instance reaches the tables the editor reads', async () => {

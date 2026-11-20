@@ -2,7 +2,7 @@
 // parameter: each (T, comparator) pair is its own copy of sort, and the copy
 // calls the comparator directly. No function table, no call_indirect.
 
-data space = mut [0:u8; 256]
+// The costs of the ids 0 to 5
 data costs = [5:i32, 1, 5, 3, 1, 9]
 
 // Sorts xs in place. `before(a, b)` says a must come before b; elements neither
@@ -23,7 +23,9 @@ func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
 func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
 
 func ascending(a: i32, b: i32) -> bool => a < b
-func by_cost_desc(a: i32, b: i32) -> bool => costs.i32[a] > costs.i32[b]
+// An id indexes costs modulo its length (a negative id as the u32 it is): the
+// remainder is a u32#6, which needs no check, and no id reads past the table.
+func by_cost_desc(a: i32, b: i32) -> bool => costs[(a as u32) % costs.len] > costs[(b as u32) % costs.len]
 func longer(a: f64, b: f64) -> bool => a > b
 func inc(x: u32) -> u32 => x + 1
 
@@ -31,12 +33,8 @@ export func sort_ids(ids: []mut i32) { sort(ids, by_cost_desc) }
 export func sort_up(xs: []mut i32) { sort(i32, xs, ascending) }
 
 test "ints sort ascending" {
-  let a = space as [*]mut i32
-  a[0] = 3
-  a[1] = -1
-  a[2] = 2
-  a[3] = -1
-  sort(a[0..4], ascending)
+  let a = &[3:i32, -1, 2, -1]
+  sort(a, ascending)
   assert a[0] == -1
   assert a[1] == -1
   assert a[2] == 2
@@ -44,11 +42,8 @@ test "ints sort ascending" {
 }
 
 test "ids sort by cost, highest first, equal costs keeping their order" {
-  let ids = space as [*]mut i32
-  for i in 6 {
-    ids[i] = i as i32
-  }
-  sort_ids(ids[0..6])
+  let ids = &[0:i32, 1, 2, 3, 4, 5]
+  sort_ids(ids)
   assert ids[0] == 5
   assert ids[1] == 0
   assert ids[2] == 2
@@ -57,12 +52,17 @@ test "ids sort by cost, highest first, equal costs keeping their order" {
   assert ids[5] == 4
 }
 
+test "an id past the table costs as its remainder does" {
+  let ids = &[7:i32, 0, -1]
+  sort_ids(ids)
+  assert ids[0] == 0          // costs[0], 5
+  assert ids[1] == -1         // 4294967295 % 6 is 3: costs[3], 3
+  assert ids[2] == 7          // 7 % 6 is 1: costs[1], 1
+}
+
 test "another element type, and a comptime function that decides T" {
-  let f = space as [*]mut f64
-  f[0] = 1.5
-  f[1] = 4.0
-  f[2] = 2.5
-  sort(f[0..3], longer)
+  let f = &[1.5, 4.0, 2.5]
+  sort(f, longer)
   assert f[0] == 4.0
   assert f[2] == 1.5
   assert twice(inc, 5) == 7
