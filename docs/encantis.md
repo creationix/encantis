@@ -8779,7 +8779,7 @@ cells.ents:13:15: add(K = Cell) cannot be instantiated: no function 'hash' accep
 
 Such an error is found when the program is checked: also in a library that was checked on its own and found sound, since what an instance needs depends on its arguments. It stops the build like any other. A file checked without the files it imports (the editor's web worker, a reference example) knows an imported generic only by the signature its import writes, and checks calls against that ([7.1](#71-imports)); what an instance's body needs is found when the program is checked.
 
-The containers of [`lib/`](../lib/README.md) are written this way: `lib/vec.ents`, `lib/set.ents`, `lib/map.ents` and `lib/sort.ents` on the bump stack of `lib/stack.ents`, and `lib/fixedvec.ents`, `lib/ring.ents` and `lib/bits.ents` with their capacity in the type. [`examples/containers/main.ents`](../examples/containers/main.ents) uses them for a type of its own.
+The containers of [`lib/`](../lib/README.md) are written this way: `lib/vec.ents`, `lib/set.ents`, `lib/map.ents` and `lib/sort.ents` on the bump stack of `lib/stack.ents`, and `lib/fixedvec.ents`, `lib/ring.ents` and `lib/bits.ents` with their capacity in the type. [`examples/containers/main.ents`](../examples/containers/main.ents) uses the first four for a type of its own, and [`examples/containers/fixed.ents`](../examples/containers/fixed.ents) the other three.
 
 ### 8.9 Not Implemented
 
@@ -10232,7 +10232,7 @@ A narrower integer key (`u8`, `u16`, `i8`, `i16`) fits several of `set.ents`' ow
 
 `before` is a comptime function parameter ([8.6](#86-comptime-function-parameters)): the name of a function declared at module level, in any module. Each comparator is its own copy of `sort`, which calls it directly.
 
-Complete programs that use the library are [`examples/aoc/day1.ents`](../examples/aoc/day1.ents), a WASI program for `encantis run`, and [`examples/containers/main.ents`](../examples/containers/main.ents), which uses every container with a key type of its own.
+Complete programs that use the library are [`examples/aoc/day1.ents`](../examples/aoc/day1.ents), a WASI program for `encantis run`, and [`examples/containers/main.ents`](../examples/containers/main.ents), which uses the Vec, Set, Map and sort with a key type of its own; [`examples/containers/fixed.ents`](../examples/containers/fixed.ents) uses the containers of a fixed capacity.
 
 ---
 

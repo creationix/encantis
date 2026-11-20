@@ -1,22 +1,32 @@
+// Integer arithmetic wraps at the width of its type (reference 4.1), and a
+// rotation is an operator of its own, one wasm instruction (4.2).
+
 func add(a: i32, b: i32) -> i32 => a + b
 func mul(a: i32, b: i32) -> i32 => a * b
 
-func rotl64(x: u64, n: u64) -> u64 => (x << n) | (x >> (64 - n))
+// The bits shifted out at the top come back in at the bottom; the count is
+// taken modulo 64.
+func rotl64(x: u64, n: u64) -> u64 => x <<< n
 
-test "add basics" {
+test "addition wraps at the i32 bounds" {
   assert add(0, 0) == 0
   assert add(1, 2) == 3
   assert add(-1, 1) == 0
+  assert add(2147483647, 1) == -2147483648
 }
 
-test "mul basics" {
+test "multiplication wraps at 2^32" {
   assert mul(0, 5) == 0
   assert mul(3, 7) == 21
   assert mul(-1, -1) == 1
+  assert mul(65536, 65536) == 0
 }
 
-test "rotl64" {
+test "a rotation brings the top bits round, its count taken modulo 64" {
   assert rotl64(1, 0) == 1
   assert rotl64(1, 1) == 2
   assert rotl64(0x8000000000000000, 1) == 1
+  assert rotl64(0x8000000000000001, 4) == 0x18
+  assert rotl64(5, 64) == 5
+  assert rotl64(5, 65) == 10
 }

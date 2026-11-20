@@ -1,54 +1,69 @@
-// A growable vector as a generic type, written with plain calls. The header
-// lives in memory; `vec` returns a pointer to it. Its fields are reached with
-// an explicit `.*` here; `v.len` through the pointer reads the same field.
+// A growable vector as a generic type, written with plain calls (methods.ents
+// writes the same vector with method calls). The header lives in memory:
+// `vec` returns a pointer to it, and `v.len` reads the field through the
+// pointer.
 
 data space = mut [0:u8; 4096]
 global top: u32 = 0
 
-// A bump allocator: n bytes, 8-byte aligned.
+// A bump allocator: n bytes of space, at an offset rounded up to a multiple
+// of 8. Where space has no room for them it traps, and top stays as it was.
 func alloc(n: u32) -> (p: u32) {
-  top = (top + 7) & 0xFFFFFFF8
-  p = (space as u32) + top
-  top += n
-  assert top <= 4096
+  let at = (top + 7) & ~7
+  assert n <= space.len - at       // not at + n <= space.len, which can wrap
+  p = (space as u32) + at
+  top = at + n
 }
+
+// Gives back the space taken since top was mark.
+func reset(mark: u32) { top = mark }
 
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
 func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
 
+// An empty vector with room for cap elements, and for one at least, as push
+// doubles the room.
 func vec(comptime T: type, cap: u32) -> *mut Vec(T) {
+  let room = max(cap, 1)
+  assert room <= space.len / sizeof(T)   // so that room * sizeof(T) can't wrap
   let v = alloc(sizeof(Vec(T))) as *mut Vec(T)
-  let made = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)
-  v.*.ptr = made.ptr
-  v.*.len = made.len
-  v.*.cap = made.cap
+  v.* = Vec(T)(alloc(room * sizeof(T)) as [*]mut T, 0, room)
   return v
 }
 
+// Adds x at the end, moving the elements to twice the room when it is full.
 func push(comptime T: type, v: *mut Vec(T), x: T) {
-  if v.*.len == v.*.cap {
-    let moved = alloc(v.*.cap * 2 * sizeof(T)) as [*]mut T
-    for i in v.*.len {
-      moved[i] = v.*.ptr[i]
+  if v.len == v.cap {
+    let moved = alloc(v.cap * 2 * sizeof(T)) as [*]mut T
+    for i in v.len {
+      moved[i] = v.ptr[i]
     }
-    v.*.ptr = moved
-    v.*.cap *= 2
+    v.ptr = moved
+    v.cap *= 2
   }
-  v.*.ptr[v.*.len] = x
-  v.*.len += 1
+  v.ptr[v.len] = x
+  v.len += 1
 }
 
-func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.*.ptr[i]
-func items(comptime T: type, v: *Vec(T)) -> []T => v.*.ptr[0..v.*.len]
+func get(comptime T: type, v: *Vec(T), i: u32) -> T {
+  assert i < v.len
+  return v.ptr[i]
+}
+
+func items(comptime T: type, v: *Vec(T)) -> []T => v.ptr[0..v.len]
 
 func swapped(comptime A: type, comptime B: type, p: Pair(A, B)) -> Pair(B, A) => Pair(B, A)(p.second, p.first)
 
+// The sum of 0 to n - 1, pushed onto a vector and read back. The space the
+// vector takes is given back on the way out; a call that traps for want of
+// space runs no defer, and leaves it taken.
 export func sum_to(n: u32) -> (s: u32) {
+  let mark = top
+  defer reset(mark)
   let v = vec(u32, 2)
   for i in n {
     push(v, i)
   }
-  s = 0
   for x in items(v) {
     s += x
   }
@@ -57,10 +72,10 @@ export func sum_to(n: u32) -> (s: u32) {
 test "a vec grows and keeps its elements" {
   let v = vec(u64, 2)
   for i in 10 {
-    push(v, (i as u64) * 3)
+    push(v, i * 3)
   }
-  assert v.*.len == 10
-  assert v.*.cap == 16
+  assert v.len == 10
+  assert v.cap == 16
   assert get(v, 0) == 0
   assert get(v, 9) == 27
   assert items(v).len == 10
@@ -88,4 +103,21 @@ test "sizes and constructors follow the type arguments" {
   let p = swapped(Pair(u8, u64)(1, 2))
   assert p.first == 2
   assert p.second == 1
+}
+
+test "sum_to gives back the space it takes" {
+  let before = top
+  for k in 1000 {
+    assert sum_to(100) == 4950
+  }
+  assert top == before
+}
+
+test "a vector has room for one element at least" {
+  let none = vec(u32, 0)
+  assert none.cap == 1
+  push(none, 5)
+  push(none, 6)
+  assert none.cap == 2
+  assert get(none, 1) == 6
 }

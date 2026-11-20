@@ -1257,7 +1257,7 @@ export func f(acc: u64) -> u64 => step(acc, 1)
   })
 
   // Each test may declare a data or a def of a name another test declares
-  // (examples/crypto/ed25519/point.ents: eleven tests, each with its `data b`).
+  // (examples/crypto/ed25519/ed25519.ents: two tests, each with its `data tv1-privkey`).
   // From its name, by name, each one was the last of them in the module.
   test('a data a test declares is its own, also from its name', () => {
     const program = `export func f() -> u32 => 1

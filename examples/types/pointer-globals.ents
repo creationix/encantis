@@ -9,9 +9,11 @@ global words: [*]mut u32 = 0
 global slots: [*]mut Slot = 0
 global count: u32 = 0
 
+// Lays out n words in space, and n slots after them.
 func setup(n: u32) {
+  assert n <= space.len / (words.wid + slots.wid)     // both arrays fit in space
   words = space as [*]mut u32
-  slots = ((space as u32) + n * 4) as [*]mut Slot
+  slots = (words + n * words.wid) as [*]mut Slot
   count = n
 }
 
@@ -36,6 +38,7 @@ export func total(n: u32) -> u32 {
 test "a global pointer is set in one function and indexed in others" {
   // 3 * (0 + 1 + 2 + 3) + (0 + 1 + 4 + 9)
   assert total(4) == 32
+  assert total(341) == 13333100      // the most that fit in space
 }
 
 test "a global pointer to structs reads and writes fields" {

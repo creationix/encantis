@@ -4,14 +4,14 @@
 
 def step = 5
 def half = 0.5
-def floor = -1
+def bottom = -1
 
 func forward(x: i32) -> i32 => x + step
 func back(x: i32) -> i32 => x + -step
 func scaled(x: f64) -> f64 => x * half
 func mirrored(x: f64) -> f64 => x * -half
-func lowest() -> i64 => floor
-func raised() -> i64 => -floor
+func lowest() -> i64 => bottom
+func raised() -> i64 => -bottom
 
 test "negating a def leaves its other uses alone" {
   assert back(0) == -5

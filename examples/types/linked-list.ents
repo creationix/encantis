@@ -8,25 +8,20 @@ type Tree = (kids: []Tree, v: u32)
 type Even = (odd: ?*Odd, v: u32)
 type Odd = (even: ?*Even, v: u32)
 
-data cells = mut [0:u8; 256]
-
-func at(k: u32) -> *mut Node => (cells as u32 + k * 8) as *mut Node
-
+// The sum of the values from h to the end of the list.
 export func sum(h: ?*Node) -> u32 {
   let total: u32 = 0
-  let p = h
-  while true {
-    if let n = p {
+  loop {
+    if let n = h {
       total += n.v
-      p = n.next
+      h = n.next
     } else {
       return total
     }
   }
-  return total
 }
 
-// Three links down, each one a ?*Node again
+// The value of the third node from h, or 0: each link is a ?*Node again.
 export func third(h: *Link) -> u32 {
   if let a = h.next {
     if let b = a.next { return b.v }
@@ -34,15 +29,16 @@ export func third(h: *Link) -> u32 {
   return 0
 }
 
+// The number of levels of t: 1 for a tree without kids.
 export func depth(t: Tree) -> u32 {
   let deepest: u32 = 0
   for k in t.kids {
-    let d = depth(k)
-    if d > deepest { deepest = d }
+    deepest = max(deepest, depth(k))
   }
   return deepest + 1
 }
 
+// The value of the Even two links on from e, through an Odd, or 0.
 export func hop(e: *Even) -> u32 {
   if let o = e.odd {
     if let f = o.even { return f.v }
@@ -51,15 +47,14 @@ export func hop(e: *Even) -> u32 {
 }
 
 test "a list of three, linked" {
-  let a = at(0)
-  let b = at(1)
-  let c = at(2)
-  a.* = Node(b, 1)
-  b.* = Node(c, 2)
-  c.* = Node(0 as ?*Node, 3)
+  let c: *Node = &(0, 3)
+  let b: *Node = &(c, 2)
+  let a: *Node = &(b, 1)
   assert sum(a) == 6
   assert sum(a.next) == 5
+  assert sum(0) == 0
   assert third(a) == 3
+  assert third(b) == 0
   let l: *Link = b
   assert sum(l) == 5
 }
@@ -70,14 +65,13 @@ test "a tree of slices" {
   let mid: []Tree = [Tree(leaves, 3)]
   assert depth(Tree(mid, 4)) == 3
   assert depth(Tree(leaves, 5)) == 2
+  assert depth(Tree(none, 6)) == 1
 }
 
 test "two types that point to each other" {
-  let e1 = (cells as u32 + 128) as *mut Even
-  let o1 = (cells as u32 + 136) as *mut Odd
-  let e2 = (cells as u32 + 144) as *mut Even
-  e2.* = Even(0 as ?*Odd, 7)
-  o1.* = Odd(e2, 5)
-  e1.* = Even(o1, 3)
+  let e2: *Even = &(0, 7)
+  let o1: *Odd = &(e2, 5)
+  let e1: *Even = &(o1, 3)
   assert hop(e1) == 7
+  assert hop(e2) == 0
 }

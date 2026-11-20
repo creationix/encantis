@@ -1,6 +1,6 @@
-// continue in a range loop moves on to the next value.
+// continue in a count loop moves on to the next number.
 
-// The sum of 0..n, skipping multiples of three.
+// The sum of the numbers below n, skipping the multiples of three.
 export func skip_threes(n: u32) -> u32 {
   let s: u32 = 0
   for i in n {
@@ -10,7 +10,8 @@ export func skip_threes(n: u32) -> u32 {
   return s
 }
 
-// Nested loops: continue applies to the innermost one.
+// The ordered pairs of two different numbers below n. In nested loops,
+// continue applies to the innermost one.
 export func pairs(n: u32) -> u32 {
   let count: u32 = 0
   for i in n {
@@ -22,10 +23,12 @@ export func pairs(n: u32) -> u32 {
   return count
 }
 
-test "continue in a range loop reaches the increment" {
+test "continue in a count loop reaches the increment" {
   assert skip_threes(10) == 27
+  assert skip_threes(0) == 0
 }
 
-test "continue in a nested range loop continues the inner loop" {
+test "continue in a nested count loop continues the inner loop" {
   assert pairs(4) == 12
+  assert pairs(1) == 0
 }

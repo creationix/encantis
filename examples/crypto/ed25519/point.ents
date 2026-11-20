@@ -1,9 +1,12 @@
-// Ed25519 point operations on the twisted Edwards curve
-// -x^2 + y^2 = 1 + d*x^2*y^2  where d = -121665/121666
+// Points of Ed25519's curve, the twisted Edwards curve
+// -x^2 + y^2 = 1 + d x^2 y^2 over the field mod 2^255 - 19, d = -121665/121666.
 //
-// Extended coordinates (X, Y, Z, T) where x=X/Z, y=Y/Z, x*y=T/Z
-// Points stored in memory: 4 field elements × 40 bytes = 160 bytes per point
-// Fe layout: 5 × u64 (40 bytes), little-endian limb order
+// A point is held in extended coordinates (X, Y, Z, T), with x = X/Z,
+// y = Y/Z and x y = T/Z, in which points add and double without an inversion.
+// The operations work on a buffer of six points that the caller owns, and
+// name each point by its slot. They read only the fields they use. An
+// addition, a doubling or a negation reads its operands before it writes the
+// result, so the result may go to an operand's slot.
 
 import "./field" (
   "fe-add" func fe-add(f: Fe, g: Fe) -> Fe
@@ -15,618 +18,411 @@ import "./field" (
   "fe-inv" func fe-inv(z: Fe) -> Fe
   "fe-eq" func fe-eq(f: Fe, g: Fe) -> bool
   "fe-d" func fe-d() -> Fe
-  "fe-2d" func fe-2d() -> Fe
   "fe-pow252m2" func fe-pow252m2(z: Fe) -> Fe
   "fe-sqrtm1" func fe-sqrtm1() -> Fe
 )
 
 type Fe = (u64, u64, u64, u64, u64)
 
-func fe-zero() -> Fe => (0:u64, 0:u64, 0:u64, 0:u64, 0:u64)
-func fe-one() -> Fe => (1:u64, 0:u64, 0:u64, 0:u64, 0:u64)
+// 160 bytes in memory: four elements of five u64 limbs each
+type Point = (x: Fe, y: Fe, z: Fe, t: Fe)
 
-// === Memory layout for field elements ===
-// Fe in memory: 5 × u64 = 40 bytes, little-endian limb order
+def slots = 6
 
-// Point = 4 Fe values = 20 u64 limbs = 160 bytes
-// Layout: X=[0..5], Y=[5..10], Z=[10..15], T=[15..20]
-data pt-buf = mut [0:u64; 120]  // 6 point slots × 20 limbs
+def mask51 = 0x7FFFFFFFFFFFF:u64 // 2^51 - 1
 
-func pt-ptr(i: u32) -> *[120]u64 => pt-buf
+func fe-zero() -> Fe => (0, 0, 0, 0, 0)
+func fe-one() -> Fe => (1, 0, 0, 0, 0)
 
-func pt-x(p: *mut[120]u64, i: u32#6) -> Fe => (
-  p[i * 20], p[i * 20 + 1], p[i * 20 + 2], p[i * 20 + 3], p[i * 20 + 4]
-)
-func pt-y(p: *mut[120]u64, i: u32#6) -> Fe => (
-  p[i * 20 + 5], p[i * 20 + 6], p[i * 20 + 7], p[i * 20 + 8], p[i * 20 + 9]
-)
-func pt-z(p: *mut[120]u64, i: u32#6) -> Fe => (
-  p[i * 20 + 10], p[i * 20 + 11], p[i * 20 + 12], p[i * 20 + 13], p[i * 20 + 14]
-)
-func pt-t(p: *mut[120]u64, i: u32#6) -> Fe => (
-  p[i * 20 + 15], p[i * 20 + 16], p[i * 20 + 17], p[i * 20 + 18], p[i * 20 + 19]
-)
+// The neutral point: x = 0, y = 1
+func identity() -> Point => (fe-zero(), fe-one(), fe-one(), fe-zero())
 
-func pt-set-x(p: *mut[120]u64, i: u32#6, v: Fe) {
-  p[i * 20] = v.0
-  p[i * 20 + 1] = v.1
-  p[i * 20 + 2] = v.2
-  p[i * 20 + 3] = v.3
-  p[i * 20 + 4] = v.4
-}
-func pt-set-y(p: *mut[120]u64, i: u32#6, v: Fe) {
-  p[i * 20 + 5] = v.0
-  p[i * 20 + 6] = v.1
-  p[i * 20 + 7] = v.2
-  p[i * 20 + 8] = v.3
-  p[i * 20 + 9] = v.4
-}
-func pt-set-z(p: *mut[120]u64, i: u32#6, v: Fe) {
-  p[i * 20 + 10] = v.0
-  p[i * 20 + 11] = v.1
-  p[i * 20 + 12] = v.2
-  p[i * 20 + 13] = v.3
-  p[i * 20 + 14] = v.4
-}
-func pt-set-t(p: *mut[120]u64, i: u32#6, v: Fe) {
-  p[i * 20 + 15] = v.0
-  p[i * 20 + 16] = v.1
-  p[i * 20 + 17] = v.2
-  p[i * 20 + 18] = v.3
-  p[i * 20 + 19] = v.4
-}
+// === Doubling and addition (Hisil, Wong, Carter and Dawson 2008, for a = -1) ===
 
-// === Set identity point ===
-
-func pt-set-identity(buf: *mut[120]u64, i: u32#6) {
-  pt-set-x(buf, i, fe-zero())
-  pt-set-y(buf, i, fe-one())
-  pt-set-z(buf, i, fe-one())
-  pt-set-t(buf, i, fe-zero())
-}
-
-// === Point doubling ===
-
-export func point-double(buf: *mut[120]u64, out: u32#6, p: u32#6) {
-  let a = fe-sq(pt-x(buf, p))
-  let b = fe-sq(pt-y(buf, p))
-  let c = fe-carry(fe-add(fe-sq(pt-z(buf, p)), fe-sq(pt-z(buf, p))))
+export func point-double(buf: *mut [slots]Point, out: u32#slots, p: u32#slots) {
+  // Field by field: `let (x:, y:, z:) = buf[p]` would load t as well, since a
+  // pattern takes the whole value apart (reference 6.5)
+  let x = buf[p].x
+  let y = buf[p].y
+  let z = buf[p].z
+  let a = fe-sq(x)
+  let b = fe-sq(y)
+  let zz = fe-sq(z)
+  let c = fe-carry(fe-add(zz, zz))
   let d = fe-sub(fe-zero(), a)
-  let e = fe-carry(fe-sub(
-    fe-sq(fe-carry(fe-add(pt-x(buf, p), pt-y(buf, p)))),
-    fe-carry(fe-add(a, b))
-  ))
+  let e = fe-carry(fe-sub(fe-sq(fe-carry(fe-add(x, y))), fe-carry(fe-add(a, b))))
   let g = fe-carry(fe-add(d, b))
   let f = fe-carry(fe-sub(g, c))
   let h = fe-carry(fe-sub(d, b))
-  pt-set-x(buf, out, fe-mul(e, f))
-  pt-set-y(buf, out, fe-mul(g, h))
-  pt-set-z(buf, out, fe-mul(f, g))
-  pt-set-t(buf, out, fe-mul(e, h))
+  buf[out] = (fe-mul(e, f), fe-mul(g, h), fe-mul(f, g), fe-mul(e, h))
 }
 
-// === Point addition ===
-
-export func point-add(buf: *mut[120]u64, out: u32#6, p: u32#6, q: u32#6) {
-  let a = fe-mul(pt-x(buf, p), pt-x(buf, q))
-  let b = fe-mul(pt-y(buf, p), pt-y(buf, q))
-  let c = fe-mul(fe-mul(pt-t(buf, p), pt-t(buf, q)), fe-d())
-  let d = fe-mul(pt-z(buf, p), pt-z(buf, q))
-
+export func point-add(buf: *mut [slots]Point, out: u32#slots, p: u32#slots, q: u32#slots) {
+  let (x: x1, y: y1, z: z1, t: t1) = buf[p]
+  let (x: x2, y: y2, z: z2, t: t2) = buf[q]
+  let a = fe-mul(x1, x2)
+  let b = fe-mul(y1, y2)
+  let c = fe-mul(fe-mul(t1, t2), fe-d())
+  let d = fe-mul(z1, z2)
   let e = fe-carry(fe-sub(
-    fe-mul(
-      fe-carry(fe-add(pt-x(buf, p), pt-y(buf, p))),
-      fe-carry(fe-add(pt-x(buf, q), pt-y(buf, q)))
-    ),
+    fe-mul(fe-carry(fe-add(x1, y1)), fe-carry(fe-add(x2, y2))),
     fe-carry(fe-add(a, b))
   ))
   let f = fe-carry(fe-sub(d, c))
   let g = fe-carry(fe-add(d, c))
   let h = fe-carry(fe-add(b, a))
-
-  pt-set-x(buf, out, fe-mul(e, f))
-  pt-set-y(buf, out, fe-mul(g, h))
-  pt-set-z(buf, out, fe-mul(f, g))
-  pt-set-t(buf, out, fe-mul(e, h))
+  buf[out] = (fe-mul(e, f), fe-mul(g, h), fe-mul(f, g), fe-mul(e, h))
 }
 
-// === Point negation ===
-
-export func point-neg(buf: *mut[120]u64, out: u32#6, p: u32#6) {
-  pt-set-x(buf, out, fe-sub(fe-zero(), pt-x(buf, p)))
-  pt-set-y(buf, out, pt-y(buf, p))
-  pt-set-z(buf, out, pt-z(buf, p))
-  pt-set-t(buf, out, fe-sub(fe-zero(), pt-t(buf, p)))
+export func point-neg(buf: *mut [slots]Point, out: u32#slots, p: u32#slots) {
+  let (x:, y:, z:, t:) = buf[p]
+  buf[out] = (fe-sub(fe-zero(), x), y, z, fe-sub(fe-zero(), t))
 }
 
-// === Point equality ===
-
-export func point-eq(buf: *mut[120]u64, p: u32#6, q: u32#6) -> bool {
-  let xeq = fe-eq(
-    fe-carry(fe-mul(pt-x(buf, p), pt-z(buf, q))),
-    fe-carry(fe-mul(pt-x(buf, q), pt-z(buf, p)))
-  )
-  let yeq = fe-eq(
-    fe-carry(fe-mul(pt-y(buf, p), pt-z(buf, q))),
-    fe-carry(fe-mul(pt-y(buf, q), pt-z(buf, p)))
-  )
+// x1/z1 == x2/z2 and y1/z1 == y2/z2, multiplied out
+export func point-eq(buf: *[slots]Point, p: u32#slots, q: u32#slots) -> bool {
+  let x1 = buf[p].x
+  let y1 = buf[p].y
+  let z1 = buf[p].z
+  let x2 = buf[q].x
+  let y2 = buf[q].y
+  let z2 = buf[q].z
+  let xeq = fe-eq(fe-carry(fe-mul(x1, z2)), fe-carry(fe-mul(x2, z1)))
+  let yeq = fe-eq(fe-carry(fe-mul(y1, z2)), fe-carry(fe-mul(y2, z1)))
   return xeq && yeq
 }
 
-// === Base point G ===
-// RFC 8032 §5.1: y = 4/5 mod p, x is the positive root
-// These are the 5-limb representations of the affine coordinates.
+// === The base point B (RFC 8032 5.1): y = 4/5, and x the even root ===
 
 func base-x() -> Fe => (
-  0x62D608F25D51A:u64, 0x412A4B4F6592A:u64,
-  0x75B7171A4B31D:u64, 0x1FF60527118FE:u64,
-  0x216936D3CD6E5:u64
+  0x62D608F25D51A,
+  0x412A4B4F6592A,
+  0x75B7171A4B31D,
+  0x1FF60527118FE,
+  0x216936D3CD6E5
 )
 
 func base-y() -> Fe => (
-  0x6666666666658:u64, 0x4CCCCCCCCCCCC:u64,
-  0x1999999999999:u64, 0x3333333333333:u64,
-  0x6666666666666:u64
+  0x6666666666658,
+  0x4CCCCCCCCCCCC,
+  0x1999999999999,
+  0x3333333333333,
+  0x6666666666666
 )
 
-export func pt-set-base(buf: *mut[120]u64, i: u32#6) {
-  pt-set-x(buf, i, base-x())
-  pt-set-y(buf, i, base-y())
-  pt-set-z(buf, i, fe-one())
-  pt-set-t(buf, i, fe-carry(fe-mul(base-x(), base-y())))
+export func pt-set-base(buf: *mut [slots]Point, i: u32#slots) {
+  buf[i] = (base-x(), base-y(), fe-one(), fe-carry(fe-mul(base-x(), base-y())))
 }
 
 // === Scalar multiplication ===
-// Fixed-base double-and-add, processing bits from MSB to LSB.
-// scalar is a 32-byte little-endian buffer (256 bits).
-// Result goes into buf[out].
 
-export func scalar-mult(buf: *mut[120]u64, out: u32#6, base: u32#6, scalar: *[32]u8) {
-  // slot 'out' = accumulator (starts as identity)
-  // slot 'base' = the point to multiply
-  // slot 'out+1' or 'base+1' used as temp — we use slot 4 and 5 as temps
-  let tmp: u32#6 = 4
-  pt-set-identity(buf, out)
-
-  let byte-idx: u32#32 = 31
-  loop {
-    let byte = scalar[byte-idx]
-    let bit: u32 = 7
-    loop {
-      // Double
-      point-double(buf, tmp, out)
-      // Copy tmp back to out
-      pt-set-x(buf, out, pt-x(buf, tmp))
-      pt-set-y(buf, out, pt-y(buf, tmp))
-      pt-set-z(buf, out, pt-z(buf, tmp))
-      pt-set-t(buf, out, pt-t(buf, tmp))
-
-      // Conditionally add base if bit is set
-      let mask = (byte >> bit) & 1:u8
-      if mask == 1 {
-        point-add(buf, tmp, out, base)
-        pt-set-x(buf, out, pt-x(buf, tmp))
-        pt-set-y(buf, out, pt-y(buf, tmp))
-        pt-set-z(buf, out, pt-z(buf, tmp))
-        pt-set-t(buf, out, pt-t(buf, tmp))
+// out = scalar times the point in slot base, by doubling and adding from the
+// top bit down. scalar is 32 bytes, little-endian. out is any slot but base.
+export func scalar-mult(buf: *mut [slots]Point, out: u32#slots, base: u32#slots, scalar: *[32]u8) {
+  buf[out] = identity()
+  for i in scalar.len {
+    // The bytes from the last down: i is below 32, so the & changes nothing,
+    // and it gives the index the range that scalar[...] needs.
+    let byte = scalar[(31 - i) & 31]
+    for j in 8 {
+      point-double(buf, out, out)
+      if (byte >> (7 - j)) & 1 == 1 {
+        point-add(buf, out, out, base)
       }
-
-      break when bit == 0
-      bit -= 1
     }
-    break when byte-idx == 0
-    // byte-idx is above 0 here, but its range can't show that: the & keeps
-    // the result a u32#32, as scalar[byte-idx] needs.
-    byte-idx = (byte-idx - 1) & 31
   }
 }
 
-// === Field element serialization ===
-// Serialize fully-reduced Fe to 32 bytes little-endian
+// === Encoding (RFC 8032 5.1.2 and 5.1.3) ===
 
-export func fe-tobytes(out: *mut[32]u8, f: Fe) {
-  let r = fe-reduce(fe-carry(f))
-  // 5 limbs × 51 bits = 255 bits → 32 bytes
-  // Pack limbs into bytes, little-endian
-  let h0 = r.0
-  let h1 = r.1
-  let h2 = r.2
-  let h3 = r.3
-  let h4 = r.4
-
-  // Byte 0..5: h0 (51 bits)
-  out[0] = h0 as u8
-  out[1] = (h0 >> 8) as u8
-  out[2] = (h0 >> 16) as u8
-  out[3] = (h0 >> 24) as u8
-  out[4] = (h0 >> 32) as u8
-  out[5] = (h0 >> 40) as u8
-  // Byte 6: h0[48..51] | h1[0..5]
-  out[6] = ((h0 >> 48) | (h1 << 3)) as u8
-  out[7] = (h1 >> 5) as u8
-  out[8] = (h1 >> 13) as u8
-  out[9] = (h1 >> 21) as u8
-  out[10] = (h1 >> 29) as u8
-  out[11] = (h1 >> 37) as u8
-  // Byte 12: h1[45..51] | h2[0..2]
-  out[12] = ((h1 >> 45) | (h2 << 6)) as u8
-  out[13] = (h2 >> 2) as u8
-  out[14] = (h2 >> 10) as u8
-  out[15] = (h2 >> 18) as u8
-  out[16] = (h2 >> 26) as u8
-  out[17] = (h2 >> 34) as u8
-  out[18] = (h2 >> 42) as u8
-  // Byte 19: h2[50..51] | h3[0..7] → h2 has 1 bit left at position 50
-  out[19] = ((h2 >> 50) | (h3 << 1)) as u8
-  out[20] = (h3 >> 7) as u8
-  out[21] = (h3 >> 15) as u8
-  out[22] = (h3 >> 23) as u8
-  out[23] = (h3 >> 31) as u8
-  out[24] = (h3 >> 39) as u8
-  // Byte 25: h3[47..51] | h4[0..4]
-  out[25] = ((h3 >> 47) | (h4 << 4)) as u8
-  out[26] = (h4 >> 4) as u8
-  out[27] = (h4 >> 12) as u8
-  out[28] = (h4 >> 20) as u8
-  out[29] = (h4 >> 28) as u8
-  out[30] = (h4 >> 36) as u8
-  out[31] = (h4 >> 44) as u8
+// f as 32 bytes, little-endian, after reducing it below p: the five 51-bit
+// limbs packed into four u64 words
+export func fe-tobytes(out: *mut [32]u8, f: Fe) {
+  let (h0, h1, h2, h3, h4) = fe-reduce(fe-carry(f))
+  out.u64[0] = h0 | h1 << 51
+  out.u64[1] = h1 >> 13 | h2 << 38
+  out.u64[2] = h2 >> 26 | h3 << 25
+  out.u64[3] = h3 >> 39 | h4 << 12
 }
 
-// === Point encoding ===
-// RFC 8032 §5.1.2: compress (X,Y,Z,T) → 32 bytes
-// Encode y as 255 bits LE, set high bit of byte 31 to sign of x
+// The 32 bytes of an encoding as an element, leaving out bit 255
+export func fe-frombytes(s: *[32]u8) -> Fe => (
+  s.u64[0] & mask51,
+  (s.u64[0] >> 51 | s.u64[1] << 13) & mask51,
+  (s.u64[1] >> 38 | s.u64[2] << 26) & mask51,
+  (s.u64[2] >> 25 | s.u64[3] << 39) & mask51,
+  s.u64[3] >> 12 & mask51
+)
 
-export func point-encode(out: *mut[32]u8, buf: *mut[120]u64, i: u32#6) {
-  let zinv = fe-inv(pt-z(buf, i))
-  let x = fe-reduce(fe-carry(fe-mul(pt-x(buf, i), zinv)))
-  let y = fe-reduce(fe-carry(fe-mul(pt-y(buf, i), zinv)))
-  fe-tobytes(out, y)
-  out[31] = out[31] | ((x.0 & 1:u64) << 7) as u8
+// A point is encoded as its y, with the low bit of x in bit 255
+export func point-encode(out: *mut [32]u8, buf: *[slots]Point, i: u32#slots) {
+  let x = buf[i].x
+  let y = buf[i].y
+  let zinv = fe-inv(buf[i].z)
+  let ax = fe-reduce(fe-carry(fe-mul(x, zinv)))
+  fe-tobytes(out, fe-reduce(fe-carry(fe-mul(y, zinv))))
+  out[31] |= ((ax.0 & 1) as u8) << 7
 }
 
-// === Field element deserialization ===
-// Deserialize 32 LE bytes → Fe (5 × 51-bit limbs)
-// Inverse of fe-tobytes. The high bit (bit 255) is stripped by mask51.
-
-def mask51 = 0x7FFFFFFFFFFFF:u64
-
-func load-le64(ptr: [*]u8, offset: u32) -> u64 {
-  let p = ptr + offset
-  return p[0] as u64
-    | (p[1] as u64 << 8)
-    | (p[2] as u64 << 16)
-    | (p[3] as u64 << 24)
-    | (p[4] as u64 << 32)
-    | (p[5] as u64 << 40)
-    | (p[6] as u64 << 48)
-    | (p[7] as u64 << 56)
-}
-
-export func fe-frombytes(s: *[32]u8) -> Fe {
-  let h0 = load-le64(s as [*]u8, 0) & mask51
-  let h1 = (load-le64(s as [*]u8, 6) >> 3) & mask51
-  let h2 = (load-le64(s as [*]u8, 12) >> 6) & mask51
-  let h3 = (load-le64(s as [*]u8, 19) >> 1) & mask51
-  let h4 = (load-le64(s as [*]u8, 24) >> 12) & mask51
-  return (h0, h1, h2, h3, h4)
-}
-
-// === Point decoding ===
-// RFC 8032 §5.1.3: decompress 32-byte encoding → extended coordinates
-// Returns false if the encoding is not a valid curve point.
-
-export func point-decode(buf: *mut[120]u64, i: u32#6, encoded: *[32]u8) -> bool {
-  let x-sign = (encoded[31] >> 7) & 1:u8
-
-  // fe-frombytes strips bit 255 via mask51
+// The point an encoding names, into slot i, or false when it names none:
+// x is a square root of (y^2 - 1) / (d y^2 + 1), and bit 255 says which.
+// Each point has one encoding, and decode refuses the others, as RFC 8032
+// 5.1.3 does.
+export func point-decode(buf: *mut [slots]Point, i: u32#slots, encoded: *[32]u8) -> bool {
+  let x-sign = encoded[31] >> 7
   let y = fe-frombytes(encoded)
-
-  // u = y^2 - 1, v = d*y^2 + 1
+  // y is below p, whose limbs are 2^51 - 19 and then four of 2^51 - 1: the 19
+  // values from p up would name 0 to 18 a second time
+  return false when y.0 >= mask51 - 18 && y.1 & y.2 & y.3 & y.4 == mask51
   let y2 = fe-carry(fe-sq(y))
   let u = fe-carry(fe-sub(y2, fe-one()))
   let v = fe-carry(fe-add(fe-carry(fe-mul(fe-d(), y2)), fe-one()))
+  let ratio = fe-carry(fe-mul(u, fe-inv(v)))
 
-  // x = sqrt(u/v) via candidate = (u/v)^((p+3)/8)
-  let v-inv = fe-inv(v)
-  let ratio = fe-carry(fe-mul(u, v-inv))
+  // Where ratio has a root, ratio^((p + 3) / 8) squares to ratio or to
+  // -ratio, and in the second case times sqrt(-1) it squares to ratio.
+  // Where neither squares to ratio, ratio has no root.
   let x = fe-carry(fe-pow252m2(ratio))
-
-  // Check: x^2 should equal ratio (mod p)
-  let check = fe-carry(fe-sq(x))
-  if fe-eq(check, ratio) == false {
-    // β^2 = -ratio, so (β*sqrtm1)^2 = -β^2 = ratio
+  if !fe-eq(fe-carry(fe-sq(x)), ratio) {
     x = fe-carry(fe-mul(x, fe-sqrtm1()))
-    check = fe-carry(fe-sq(x))
-    if fe-eq(check, ratio) == false {
-      return false
-    }
+    return false when !fe-eq(fe-carry(fe-sq(x)), ratio)
   }
 
-  // Adjust sign of x
-  let xr = fe-reduce(fe-carry(x))
-  if (xr.0 & 1:u64) as u8 != x-sign {
+  // Of x and -x, the one whose low bit is the sign. x = 0 is its own
+  // negative, and its only sign is 0.
+  let low = fe-reduce(fe-carry(x))
+  return false when x-sign == 1 && low.0 | low.1 | low.2 | low.3 | low.4 == 0
+  if low.0 & 1 != x-sign {
     x = fe-sub(fe-zero(), x)
   }
-
-  pt-set-x(buf, i, x)
-  pt-set-y(buf, i, y)
-  pt-set-z(buf, i, fe-one())
-  pt-set-t(buf, i, fe-carry(fe-mul(x, y)))
+  buf[i] = (x, y, fe-one(), fe-carry(fe-mul(x, y)))
   return true
 }
 
 // === Tests ===
 
 test "point operations" {
+  // The tests share these slots, and each sets the slots it reads.
+  data b: *mut [slots]Point = mut [
+    ((0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0)); slots
+  ]
+  data s = mut [0:u8; 32]
+  data enc = mut [0:u8; 32]
+  data enc2 = mut [0:u8; 32]
 
-  test "store and load identity" {
-    data b = mut [0:u64; 120]
-    pt-set-identity(b, 0)
-    let x = pt-x(b, 0)
-    let y = pt-y(b, 0)
-    let z = pt-z(b, 0)
-    let t = pt-t(b, 0)
+  // The scalar n, little-endian, in s
+  func set-scalar(n: u64) {
+    s[..] = 0
+    s.u64[0] = n
+  }
+
+  // An encoding is compared whole, as one u256 (32 bytes, little-endian).
+
+  test "the identity reads back from its slot" {
+    b[0] = identity()
+    let (x:, y:, z:, t:) = b[0]
     assert fe-eq(fe-carry(x), fe-zero())
     assert fe-eq(fe-carry(y), fe-one())
     assert fe-eq(fe-carry(z), fe-one())
     assert fe-eq(fe-carry(t), fe-zero())
   }
 
-  test "double identity gives identity" {
-    data b = mut [0:u64; 120]
-    pt-set-identity(b, 0)
+  test "the double of the identity is the identity" {
+    b[0] = identity()
     point-double(b, 1, 0)
     assert point-eq(b, 1, 0)
   }
 
-  test "identity + identity = identity" {
-    data b = mut [0:u64; 120]
-    pt-set-identity(b, 0)
+  test "the identity plus itself is the identity" {
+    b[0] = identity()
     point-add(b, 1, 0, 0)
     assert point-eq(b, 1, 0)
   }
 
-  test "neg identity = identity" {
-    data b = mut [0:u64; 120]
-    pt-set-identity(b, 0)
+  test "the negation of the identity is the identity" {
+    b[0] = identity()
     point-neg(b, 1, 0)
     assert point-eq(b, 1, 0)
   }
 
-  test "p + neg(p) = identity for identity" {
-    data b = mut [0:u64; 120]
-    pt-set-identity(b, 0)
+  test "the identity plus its negation is the identity" {
+    b[0] = identity()
     point-neg(b, 1, 0)
     point-add(b, 2, 0, 1)
-    pt-set-identity(b, 0)
     assert point-eq(b, 2, 0)
   }
 
-  test "base point is on the curve" {
-    data b = mut [0:u64; 120]
-    // Check -x^2 + y^2 == 1 + d*x^2*y^2
+  test "G, the base point, is on the curve" {
+    // -x^2 + y^2 == 1 + d x^2 y^2
     let x2 = fe-carry(fe-sq(base-x()))
     let y2 = fe-carry(fe-sq(base-y()))
     let lhs = fe-carry(fe-sub(y2, x2))
-    let x2y2 = fe-carry(fe-mul(x2, y2))
-    let dx2y2 = fe-carry(fe-mul(fe-d(), x2y2))
-    let rhs = fe-carry(fe-add(fe-one(), dx2y2))
-    assert fe-eq(fe-carry(lhs), fe-carry(rhs))
+    let rhs = fe-carry(fe-add(fe-one(), fe-carry(fe-mul(fe-d(), fe-carry(fe-mul(x2, y2))))))
+    assert fe-eq(lhs, rhs)
   }
 
-  test "G + G == 2*G (double matches add)" {
-    data b = mut [0:u64; 120]
+  test "G plus G is the double of G, and the two encode alike" {
     pt-set-base(b, 0)
     pt-set-base(b, 3)
     point-double(b, 1, 0)
     point-add(b, 2, 0, 3)
     assert point-eq(b, 1, 2)
+    point-encode(enc, b, 1)
+    point-encode(enc2, b, 2)
+    assert enc.u256[0] == enc2.u256[0]
   }
 
-  test "encode base point" {
-    data b = mut [0:u64; 120]
-    // 1*G should encode to 5866666666...66
-    data enc = mut [0:u8; 32]
+  test "G plus its negation is the identity" {
+    pt-set-base(b, 0)
+    point-neg(b, 1, 0)
+    point-add(b, 2, 0, 1)
+    b[3] = identity()
+    assert point-eq(b, 2, 3)
+  }
+
+  test "G encodes as y = 4/5 with an even x" {
     pt-set-base(b, 0)
     point-encode(enc, b, 0)
-    assert enc[0] == 0x58:u8
-    assert enc[1] == 0x66:u8
-    assert enc[31] == 0x66:u8
+    assert enc.u256[0] == x"5866666666666666 6666666666666666 6666666666666666 6666666666666666".u256[0]
   }
 
-  test "scalar mult by 1 gives G" {
-    data b = mut [0:u64; 120]
-    data scalar1 = mut [0:u8; 32]
-    scalar1[0] = 1:u8
+  test "1 times G is G" {
+    set-scalar(1)
     pt-set-base(b, 0)
-    scalar-mult(b, 1, 0, scalar1)
+    scalar-mult(b, 1, 0, s)
     assert point-eq(b, 1, 0)
   }
 
-  test "double G encodes correctly" {
-    data b = mut [0:u64; 120]
+  test "the double of G encodes as 2G" {
     pt-set-base(b, 0)
     point-double(b, 2, 0)
-    data enc2 = mut [0:u8; 32]
-    point-encode(enc2, b, 2)
-    // 2*G = c9a3f86a...6022
-    assert enc2[0] == 0xc9:u8
-    assert enc2[31] == 0x22:u8
+    point-encode(enc, b, 2)
+    assert enc.u256[0] == x"c9a3f86aae465f0e 56513864510f3997 561fa2c9e85ea21d c2292309f3cd6022".u256[0]
   }
 
-  test "add G+G eq double G" {
-    data b = mut [0:u64; 120]
+  test "2 times G is the double of G" {
+    set-scalar(2)
     pt-set-base(b, 0)
-    pt-set-base(b, 3)
-    point-add(b, 1, 0, 3)
+    scalar-mult(b, 1, 0, s)
     point-double(b, 2, 0)
     assert point-eq(b, 1, 2)
-    // Now encode both — should be identical
-    data ea = mut [0:u8; 32]
-    data eb = mut [0:u8; 32]
-    point-encode(ea, b, 1)
-    point-encode(eb, b, 2)
-    assert ea[0] == eb[0]
-    assert ea[31] == eb[31]
   }
 
-  test "scalar mult by 2 gives 2G" {
-    data b2a = mut [0:u64; 120]
-    data s2a = mut [0:u8; 32]
-    s2a[0] = 2:u8
-    pt-set-base(b2a, 0)
-    scalar-mult(b2a, 1, 0, s2a)
-    point-double(b2a, 2, 0)
-    data e2a = mut [0:u8; 32]
-    data e2b = mut [0:u8; 32]
-    point-encode(e2a, b2a, 1)
-    point-encode(e2b, b2a, 2)
-    assert e2a[0] == e2b[0]
-    assert e2a[1] == e2b[1]
-    assert e2a[31] == e2b[31]
+  test "2 times G encodes as 2G" {
+    set-scalar(2)
+    pt-set-base(b, 0)
+    scalar-mult(b, 1, 0, s)
+    point-encode(enc, b, 1)
+    assert enc.u256[0] == x"c9a3f86aae465f0e 56513864510f3997 561fa2c9e85ea21d c2292309f3cd6022".u256[0]
   }
 
-  test "encode 2G" {
-    data b2c = mut [0:u64; 120]
-    data s2c = mut [0:u8; 32]
-    s2c[0] = 2:u8
-    pt-set-base(b2c, 0)
-    scalar-mult(b2c, 1, 0, s2c)
-    data e2c = mut [0:u8; 32]
-    point-encode(e2c, b2c, 1)
-    assert e2c[0] == 0xc9:u8
-    assert e2c[1] == 0xa3:u8
-    assert e2c[31] == 0x22:u8
+  test "3 times G encodes as 3G" {
+    set-scalar(3)
+    pt-set-base(b, 0)
+    scalar-mult(b, 1, 0, s)
+    point-encode(enc, b, 1)
+    assert enc.u256[0] == x"d4b4f5784868c302 0403246717ec169f f79e26608ea126a1 ab69ee77d1b16712".u256[0]
   }
 
-  test "scalar mult by 3" {
-    data b3 = mut [0:u64; 120]
-    data s3 = mut [0:u8; 32]
-    s3[0] = 3:u8
-    pt-set-base(b3, 0)
-    scalar-mult(b3, 1, 0, s3)
-    data e3 = mut [0:u8; 32]
-    point-encode(e3, b3, 1)
-    assert e3[0] == 0xd4:u8
-    assert e3[31] == 0x12:u8
+  test "4 times G encodes as 4G" {
+    set-scalar(4)
+    pt-set-base(b, 0)
+    scalar-mult(b, 1, 0, s)
+    point-encode(enc, b, 1)
+    assert enc.u256[0] == x"2f1132ca61ab38df f00f2fea3228f24c 6c71d58085b80e47 e19515cb27e8d047".u256[0]
   }
 
-  test "scalar mult by 4" {
-    data b4 = mut [0:u64; 120]
-    data s4 = mut [0:u8; 32]
-    s4[0] = 4:u8
-    pt-set-base(b4, 0)
-    scalar-mult(b4, 1, 0, s4)
-    data e4 = mut [0:u8; 32]
-    point-encode(e4, b4, 1)
-    assert e4[0] == 0x2f:u8
-    assert e4[31] == 0x47:u8
+  test "8 times G encodes as 8G" {
+    set-scalar(8)
+    pt-set-base(b, 0)
+    scalar-mult(b, 1, 0, s)
+    point-encode(enc, b, 1)
+    assert enc.u256[0] == x"b4b937fca95b2f1e 93e41e62fc3c7881 8ff38a66096fad6e 7973e5c90006d321".u256[0]
   }
 
-  test "scalar mult by 8" {
-    data b8 = mut [0:u64; 120]
-    data s8 = mut [0:u8; 32]
-    s8[0] = 8:u8
-    pt-set-base(b8, 0)
-    scalar-mult(b8, 1, 0, s8)
-    data e8 = mut [0:u8; 32]
-    point-encode(e8, b8, 1)
-    assert e8[0] == 0xb4:u8
-    assert e8[31] == 0x21:u8
+  test "255 times G encodes as 255G" {
+    set-scalar(255)
+    pt-set-base(b, 0)
+    scalar-mult(b, 1, 0, s)
+    point-encode(enc, b, 1)
+    assert enc.u256[0] == x"cc613540cd8c99fa 4647e6e83e969761 b17515dbe1896fd0 a3e4358ebca65c31".u256[0]
   }
 
-  test "scalar mult by 255" {
-    data b255 = mut [0:u64; 120]
-    data s255 = mut [0:u8; 32]
-    s255[0] = 255:u8
-    pt-set-base(b255, 0)
-    scalar-mult(b255, 1, 0, s255)
-    data e255 = mut [0:u8; 32]
-    point-encode(e255, b255, 1)
-    assert e255[0] != 0x01:u8
+  test "256 times G encodes as 256G" {
+    set-scalar(256)
+    pt-set-base(b, 0)
+    scalar-mult(b, 1, 0, s)
+    point-encode(enc, b, 1)
+    assert enc.u256[0] == x"c7f66c563120140e a8d927c19a3d1b7d 0e26d381aaebf56b 7902f1515c75550f".u256[0]
   }
 
-  test "scalar mult by 256" {
-    data b256 = mut [0:u64; 120]
-    data s256 = mut [0:u8; 32]
-    s256[1] = 1:u8
-    pt-set-base(b256, 0)
-    scalar-mult(b256, 1, 0, s256)
-    data e256 = mut [0:u8; 32]
-    point-encode(e256, b256, 1)
-    assert e256[0] != 0x01:u8
+  test "a 57-bit scalar times G encodes as expected" {
+    set-scalar(0x0102030405060708)
+    pt-set-base(b, 0)
+    scalar-mult(b, 1, 0, s)
+    point-encode(enc, b, 1)
+    assert enc.u256[0] == x"f8d56452348bbe1a 35c7b4313474aa27 49db88981d05da46 a2bd5ec592cdd59b".u256[0]
   }
 
-  test "scalar mult by large value" {
-    data blg = mut [0:u64; 120]
-    data slg = mut [0:u8; 32]
-    slg[0] = 0x08:u8
-    slg[1] = 0x07:u8
-    slg[2] = 0x06:u8
-    slg[3] = 0x05:u8
-    slg[4] = 0x04:u8
-    slg[5] = 0x03:u8
-    slg[6] = 0x02:u8
-    slg[7] = 0x01:u8
-    pt-set-base(blg, 0)
-    scalar-mult(blg, 1, 0, slg)
-    data elg = mut [0:u8; 32]
-    point-encode(elg, blg, 1)
-    assert elg[0] != 0x01:u8
-  }
-
-  test "fe-frombytes roundtrip" {
-    data brt = mut [0:u64; 120]
-    pt-set-base(brt, 0)
-    data enc-rt = mut [0:u8; 32]
-    data dec-rt = mut [0:u8; 32]
-    point-encode(enc-rt, brt, 0)
-    // Decode the y coordinate from the encoding
-    let y = fe-frombytes(enc-rt)
-    // Re-encode it
-    fe-tobytes(dec-rt, y)
-    // The low 31 bytes should match (byte 31 has the sign bit)
-    let j: u32 = 0
-    loop {
-      assert dec-rt.u8[j] == enc-rt.u8[j]
-      j += 1
-      break when j == 31
+  test "y read from an encoding writes back the same bytes, less the sign" {
+    pt-set-base(b, 0)
+    point-encode(enc, b, 0)
+    // y read back from the encoding, and written out again
+    fe-tobytes(enc2, fe-frombytes(enc))
+    // The low 31 bytes match; byte 31 matches with the sign bit left out
+    for i in 31 {
+      assert enc2[i] == enc[i]
     }
-    // Byte 31: compare with sign bit masked off
-    assert dec-rt.u8[31] == (enc-rt.u8[31] & 0x7F:u8)
+    assert enc2[31] == enc[31] & 0x7F
   }
 
-  test "point-decode roundtrip with base point" {
-    data bdc = mut [0:u64; 120]
-    pt-set-base(bdc, 0)
-    data enc-dc = mut [0:u8; 32]
-    point-encode(enc-dc, bdc, 0)
-    // Decode
-    assert point-decode(bdc, 1, enc-dc)
-    // The decoded point should equal the original
-    assert point-eq(bdc, 0, 1)
+  test "G decodes from its encoding" {
+    pt-set-base(b, 0)
+    point-encode(enc, b, 0)
+    assert point-decode(b, 1, enc)
+    assert point-eq(b, 0, 1)
   }
 
-  test "point-decode roundtrip with 2G" {
-    data bd2 = mut [0:u64; 120]
-    pt-set-base(bd2, 0)
-    point-double(bd2, 1, 0)
-    data enc-d2 = mut [0:u8; 32]
-    point-encode(enc-d2, bd2, 1)
-    assert point-decode(bd2, 2, enc-d2)
-    assert point-eq(bd2, 1, 2)
+  test "2G decodes from its encoding" {
+    pt-set-base(b, 0)
+    point-double(b, 1, 0)
+    point-encode(enc, b, 1)
+    assert point-decode(b, 2, enc)
+    assert point-eq(b, 1, 2)
   }
 
-  test "point-decode roundtrip with 3G" {
-    data bd3 = mut [0:u64; 120]
-    pt-set-base(bd3, 0)
-    data s3d = mut [0:u8; 32]
-    s3d[0] = 3:u8
-    scalar-mult(bd3, 1, 0, s3d)
-    data enc-d3 = mut [0:u8; 32]
-    point-encode(enc-d3, bd3, 1)
-    assert point-decode(bd3, 2, enc-d3)
-    assert point-eq(bd3, 1, 2)
+  test "3G decodes from its encoding" {
+    set-scalar(3)
+    pt-set-base(b, 0)
+    scalar-mult(b, 1, 0, s)
+    point-encode(enc, b, 1)
+    assert point-decode(b, 2, enc)
+    assert point-eq(b, 1, 2)
+  }
+
+  test "point-decode refuses a y with no x" {
+    // y = 2: (y^2 - 1) / (d y^2 + 1) has no square root
+    enc[..] = 0
+    enc[0] = 2
+    assert !point-decode(b, 1, enc)
+  }
+
+  test "point-decode takes y up to p - 1, not p" {
+    // p - 1 is y = -1, with x = 0. p would be y = 0 a second time.
+    enc[..] = 0xFF
+    enc[0] = 0xEC
+    enc[31] = 0x7F
+    assert point-decode(b, 1, enc)
+    enc[0] = 0xED
+    assert !point-decode(b, 1, enc)
+  }
+
+  test "point-decode refuses x = 0 with the sign bit" {
+    // The identity, y = 1, is encoded with the sign 0 only
+    enc[..] = 0
+    enc[0] = 1
+    assert point-decode(b, 1, enc)
+    enc[31] = 0x80
+    assert !point-decode(b, 1, enc)
   }
 }
