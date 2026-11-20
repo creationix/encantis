@@ -59,7 +59,7 @@ test "an element is passed by value and returned" {
   let list = spots()
   list[1] = Spot(1, 2, 3)
   assert sum(list[1]) == 321
-  let fixed = space as *mut [4]Spot
+  let fixed = space as *[4]Spot
   assert sum(at(fixed, 1)) == 321
 }
 func at(list: *[4]Spot, i: u32#4) -> Spot => list[i]
