@@ -17,8 +17,9 @@ data x-work = mut [0:i64; 64]
 func mod-l() {
   // Limbs 63 down to 32 are folded into the 20 limbs 32 to 13 places below
   // them: 2^256 is 16 * 2^252, which is -16 (L - 2^252) mod L. The indexes
-  // stay below 64, but they are sums of two variables, which have no range:
-  // the type view .i64[...] reads and writes them without a check.
+  // stay below 64, but they are made by subtraction or from two variables,
+  // which give no range (reference 2.2): the type view .i64[...] reads and
+  // writes them without a check.
   let carry: i64 = 0
   for n in 32 {
     let i = 63 - n

@@ -184,7 +184,7 @@ export func fe-sqrtm1() -> Fe => (
 // === Tests ===
 
 test "field arithmetic" {
-  // p, and the element -1 = p - 1
+  // Limb 0 of p, whose limbs 1 to 4 are mask51
   def p0 = 0x7FFFFFFFFFFED // 2^51 - 19
 
   test "add and reduce" {
