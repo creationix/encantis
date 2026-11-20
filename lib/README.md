@@ -179,4 +179,4 @@ export func total(n: u32) -> (s: u32) {
 }
 ```
 
-`examples/containers/main.ents` uses all of them.
+`examples/containers/main.ents` uses the Vec, Set, Map and sort with a cell type of its own, and `examples/containers/fixed.ents` uses FixedVec, Ring and the bitset.

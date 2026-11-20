@@ -167,10 +167,11 @@ export func insert(key: []u8) -> bool {
   let newotherbits = (0x80000000:u32 >> clz(diff)) ^ 0x1FF
   let newdirection = direction(newotherbits, symbol(best, newbyte))
 
-  let leaf = alloc(2)
+  // The leaf and the node are taken together, so that an insert the pool has
+  // no room for takes none of it.
+  let leaf = alloc(6)
   return false when leaf == 0
-  let node = alloc(4)
-  return false when node == 0
+  let node = leaf + 2
   pool.u32[leaf] = key.ptr as u32
   pool.u32[leaf + 1] = key.len
   pool.u32[node] = newbyte
@@ -304,6 +305,16 @@ test "first is the smallest key" {
   let k = first()
   assert k.len == 3
   assert (k[0] ?? 0) == 'f'
+}
+
+test "an insert the pool has no room for takes none of it" {
+  clear()
+  assert insert("a")
+  used = pool.len / sizeof(u32) - 5        // room for a leaf, not for its node
+  assert !insert("b")
+  assert used == pool.len / sizeof(u32) - 5
+  assert size() == 1
+  assert contains("a") && !contains("b")
 }
 
 test "many keys, half deleted" {
