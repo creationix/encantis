@@ -87,6 +87,8 @@ export func gimli-hash(input: []u8, output: []mut u8) {
 }
 
 test "gimli" {
+  import "../../../lib/text" "starts_with" func starts_with(s: []u8, prefix: []u8) -> bool
+
   data tv_state = mut [0:u32; 12]
   data digest = mut [0:u8; 48]
 
@@ -98,12 +100,7 @@ test "gimli" {
   }
 
   // Whether digest starts with the bytes of want
-  func digest_is(want: []u8) -> bool {
-    for i, b in want {
-      return false when (digest[i] ?? 0) != b
-    }
-    return true
-  }
+  func digest_is(want: []u8) -> bool => starts_with(digest, want)
 
   test "spec vector" {
     spec_input()

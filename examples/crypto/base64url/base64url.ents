@@ -121,21 +121,15 @@ export func decode(input: []u8, output: []mut u8) -> (written: u32) {
 }
 
 test "base64url" {
+  import "../../../lib/text" "starts_with" func starts_with(s: []u8, prefix: []u8) -> bool
+
   data enc_buf = mut [0:u8; 4096]
   data dec_buf = mut [0:u8; 4096]
 
-  // Whether out starts with the bytes of want
-  func starts(out: []u8, want: []u8) -> bool {
-    for i, b in want {
-      return false when (out[i] ?? 0) != b
-    }
-    return true
-  }
-
   // Whether input encodes to code, and code decodes back to input
   func round-trip(input: []u8, code: []u8) -> bool {
-    return false when encode(input, enc_buf) != code.len || !starts(enc_buf, code)
-    return false when decode(code, dec_buf) != input.len || !starts(dec_buf, input)
+    return false when encode(input, enc_buf) != code.len || !starts_with(enc_buf, code)
+    return false when decode(code, dec_buf) != input.len || !starts_with(dec_buf, input)
     return true
   }
 
