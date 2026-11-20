@@ -387,7 +387,8 @@ export func f(b: Box(u32)) -> u32 => unbox(b) + unbox(Box(u32)(7))
     return Object.fromEntries(meta.symbols.filter(s => s.name === 'Box' || s.name === 'unbox').map(s => [s.name, { kind: s.kind, def: s.def, refs: s.refs }]))
   }
   const expected = {
-    Box: { kind: 'type', def: '1:13', refs: ['4:17', '4:54'] },
+    // Also where an import's signature names it
+    Box: { kind: 'type', def: '1:13', refs: ['2:41', '4:17', '4:54'] },
     unbox: { kind: 'func', def: '2:14', refs: ['4:37', '4:48'] },
   }
 
