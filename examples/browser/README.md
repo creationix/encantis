@@ -31,11 +31,11 @@ Or play it at <https://creationix.github.io/encantis/lantern/>: the [Pages workf
 
 | File | Bytes | gzip | brotli |
 | --- | ---: | ---: | ---: |
-| `lantern.wasm` | 7237 | 3496 | 3254 |
+| `lantern.wasm` | 7008 | 3397 | 3165 |
 | `starter.wasm` | 966 | 586 | 551 |
 | `host.js` (minified) | 3819 | 1813 | 1623 |
 | `index.html` | 675 | 442 | 293 |
-| **Lantern, its three files** | **11731** | **5751** | **5170** |
+| **Lantern, its three files** | **11502** | **5652** | **5081** |
 | **starter, its three files** | **5460** | **2841** | **2467** |
 
 Memory: one 64 KiB page, fixed. Lantern's data (its pools, the command list, its levels and its strings) reaches byte 37173 of it, and after an hour of play (216,000 frames, starting over each time the game ends) the memory is still that one page: the module has no `memory.grow`. The busiest frame asks for 167 of its 1024 commands.
@@ -49,8 +49,8 @@ A game is a wasm module that **imports nothing**. The host calls it; it never ca
 | Export | |
 | --- | --- |
 | `memory` | Its linear memory, one page, which never grows. |
-| `init(seed: u32)` | Starts over: everything but Lantern's best score is as when the module was loaded. |
-| `frame(dt_ms: f32, width: f32, height: f32, buttons: u32, stick_x: f32, stick_y: f32) -> u32` | Plays one frame and gives the number of commands it wrote. `dt_ms` counts up to 50; the size is the canvas in CSS pixels; the stick is in [-1, 1]. A bad number (NaN, infinite, negative) counts as none. |
+| `init(seed: u32)` | Sets the game up with this seed: Lantern at its title screen, the starter playing. The host calls it before the first frame (Lantern traps without it), and calls it again to start over: a game started over plays as one just loaded and started with the same seed, keeping only Lantern's best score. |
+| `frame(dt_ms: f32, width: f32, height: f32, buttons: u32, stick_x: f32, stick_y: f32) -> u32` | Plays one frame and gives the number of commands it wrote. `dt_ms` counts up to 50 (an infinite one as 50), and one that is NaN or negative counts as none; the size is the canvas in CSS pixels; the stick is in [-1, 1], and a value outside it (NaN or infinite too) counts as 0. |
 | `commands() -> u32` | The address of the first command. |
 
 Buttons are bits: left 1, right 2, up 4, down 8, dash 16, start 32.
@@ -67,7 +67,7 @@ Each command is 32 bytes, little-endian, one after another:
 | 2 rect | A rectangle at (`a`, `b`), `c` wide and `d` high. |
 | 3 circle | A disc at (`a`, `b`) of radius `c`. |
 | 4 ring | A circle's outline: centre (`a`, `b`), radius `c`, line width `d`. |
-| 5 text | `n` bytes of UTF-8 at address `p`, at (`a`, `b`), `c` pixels high, centred when `d` is 1. |
+| 5 text | `n` bytes of UTF-8 at address `p`, `c` pixels high, with its baseline at `b`, starting at `a`, or centred on `a` when `d` is 1. |
 | 6 sound | A tone from `a` Hz to `b` Hz over `c` seconds at volume `d`; `p` is the wave (0 sine, 1 square, 2 triangle, 3 sawtooth). |
 
 What crosses the boundary, and for how long:
