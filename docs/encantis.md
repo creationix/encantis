@@ -299,7 +299,7 @@ Three words have a meaning only where they stand, and are names everywhere else:
 <!-- spec:begin compile -->
 
 ```ents
-func pick(test: u32, host: u32) -> u32 => if test > host { test } else { host }
+func pick(test: u32, host: u32) -> u32 => max(test, host)
 
 test "test and host are names here" {
   let assert-count = pick(2, 5)
@@ -512,12 +512,10 @@ Line 1, col 24
 ```ents
 data flags = [true, false, true]
 
-func count(bits: []bool) -> u32 {
-  let n: u32 = 0
+func count(bits: []bool) -> (n: u32) {
   for b in bits {
     n += b as u32
   }
-  return n
 }
 
 test "bools" {
@@ -577,14 +575,10 @@ data key = x"9d61 b19d"
 data greeting = b"SGVsbG8="
 data cut: *[!]u8 = "ab\x00cd"
 
-func count(s: []u8, c: u8) -> u32 {
-  let n: u32 = 0
+func count(s: []u8, c: u8) -> (n: u32) {
   for b in s {
-    if b == c {
-      n += 1
-    }
+    if b == c { n += 1 }
   }
-  return n
 }
 
 test "strings" {
@@ -712,12 +706,10 @@ Each `${e}` is an element, so it has to be a value of the element type: for a `[
 <!-- spec:begin compile -->
 
 ```ents
-func total(parts: [][]u8) -> u32 {
-  let n: u32 = 0
+func total(parts: [][]u8) -> (n: u32) {
   for p in parts {
     n += p.len
   }
-  return n
 }
 
 func count(parts: [][]u8) -> u32 => parts.len
@@ -783,12 +775,10 @@ With nothing to give it a type, an array literal is a value: `[N]T` in N registe
 ```ents
 def n = 4
 
-func sum(xs: []i32) -> i32 {
-  let s = 0
+func sum(xs: []i32) -> (s: i32) {
   for x in xs {
     s += x
   }
-  return s
 }
 
 test "array literals" {
@@ -1200,10 +1190,8 @@ func masked(x: u32) -> u32 => squares[x & 7]
 func top(x: u32) -> u32 => squares[x >> 29]
 func odd(i: u32#4) -> u32 => squares[i * 2 + 1]
 func bucket(h: u32#256) -> u32 => squares[h >> 5]
-func evens() -> u32 {
-  let t: u32 = 0
+func evens() -> (t: u32) {
   for i in 4 { t += squares[i * 2] }
-  return t
 }
 func last(i: u32#(size - 1)) -> u32 => squares[i + 1]
 func nibble(x: u32#(0x10)) -> u32 => squares[x >> 1]
@@ -1292,13 +1280,11 @@ func sum(x: u32, y: u32) -> u8 {
   if x >= buf.len || y >= buf.len { return 0 }
   return buf[x] + buf[y]         // both are below 12 where the || is false
 }
-func total(xs: []u32) -> u32 {
-  let t: u32 = 0
+func total(xs: []u32) -> (t: u32) {
   for x in xs {
     continue when x >= buf.len
     t += buf[x]                  // a loop's variable narrows too
   }
-  return t
 }
 
 test "a comparison with a constant narrows" {
@@ -1644,6 +1630,7 @@ A pointer, a slice and a host reference ([2.13](#213-host-references)) can be **
 
 ```ents
 type Entry = (key: u32, name: ?[]u8)
+type Name = []u8
 
 data entries: *[2]Entry = [(key: 1, name: 0), (key: 2, name: "two")]
 global last: ?[]u8 = 0
@@ -1656,8 +1643,7 @@ func find(key: u32) -> ?[]u8 {
 }
 func size(s: ?[]u8) -> u32 => if let x = s { x.len } else { 99 }
 func cell(p: ?*u32) -> u32 => if p == 0 { 0 } else { 1 }
-func unnamed() -> Entry => Entry(9, 0 as ?[]u8)
-type Name = []u8
+func unnamed() -> Entry => Entry(9, 0)                     // the field gives the 0 its type
 func named(s: ?Name) -> u32 => if let x = s { x.len } else { 99 }
 func keep(comptime T: type, x: ?T) -> ?T => x
 
@@ -1863,12 +1849,10 @@ data spare = mut [9:i32, 9, 9]
 func cell(i: u32#2, j: u32#3) -> i32 => grid[i][j]
 func row-sum(i: u32) -> i32 => if let r = grid[i] { r[0] + r[1] + r[2] } else { 0 }
 func second(i: u32) -> i32 => (rows[i] ?? [-1, -1])[1]
-func total(m: *[2][3]i32) -> i32 {
-  let t = 0
+func total(m: *[2][3]i32) -> (t: i32) {
   for row in m {
     for v in row { t += v }
   }
-  return t
 }
 
 test "a table is row pointers" {
@@ -1905,16 +1889,14 @@ test "a table is row pointers" {
 ```ents
 data primes = [2:u32, 3, 5, 7, 11]
 
-func sum(xs: []u32) -> u32 {
-  let t: u32 = 0
+func sum(xs: []u32) -> (t: u32) {
   for x in xs { t += x }
-  return t
 }
 func at(xs: []u32, i: u32) -> u32 => xs[i] ?? 0
 func view(p: [*]u32, n: u32) -> []u32 => (p, n)
-func clear(xs: []mut u32) {
-  for i in xs.len {
-    if let p = &xs[i] { p.* = 0 }
+func double(xs: []mut u32) {
+  for i, x in xs {
+    if let p = &xs[i] { p.* = x * 2 }
   }
 }
 
@@ -1926,8 +1908,8 @@ test "a slice is a pointer and a length" {
   assert at(s, 1) == 3
   assert at(s, 2) == 0
   let scratch: []mut u32 = mut [1, 2, 3]
-  clear(scratch)
-  assert sum(scratch) == 0
+  double(scratch)
+  assert sum(scratch) == 12
 }
 ```
 
@@ -1954,10 +1936,8 @@ data table = [1:u64, 2, 3, 4]          // table: *[4]u64 (const)
 data key = x"9d61b19deffd5a60"          // key: *[8]u8 (const)
 data buf = mut [0:u8; 1024]             // buf: *mut [1024]u8 (mutable, its own)
 
-func sum(xs: []u64) -> u64 {
-  let t: u64 = 0
+func sum(xs: []u64) -> (t: u64) {
   for x in xs { t += x }
-  return t
 }
 
 test "data is viewed as slices" {
@@ -2051,7 +2031,7 @@ test "constructors" {
 An argument with a name is for the field of that name, and one without is for the field at its place, so positional and named arguments mix:
 
 ```ents
-type Point = (x:f32, y:f32)
+type Point = (x: f32, y: f32)
 
 func half(x: f32) -> Point => Point(x, y: x / 2.0)
 
@@ -2064,7 +2044,7 @@ test "arguments by place and by name" {
 Each field is given once:
 
 ```ents
-type Point = (x:f32, y:f32)
+type Point = (x: f32, y: f32)
 
 func f(x: f32) -> f32 => Point(x, y: 2.0).y
 func g() -> f32 => Point(2.0, x: 1.0).x
@@ -2079,7 +2059,7 @@ Point: field 'y' is given twice
 A tuple literal with names among its elements gives the fields the same way, wherever it meets a struct: as a variable's value (by `let`, `=` or `set`), an argument, a receiver, a returned value or a function's named results, a field of a larger struct, an element of an array, the value of a global or of `data`, the literal `&` lays out, a value stored through a pointer, or the value of a branch of an `if` or a `match` that is one of these. As a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 1.0. A tuple literal without names gives the fields by position, whatever the struct calls them. Only a literal is taken by name: a value made elsewhere keeps its order, and one whose fields have the struct's names in another order is not that struct ([9.2](#structural-coercion)); it is given the struct's type where it is made. A slice is made from a tuple literal with the names `ptr` and `len`, in either order, as a struct is, so `(len: n, ptr: p)` is a slice too, though a slice is no struct ([2.1](#21-unified-value-model)):
 
 ```ents
-type Point = (x:f32, y:f32)
+type Point = (x: f32, y: f32)
 
 func by_name() -> Point => (y: 2.0, x: 1.0)
 func by_place() -> Point => (2.0, 1.0)
@@ -2095,7 +2075,7 @@ test "a literal with names by name, one without by position" {
 A name the struct has no field of is an error, and so is a field given twice or not at all, and a value more than the struct has fields (`Point expects 2 fields, got 3`, reported beside the unknown name in `(x: 1.0, y: 2.0, z: 3.0)`). A tuple type without names, such as `(f32, f32)`, has no field a name could give. The errors name the fields there are:
 
 ```ents
-type Point = (x:f32, y:f32)
+type Point = (x: f32, y: f32)
 
 func a() -> Point => (x: 1.0, z: 2.0)
 func b() -> Point => (x: 1.0)
@@ -2122,7 +2102,7 @@ field 'z' not found in Point, whose fields are x and y
 The values are computed in the order they are written, and then each goes to its field, for a constructor and a literal alike: `Point(y: f(), x: g())` calls `f` before `g`. Where the fields are written in the order the type declares them, that is all there is to it. Where they are not, a value that something written after it could change or tell apart (a call, a read of memory or of a global, anything that can trap) is computed in its turn and waits in a local until its field's place comes; a constant, a local that no other value sets, or arithmetic on them that cannot trap is computed at its field's place, as nothing can tell the difference:
 
 ```ents
-type Point = (x:i32, y:i32)
+type Point = (x: i32, y: i32)
 
 global seen: i32 = 0
 
@@ -2168,7 +2148,7 @@ data spot: Point = mut (5.0, 5.0)
 data rects: *mut [2]Rect = mut [((1.0, 1.0), (2.0, 2.0)), ((3.0, 3.0), (4.0, 4.0))]
 
 test "fields wherever the struct is" {
-  assert nudge(spot, rects as [*]mut Rect, 1) == 50.0
+  assert nudge(spot, rects, 1) == 50.0
   assert spot.y == 6.0
   assert rects[1].origin.x == 0.0
 }
@@ -2196,8 +2176,7 @@ export func third(h: *Node) -> u32 {
 export func depth(t: Tree) -> u32 {
   let deepest: u32 = 0
   for k in t.kids {
-    let d = depth(k)
-    if d > deepest { deepest = d }
+    deepest = max(deepest, depth(k))
   }
   return deepest + 1
 }
