@@ -1,46 +1,50 @@
-// Static reservation pattern: fixed-size mutable buffer
-// No allocator needed — the program owns N bytes at a known offset.
+// Static reservation: the program owns a buffer of a size fixed when it is
+// compiled, laid out as data, and hands out pieces of it by bumping a cursor.
+// No allocator is needed. Nothing is freed piece by piece: reset frees all.
 
 export "mem" memory
 
 data buf = mut [0:u8; 4096]
 
+// What reserve gives when the bytes asked for do not fit.
+def no_room = 0xFFFFFFFF:u32
+
 global cursor: u32 = 0
 
-// Reserve `size` bytes, returns offset into buffer or 0xFFFFFFFF on overflow
+// Reserves size bytes: their offset into buf, or no_room.
 export func reserve(size: u32) -> (offset: u32) {
-  return 0xFFFFFFFF when cursor + size > 4096
+  return no_room when cursor + size > buf.len
   offset = cursor
   cursor += size
 }
 
-// Reset the buffer (all reservations become invalid)
+// Frees every reservation.
 export func reset() {
   cursor = 0
 }
 
-// How many bytes are in use
+// How many bytes are reserved.
 export func used() -> u32 => cursor
 
-// Write a byte into the buffer
+// Writes a byte at an offset into buf.
 export func write(offset: u32, value: u8) {
   buf.u8[offset] = value
 }
 
-// Read a byte from the buffer
+// The byte at an offset into buf.
 export func read(offset: u32) -> u8 => buf.u8[offset]
 
 test "reserve and read write" {
   assert used() == 0
-  let off1 = reserve(16)
+  let first = reserve(16)
   assert used() == 16
-  let off2 = reserve(32)
-  assert off2 == 16
+  let second = reserve(32)
+  assert second == 16
   assert used() == 48
-  write(off1, 42)
-  write(off1 + 1, 99)
-  assert read(off1) == 42
-  assert read(off1 + 1) == 99
+  write(first, 42)
+  write(first + 1, 99)
+  assert read(first) == 42
+  assert read(first + 1) == 99
   reset()
   assert used() == 0
 }
@@ -48,6 +52,8 @@ test "reserve and read write" {
 test "overflow" {
   reset()
   reserve(4000)
-  assert reserve(200) == 0xFFFFFFFF
+  assert reserve(200) == no_room
   assert used() == 4000
+  assert reserve(96) == 4000
+  assert used() == buf.len
 }
