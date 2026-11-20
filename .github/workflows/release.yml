@@ -1,9 +1,11 @@
 name: Release
 
 # Publishes a GitHub release with CLI binaries for each platform and the VS
-# Code extension. Either push a tag like v0.2.0 that matches the root
-# package.json version, or run this workflow by hand on a branch: it then
-# releases that branch's package.json version and creates the tag itself.
+# Code extension, and publishes the extension to the VS Code Marketplace with
+# the publisher's token in the VSCE_PAT secret. Either push a tag like v0.2.0
+# that matches the root package.json version, or run this workflow by hand on
+# a branch: it then releases that branch's package.json version and creates
+# the tag itself.
 on:
   push:
     tags: ['v*.*.*']
@@ -120,3 +122,31 @@ jobs:
             --title "Encantis ${TAG#v}" \
             --generate-notes \
             $target $prerelease
+
+  # The extension's upload is a job of its own: once the GitHub release
+  # exists (it cannot be made again), a failed upload is retried by
+  # re-running this job alone. A version already there is skipped.
+  marketplace:
+    name: Marketplace
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Publish the VS Code extension to the Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          # The Marketplace takes no prerelease versions, and without the
+          # publisher's token there is nothing to publish with.
+          case "$VERSION" in *-*) echo "$VERSION is a prerelease: not published"; exit 0 ;; esac
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::warning::VSCE_PAT is not set: the extension was not published to the Marketplace"
+            exit 0
+          fi
+          npx --yes @vscode/vsce@3.7.1 publish --packagePath "release/encantis-vscode-$VERSION.vsix" --skip-duplicate

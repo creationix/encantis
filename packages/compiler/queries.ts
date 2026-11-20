@@ -460,11 +460,23 @@ export function rename(
   }
   const refs = new Set(defs.flatMap(def => checkResult.references.get(def) ?? []))
   const locations: Location[] = [
-    ...defs.map(def => ({ offset: def, length: name.length })),
+    ...defs.map(def => ({ offset: nameFrom(source, name, def), length: name.length })),
     ...[...refs].sort((a, b) => a - b).map(r => ({ offset: r, length: name.length })),
   ]
 
   return { oldName: name, locations }
+}
+
+// Where a name is written at a definition: a function's is recorded where its
+// declaration starts (at `func`), an import's where its item does (at the
+// name it is exported by, in quotes), and what is renamed is the name. The
+// first time the name is written as a whole name from there, and not in
+// quotes, or the offset itself.
+function nameFrom(source: string, name: string, from: number): number {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(`(?<![A-Za-z0-9_"-])${escaped}(?![A-Za-z0-9_"-])`, 'g')
+  pattern.lastIndex = from
+  return pattern.exec(source)?.index ?? from
 }
 
 export function documentSymbols(

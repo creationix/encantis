@@ -4,8 +4,8 @@
 // =============================================================================
 
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { ExtensionContext } from 'vscode';
-import * as vscode from 'vscode';
 import {
   LanguageClient,
   type LanguageClientOptions,
@@ -13,13 +13,12 @@ import {
   TransportKind,
 } from 'vscode-languageclient/node';
 
-import { WAT_SCHEME, WatPreviewProvider } from './watPreviewProvider';
+import { type Binaryen, optimizeWasm } from '@encantis/cli/src/wasm';
+import { registerWatPreview } from './watPreviewProvider';
 
 let client: LanguageClient;
 
 export function activate(context: ExtensionContext): void {
-  console.log('Encantis extension activated!');
-
   // -------------------------------------------------------------------------
   // Language Server
   // -------------------------------------------------------------------------
@@ -38,7 +37,10 @@ export function activate(context: ExtensionContext): void {
   };
 
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'encantis' }],
+    documentSelector: [
+      { scheme: 'file', language: 'encantis' },
+      { scheme: 'untitled', language: 'encantis' },
+    ],
   };
 
   client = new LanguageClient(
@@ -54,96 +56,18 @@ export function activate(context: ExtensionContext): void {
   // WAT Preview Feature
   // -------------------------------------------------------------------------
 
-  const watProvider = new WatPreviewProvider();
-
-  const providerRegistration = vscode.workspace.registerTextDocumentContentProvider(
-    WAT_SCHEME,
-    watProvider
-  );
-
-  const openPreviewCommand = vscode.commands.registerCommand(
-    'encantis.openWatPreview',
-    () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.languageId !== 'encantis') {
-        vscode.window.showErrorMessage('Open an Encantis (.ents) file first');
-        return;
-      }
-
-      const watUri = WatPreviewProvider.encodeUri(editor.document.uri);
-      watProvider.showStatusBar();
-      vscode.workspace.openTextDocument(watUri).then(doc => {
-        vscode.window.showTextDocument(doc, { preview: false });
-      });
-    }
-  );
-
-  const openPreviewSideCommand = vscode.commands.registerCommand(
-    'encantis.openWatPreviewSide',
-    () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.languageId !== 'encantis') {
-        vscode.window.showErrorMessage('Open an Encantis (.ents) file first');
-        return;
-      }
-
-      const watUri = WatPreviewProvider.encodeUri(editor.document.uri);
-      watProvider.showStatusBar();
-      vscode.workspace.openTextDocument(watUri).then(doc => {
-        vscode.window.showTextDocument(doc, {
-          viewColumn: vscode.ViewColumn.Beside,
-          preview: false,
-          preserveFocus: true,
-        });
-      });
-    }
-  );
-
-  const cycleModeCommand = vscode.commands.registerCommand(
-    'encantis.cycleWatMode',
-    () => watProvider.cycleMode()
-  );
-
-  const cycleOptCommand = vscode.commands.registerCommand(
-    'encantis.cycleWatOpt',
-    () => watProvider.cycleOpt()
-  );
-
-  const toggleTestsCommand = vscode.commands.registerCommand(
-    'encantis.toggleWatTests',
-    () => watProvider.toggleTests()
-  );
-
-  const changeSubscription = vscode.workspace.onDidChangeTextDocument(e => {
-    if (e.document.languageId === 'encantis') {
-      watProvider.refresh(e.document.uri);
-    }
-  });
-
-  const closeSubscription = vscode.workspace.onDidCloseTextDocument(doc => {
-    if (doc.uri.scheme === WAT_SCHEME) {
-      const hasWatDocs = vscode.workspace.textDocuments.some(
-        d => d.uri.scheme === WAT_SCHEME && d !== doc
-      );
-      if (!hasWatDocs) watProvider.hideStatusBar();
-    }
-  });
-
-  context.subscriptions.push(
-    watProvider,
-    providerRegistration,
-    openPreviewCommand,
-    openPreviewSideCommand,
-    cycleModeCommand,
-    cycleOptCommand,
-    toggleTestsCommand,
-    changeSubscription,
-    closeSubscription
-  );
+  // binaryen is a module with a top-level await, which the CommonJS bundle
+  // cannot hold: a copy of the CLI's pinned binaryen is shipped beside it
+  // and imported the first time the preview is optimized.
+  const binaryenUrl = pathToFileURL(context.asAbsolutePath(path.join('dist', 'node', 'binaryen.mjs'))).href;
+  let binaryen: Promise<Binaryen> | undefined;
+  const loadBinaryen = () => {
+    binaryen ??= import(binaryenUrl).then((m: { default: Binaryen }) => m.default);
+    return binaryen;
+  };
+  registerWatPreview(context, (wasm, level) => optimizeWasm(wasm, level, loadBinaryen));
 }
 
-export function deactivate(): void {
-  if (client) {
-    client.stop();
-  }
+export function deactivate(): Thenable<void> | undefined {
+  return client?.stop();
 }

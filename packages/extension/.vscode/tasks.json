@@ -3,19 +3,17 @@
   "tasks": [
     {
       "type": "npm",
-      "script": "watch-web",
+      "script": "bundle:node",
       "group": "build",
-      "isBackground": true,
-      "problemMatcher": ["$ts-webpack-watch"],
-      "label": "npm: watch-web"
+      "problemMatcher": [],
+      "label": "npm: bundle:node"
     },
     {
       "type": "npm",
-      "script": "watch",
+      "script": "bundle:web",
       "group": "build",
-      "isBackground": true,
-      "problemMatcher": ["$tsc-watch"],
-      "label": "npm: watch"
+      "problemMatcher": [],
+      "label": "npm: bundle:web"
     }
   ]
 }

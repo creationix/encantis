@@ -10,7 +10,7 @@ import binaryenPackage from 'binaryen/package.json'
 import { brotliCompressSync, gzipSync } from 'node:zlib'
 import wabt from 'wabt'
 
-type Binaryen = typeof import('binaryen').default
+export type Binaryen = typeof import('binaryen').default
 type BinaryenModule = ReturnType<Binaryen['readBinary']>
 
 export const BINARYEN_VERSION: string = binaryenPackage.version
@@ -38,8 +38,21 @@ export async function watToWasm(name: string, wat: string): Promise<Uint8Array> 
 // The module optimized, or an OptimizeError: binaryen could not be loaded,
 // does not accept the module, threw, or wrote a module that does not
 // validate. The caller decides whether to fall back to the module as it was.
-export async function optimizeWasm(wasm: Uint8Array, mode: OptimizeMode): Promise<Uint8Array> {
-  const binaryen = await loadBinaryen()
+// binaryen is the package's unless `load` gives it: the editor extension's
+// bundle cannot hold binaryen's top-level await, and imports a copy of the
+// same file shipped beside it.
+export async function optimizeWasm(
+  wasm: Uint8Array,
+  mode: OptimizeMode,
+  load: () => Promise<Binaryen> = loadBinaryen,
+): Promise<Uint8Array> {
+  let binaryen: Binaryen
+  try {
+    binaryen = await load()
+  } catch (e) {
+    if (e instanceof OptimizeError) throw e
+    throw new OptimizeError(`binaryen ${BINARYEN_VERSION} could not be loaded: ${messageOf(e)}`)
+  }
   try {
     const optimized = mode === 'release' ? release(binaryen, wasm) : oz(binaryen, wasm)
     if (optimized !== wasm) dispose(read(binaryen, optimized, "binaryen's output"))

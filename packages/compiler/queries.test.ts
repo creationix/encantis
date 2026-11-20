@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test'
 import { parse } from './parser'
-import { typecheck } from './checker'
+import { typecheck, typecheckProgram } from './checker'
+import { loadModule } from './loader'
 import { buildMeta } from './meta'
 import {
   gotoDefinition,
@@ -212,8 +213,9 @@ export func up(x: u32) -> u32 => thrice(inc, x)
     const shown = { name: 'f', type: '(T) -> T', kind: 'comptime parameter', instances: [{ in: ['twice(T = u32, f = inc)'], type: 'inc(x: u32) -> u32' }] }
     for (const at of [declared, ...uses]) expect(hover(source, module, check, at)).toEqual(shown)
     expect(hover(source, module, check, program.indexOf('twice(T, f') + 9)).toEqual({ ...shown, instances: [{ in: ['thrice(T = u32, f = inc)'], type: 'inc(x: u32) -> u32' }] })
+    // A function is renamed where its name is written, after `func`.
     expect(rename(source, module, check, program.indexOf('inc'))?.locations.map(l => l.offset)).toEqual([
-      program.indexOf('func inc'), program.indexOf('thrice(inc') + 7,
+      program.indexOf('func inc') + 5, program.indexOf('thrice(inc') + 7,
     ])
   })
 
@@ -678,8 +680,8 @@ export func f(xs: []u8) -> u32 => xs.slot(4).double() + hash(7:u32) + hash(xs)`
     // other instances no longer find.
     const { source, module, check } = setup(code)
     const all = [
-      code.indexOf('func hash(k: u32)'),
-      code.indexOf('func hash(k: []u8)'),
+      code.indexOf('func hash(k: u32)') + 5,
+      code.indexOf('func hash(k: []u8)') + 5,
       code.indexOf('hash() %'),
       code.indexOf('hash(7'),
       code.indexOf('hash(xs)'),
@@ -688,7 +690,7 @@ export func f(xs: []u8) -> u32 => xs.slot(4).double() + hash(7:u32) + hash(xs)`
       expect(rename(source, module, check, at)?.locations.map(l => l.offset)).toEqual(all)
     }
     // A name one function has is renamed as before.
-    expect(rename(source, module, check, code.indexOf('double()'))?.locations.map(l => l.offset)).toEqual([code.indexOf('func double'), code.indexOf('double()')])
+    expect(rename(source, module, check, code.indexOf('double()'))?.locations.map(l => l.offset)).toEqual([code.indexOf('func double') + 5, code.indexOf('double()')])
   })
 
   test('the signature offered at a call is that of the function it means', () => {
@@ -864,7 +866,7 @@ export func f(m: Map(u32, u8), q: Map(u64, f32)) -> u32 => m.n + q.n
     expect(refs('eq(a: i64')).toEqual([])
     // A rename still renames every function of the name, and the call.
     expect(rename(source, module, check, code.indexOf('eq(a: i64'))?.locations.map(l => l.offset)).toEqual([
-      code.indexOf('func eq(a: u32'), code.indexOf('func eq(a: f64'), code.indexOf('func eq(a: i64'), call,
+      code.indexOf('func eq(a: u32') + 5, code.indexOf('func eq(a: f64') + 5, code.indexOf('func eq(a: i64') + 5, call,
     ])
     // Nothing calls it: it is reported as never used, as a function no other
     // code calls is. (The generic is not exported: no other module can make
@@ -931,7 +933,8 @@ describe('findReferences', () => {
     for (const at of [code.indexOf('n ='), ...uses]) {
       expect(gotoDefinition(source, module, check, at)).toEqual({ name: 'n', location: { offset: 0, length: 1 } })
       expect(findReferences(source, module, check, at)?.references.map(r => r.offset)).toEqual(uses)
-      expect(rename(source, module, check, at)?.locations.map(l => l.offset)).toEqual([0, ...uses])
+      // Renamed where the name is written: `def n`, not `def`
+      expect(rename(source, module, check, at)?.locations.map(l => l.offset)).toEqual([code.indexOf('n ='), ...uses])
     }
     const nxt = code.indexOf('== nxt') + 3
     expect(gotoDefinition(source, module, check, nxt)?.location.offset).toBe(code.indexOf('def nxt'))
@@ -1083,6 +1086,40 @@ describe('rename', () => {
 
     const result = rename(source, module, check, code.indexOf('('))
     expect(result).toBeNull()
+  })
+
+  // A type named in its own body, or in a type declared above it, was not
+  // recorded as used there: renamed, the body still named it.
+  test('a type where it names itself, and where a type above it names it', () => {
+    const code = `type Node = (next: ?*Node, v: u32)
+type Even = (odd: ?*Odd, v: u32)
+type Odd = (even: ?*Even, v: u32)
+export func f(n: Node, e: Even) -> u32 => n.v + e.v
+`
+    const { source, module, check } = setup(code)
+    const at = (needle: string, from = 0) => code.indexOf(needle, from)
+    expect(rename(source, module, check, at('Node ='))?.locations.map(l => l.offset)).toEqual([at('Node ='), at('Node,'), at('Node, e')])
+    expect(rename(source, module, check, at('Odd ='))?.locations.map(l => l.offset)).toEqual([at('Odd ='), at('Odd,')])
+  })
+
+  // Checked with its program, an import of a generic type was renamed in
+  // the quotes of the name it is exported by, and not where the signatures of
+  // other imports name it.
+  test('an imported generic type: its own name, and where imports name it', async () => {
+    const lib = `export func Box(comptime T: type) -> type => (v: T)
+export func open(comptime T: type, b: *Box(T)) -> T => b.v
+`
+    const main = `import "./lib" (
+  "Box" func Box(comptime T: type) -> type
+  "open" func open(comptime T: type, b: *Box(T)) -> T
+)
+export func f(b: *Box(u32)) -> u32 => b.open()
+`
+    const files = new Map([[resolve('/q/lib.ents'), lib], [resolve('/q/main.ents'), main]])
+    const load = await loadModule('/q/main.ents', { readFile: async path => files.get(path) ?? null })
+    const check = typecheckProgram(load.modules, load.entry.path).results.get(load.entry.path)!
+    const own = main.indexOf('Box(comptime')
+    expect(rename(main, load.entry.module, check, own)?.locations.map(l => l.offset)).toEqual([own, main.indexOf('Box(T)'), main.indexOf('Box(u32)')])
   })
 })
 
@@ -1239,7 +1276,7 @@ test "two" {
     for (const [decl, use] of [[first, program.indexOf('b[0]')], [second, program.indexOf('b[1]')]]) {
       for (const offset of [decl + 'data '.length, use]) {
         expect(gotoDefinition(source, module, check, offset)?.location.offset).toBe(decl)
-        expect(rename(source, module, check, offset)?.locations.map(l => l.offset)).toEqual([decl, use])
+        expect(rename(source, module, check, offset)?.locations.map(l => l.offset)).toEqual([decl + 'data '.length, use])
       }
     }
   })
