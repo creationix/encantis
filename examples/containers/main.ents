@@ -80,7 +80,10 @@ export func busiest(n: u32) -> u32 {
 }
 
 // The first cell of the walk of n steps from step 7, in reading order, as
-// y * columns + x; columns * rows, past the board, for an empty walk.
+// y * columns + x; columns * rows, past the board, for an empty walk. The walk
+// and the copy that sort makes of it share lib/stack's 256 KiB, which holds a
+// walk of 16382 steps; a longer walk traps for want of space, runs no defer
+// and leaves the space taken, so that every later call traps too.
 export func first_in_reading_order(n: u32) -> u32 {
   return columns * rows when n == 0
   let scope = mark()

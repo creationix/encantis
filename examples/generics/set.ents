@@ -6,7 +6,9 @@ data space = mut [0:u8; 8192]
 global top: u32 = 0
 
 // A bump allocator: n bytes of space. It traps when space has no room for
-// them.
+// them. Unlike methods.ents and vec.ents it does not round to 8: a wasm load
+// or store takes any address, and a Slot(K) of a u32 key is 9 bytes, so its
+// slots could not all be aligned anyway.
 func alloc(n: u32) -> u32 {
   assert n <= space.len - top
   let p = (space as u32) + top
@@ -45,7 +47,7 @@ func has(comptime K: type, s: *Set(K), k: K) -> bool => s.slots[s.slot(k.hash(),
 // Adds k. True where it was not in the set; traps where it was not and the
 // set holds all it can.
 func add(comptime K: type, s: *mut Set(K), k: K) -> bool {
-  let h = hash(k)
+  let h = k.hash()
   let i = s.slot(h, k)
   return false when s.slots[i].used
   assert s.count < s.mask
@@ -96,7 +98,7 @@ test "a set of slices compares contents" {
   assert !s.add(abc2)
   assert s.has(abc2[..])
   assert s.count == 2
-  assert hash(5:u32) == hash(5:u32)
+  assert hash(5:u32) == 0x15d409f3    // 5:u32 picks hash(k: u32), not the slice's
 }
 
 test "a set of 2^bits slots holds 2^bits - 1 keys" {

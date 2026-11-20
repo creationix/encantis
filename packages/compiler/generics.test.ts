@@ -5754,13 +5754,18 @@ describe('examples/generics', () => {
     const explicitRun = await runTestsOfSource(explicitSet)
     expect(explicitRun.failed).toEqual([])
     expect(explicitRun.ran).toHaveLength(3)
-    const setCalls = edit(set, [
-      ['eq(s.slots[i].key, k)', 's.slots[i].key.eq(k)'],
-      ['let h = hash(k)', 'let h = k.hash()'],
-    ])
+    const setCalls = edit(set, [['eq(s.slots[i].key, k)', 's.slots[i].key.eq(k)']])
     const callsRun = await runTestsOfSource(setCalls)
     expect(callsRun.failed).toEqual([])
     expect(callsRun.ran).toHaveLength(3)
+    // set.ents writes hash as a method call; written as a plain call it is the same.
+    const plainSet = edit(set, [
+      ['let h = k.hash()', 'let h = hash(k)'],
+      ['s.slot(k.hash(), k)', 's.slot(hash(k), k)'],
+    ])
+    const plainRun = await runTestsOfSource(plainSet)
+    expect(plainRun.failed).toEqual([])
+    expect(plainRun.ran).toHaveLength(3)
   })
 
   test('no offset of an instance reaches the tables the editor reads', async () => {

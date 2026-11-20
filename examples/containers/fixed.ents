@@ -61,9 +61,12 @@ data visited = mut [0:u32; side * side / 32]
 func bit(c: Cell) -> u32#(side * side) => ((c.y * side + c.x) as u32) % (side * side)
 
 // How many cells a walk of `steps` steps sees, x going up by 7 and y by 3 at
-// each step and wrapping at the edge. The walk goes into a Vec, which grows
-// as long as the caller asks, and each cell it reaches is marked in visited,
-// cleared first.
+// each step and wrapping at the edge: each cell it reaches is marked in
+// visited, cleared first. The walk is also kept in path, a Vec, to show the
+// one container here whose capacity is not in its type. It grows as the walk
+// goes, on lib/stack's 256 KiB, which holds a walk of 16384 steps; a longer
+// walk traps for want of space, runs no defer and leaves the space taken, so
+// that every later call that takes stack space traps too.
 export func walk(steps: u32) -> u32 {
   let scope = mark()
   defer reset(scope)

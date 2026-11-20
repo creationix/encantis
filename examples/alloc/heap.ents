@@ -51,9 +51,11 @@ export func malloc(size: u32) -> u32 {
   return no_room
 }
 
-// Frees the block at an offset malloc gave.
+// Frees the block at an offset malloc gave. An offset malloc cannot have given,
+// below the first block or past the heap, is ignored, so free(no_room) does
+// nothing, like C's free(NULL).
 export func free(ptr: u32) {
-  return when ptr < sizeof(Header)
+  return when ptr < sizeof(Header) || ptr > heap.len
   let block = header(ptr - sizeof(Header))
   block.free = 1
 }
@@ -99,4 +101,14 @@ test "a byte written into a block of 1 stays in that block" {
 test "what does not fit" {
   assert malloc(heap.len) == no_room
   assert malloc(0xFFFFFFFF) == no_room
+}
+
+test "free ignores an offset malloc cannot have given" {
+  let p = malloc(16)
+  let used = heap_used()
+  free(malloc(heap.len))           // no_room: nothing is that large
+  free(heap.len + 8)               // past the heap
+  free(4)                          // inside the first header
+  assert heap_used() == used
+  free(p)
 }

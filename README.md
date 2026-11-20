@@ -80,7 +80,7 @@ gzip         1074
 brotli       986
 ```
 
-Fourteen examples, the browser games among them, have size budgets in [`scripts/size-budgets.json`](scripts/size-budgets.json): the most bytes each one's release build may take. `bun test` (and so CI) fails when one is over. `bun run size` prints each example's sizes next to its budget. When an example grows on purpose, `bun run size --update` sets every budget to the current size plus 2%.
+Thirteen examples, the browser games among them, and `lib/text.ents` have size budgets in [`scripts/size-budgets.json`](scripts/size-budgets.json): the most bytes each one's release build may take. `bun test` (and so CI) fails when one is over. `bun run size` prints each one's sizes next to its budget. When one grows on purpose, `bun run size --update` sets every budget to the current size plus 2%.
 
 ## Documentation
 

@@ -47,7 +47,6 @@ func reset() {
 }
 
 test "ring buffer" {
-
   test "push and pop FIFO" {
     reset()
     push(10)

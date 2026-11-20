@@ -2,6 +2,8 @@
 // Advent of Code 2023, day 1, part 1: on each line, the first and last digits
 // make a two-digit number; print the sum of those numbers.
 // Usage: encantis run day1.ents < input.txt
+// The input is read into 64 KiB, which a puzzle input, about 22 KB, fits; the
+// bytes of a longer one past 64 KiB are not read, and its sum is wrong.
 
 import "../../lib/io" (
   "read_all" func read_all(buf: []mut u8) -> []u8
