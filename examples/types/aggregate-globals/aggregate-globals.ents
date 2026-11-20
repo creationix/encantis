@@ -115,14 +115,14 @@ test "globals that are slices of structs and of slices" {
   assert rows.len == 0
   let w = buf as [*]mut i32
   w[0] = 5
-  let store = (buf as u32 + 16) as [*]mut Lane
+  let store = (buf as [*]mut Lane) + 16
   store[0] = Lane((w, 1), 2)
   store[1] = Lane((w, 3), 4)
   lanes = (store, 2)
   let t: u32 = 0
   for entry in lanes { t += entry.cells.len * 10 + entry.free as u32 }
   assert t == 46
-  let lists = (buf as u32 + 40) as [*]mut []i32
+  let lists = (buf as [*]mut []i32) + 40
   lists[0] = lanes.ptr[1].cells
   rows = (lists, 1)
   for row in rows { t += row.len }
