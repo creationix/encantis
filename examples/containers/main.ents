@@ -79,9 +79,10 @@ export func busiest(n: u32) -> u32 {
   return most
 }
 
-// The first cell of the walk from step 7 in reading order, as
-// y * columns + x
+// The first cell of the walk of n steps from step 7, in reading order, as
+// y * columns + x; columns * rows, past the board, for an empty walk.
 export func first_in_reading_order(n: u32) -> u32 {
+  return columns * rows when n == 0
   let scope = mark()
   defer reset(scope)
   let path = vec(Cell, 4)
@@ -89,7 +90,7 @@ export func first_in_reading_order(n: u32) -> u32 {
     path.push(step(i + 7))
   }
   path.items_mut().sort(reading_order)
-  let first = path.items().ptr[0]
+  let first = path.items().ptr[0]          // the walk has a cell: n is not 0
   return (first.y * columns + first.x) as u32
 }
 
@@ -101,4 +102,5 @@ test "the containers, for this module's cell" {
   assert busiest(31) == 3
   assert first_in_reading_order(1) == 7
   assert first_in_reading_order(15) == 0
+  assert first_in_reading_order(0) == columns * rows
 }
