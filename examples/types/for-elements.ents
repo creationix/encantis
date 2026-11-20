@@ -8,29 +8,29 @@ data wide = [1:u64, 0xFFFFFFFFFFFFFFFF]
 func sum(s: []u8) -> u32 {
   let t: u32 = 0
   for c in s {
-    t += c as u32
+    t += c
   }
   return t
 }
 func weighted(s: []u8) -> u32 {
   let t: u32 = 0
   for i, c in s {
-    t += (c as u32) * i
+    t += c * i
   }
   return t
 }
 func skip_and_stop(s: []u8) -> u32 {
   let t: u32 = 0
   for c in s {
-    continue when c == 98
-    break when c == 100
-    t += c as u32
+    continue when c == 'b'
+    break when c == 'd'
+    t += c
   }
   return t
 }
-test "bytes of a slice" { assert sum("abc") == 294 }
-test "index comes first" { assert weighted("abc") == 98 + 99 * 2 }
-test "continue and break" { assert skip_and_stop("abcdef") == 97 + 99 }
+test "bytes of a slice" { assert sum("abc") == 'a' + 'b' + 'c' }
+test "index comes first" { assert weighted("abc") == 'b' + 'c' * 2 }
+test "continue and break" { assert skip_and_stop("abcdef") == 'a' + 'c' }
 test "empty slice" { assert sum("") == 0 }
 test "pointer to a fixed array" {
   let t: u32 = 0
@@ -77,7 +77,7 @@ test "a slice literal of wider elements" {
   assert sum-of([4, 5, 6, 7]) == 22
   let wides: []u64 = [1, 2]
   assert wides.len == 2
-  let zeros: []i32 = [0:i32; 5]
+  let zeros: []i32 = [0; 5]
   assert zeros.len == 5
 }
 test "a slice literal with a runtime element" {
