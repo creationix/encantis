@@ -4,13 +4,13 @@ data cells = mut [0:i32; 16]
 
 type Size = (w: i32, h: i32)
 
-export global order: []mut i32 = (0, 0)
+export global order: []mut i32
 export global size: Size = Size(3, 4)
 export global ticks: u128 = 7
 
 export func setup() {
+  cells[2] = 9
   order = cells[0..4]
-  order.ptr[2] = 9
   size.h += 1
 }
 
