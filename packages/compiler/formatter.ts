@@ -1,3 +1,29 @@
+import { grammar } from './encantis-grammar'
+import { MAX_NESTING, nesting } from './parser'
+
+const assertionSemantics = grammar.createSemantics().addOperation<number[]>('assertionStarts', {
+  TestBlock(_open, items, _close) {
+    const offsets: number[] = []
+    for (const item of items.children) {
+      const statement = item.child(0)
+      if (statement.ctorName === 'Statement' && statement.child(0).ctorName === 'AssertStmt') {
+        offsets.push(statement.source.startIdx)
+      }
+    }
+    return offsets
+  },
+})
+
+function blockAssertionStarts(text: string): number[] | undefined {
+  if (nesting(text, MAX_NESTING).over !== null) return undefined
+  try {
+    const match = grammar.match(text, 'TestBlock')
+    if (match.succeeded()) return assertionSemantics(match).assertionStarts()
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error
+  }
+}
+
 export function formatEncantis(source: string): string {
   const inBlockComment = new Uint8Array(source.length)
   const bracketPositions: number[] = []
@@ -163,8 +189,61 @@ export function formatEncantis(source: string): string {
     }
   }
 
+  // `assert` is also an identifier. Probe its enclosing block, whose
+  // statements distinguish `assert -n` from `return assert - n`.
+  // The tokenizer examines candidates in source order.
+  let nextBracket = 0
+  const braces: number[] = []
+  const blockAssertions = new Map<number, Set<number>>()
+  const nearbyAssertions = new Map<string, Set<number> | undefined>()
+
+  function nearbyAssertion(start: number, end: number, position: number): boolean | undefined {
+    const line = posToLine(position)
+    const lineEnd = Math.min(end, lineStarts[line + 1] ?? source.length)
+    let origin = start
+    let prefix = ''
+    if (line > posToLine(start) + 1) {
+      // A leading `let` can start a statement or an if/elif binding. Its
+      // initializer parses the same expression in either context.
+      const previous = lineStarts[line - 1]
+      const previousCode = source.slice(previous, lineStarts[line]).trimStart()
+      if (!/^let[ \t]/.test(previousCode) || inBlockComment[lineStarts[line] - previousCode.length]
+        || breaksInLiteral.has(previous - 1)) return undefined
+      origin = previous - 1
+      prefix = '{'
+    }
+    const key = `${origin}:${lineEnd}`
+    if (!nearbyAssertions.has(key)) {
+      const offsets = blockAssertionStarts(prefix + source.slice(origin + prefix.length, lineEnd) + '\n}')
+      nearbyAssertions.set(key, offsets && new Set(offsets))
+    }
+    return nearbyAssertions.get(key)?.has(position - origin)
+  }
+
+  function isAssertionAt(position: number): boolean {
+    while (nextBracket < bracketPositions.length && bracketPositions[nextBracket] < position) {
+      const bracket = bracketChars[nextBracket]
+      if (bracket === '{') braces.push(bracketPositions[nextBracket])
+      if (bracket === '}') braces.pop()
+      nextBracket++
+    }
+    const start = braces.at(-1)
+    if (start === undefined || source[start - 1] === '$') return false
+    const end = matchMap.get(start)
+    if (end === undefined) return false
+
+    let offsets = blockAssertions.get(start)
+    if (!offsets) {
+      const nearby = nearbyAssertion(start, end, position)
+      if (nearby !== undefined) return nearby
+      offsets = new Set(blockAssertionStarts(source.slice(start, end + 1)))
+      blockAssertions.set(start, offsets)
+    }
+    return offsets.has(position - start)
+  }
+
   type TokKind = 'word' | 'num' | 'str' | 'op' | 'open' | 'close' | 'comma' | 'colon' | 'semi' | 'dot' | 'comment'
-  interface Tok { kind: TokKind; text: string }
+  interface Tok { kind: TokKind; text: string; assertPosition?: number }
 
   const KEYWORDS = new Set([
     'if', 'elif', 'else', 'while', 'for', 'in', 'loop', 'match',
@@ -178,7 +257,7 @@ export function formatEncantis(source: string): string {
   const THREE_OPS = new Set(['<<<', '>>>', '<<=', '>>='])
   const TWO_OPS = new Set(['==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '%=', '^=', '|=', '&=', '<<', '>>', '->', '=>', '??', '||', '&&', '.*'])
 
-  function tokenizeLine(line: string): Tok[] {
+  function tokenizeLine(line: string, lineStart: number, resumeBlockComments: boolean): Tok[] {
     const tokens: Tok[] = []
     let j = 0
 
@@ -199,6 +278,10 @@ export function formatEncantis(source: string): string {
         tokens.push({ kind: 'comment', text: line.slice(j) }); break
       }
       if (line[j] === '/' && line[j + 1] === '*') {
+        const end = line.indexOf('*/', j + 2)
+        if (end !== -1 && resumeBlockComments) {
+          tokens.push({ kind: 'comment', text: line.slice(j, end + 2) }); j = end + 2; continue
+        }
         tokens.push({ kind: 'comment', text: line.slice(j) }); break
       }
       if (line[j] === '"' || line[j] === "'") { scanString(line[j]); continue }
@@ -274,7 +357,9 @@ export function formatEncantis(source: string): string {
           if (/[0-9]/.test(line[j])) while (j < line.length && /[0-9]/.test(line[j])) j++
           else if (line[j] !== '(') while (j < line.length && /[a-zA-Z0-9_-]/.test(line[j])) j++
         }
-        tokens.push({ kind: 'word', text: line.slice(start, j) }); continue
+        const text = line.slice(start, j)
+        tokens.push({ kind: 'word', text, assertPosition: text === 'assert' ? lineStart + start : undefined })
+        continue
       }
       // A number is a run of letters and digits: 0x1F, 0b101, 0o17, 0d1B, 42,
       // and the 2x3 of an array's dimensions. A decimal one goes on past a
@@ -314,9 +399,15 @@ export function formatEncantis(source: string): string {
       || (prev.kind === 'word' && KEYWORDS.has(prev.text))
   }
 
-  function formatTokens(tokens: Tok[]): string {
-    if (tokens.length === 0) return ''
-    let result = tokens[0].text
+  function followsAssertion(tokens: Tok[], index: number): boolean {
+    while (tokens[index]?.kind === 'comment') index--
+    const position = tokens[index]?.assertPosition
+    return position !== undefined && isAssertionAt(position)
+  }
+
+  function formatTokens(tokens: Tok[], checkAssertions = true): { text: string; hasAssertion: boolean } {
+    let result = tokens[0]?.text ?? ''
+    let hasAssertion = false
     for (let k = 1; k < tokens.length; k++) {
       const L = tokens[k - 1], R = tokens[k], LL = tokens[k - 2] as Tok | undefined
 
@@ -354,12 +445,24 @@ export function formatEncantis(source: string): string {
       if (R.kind === 'open' && R.text === '[' && L.kind === 'str') { result += R.text; continue }
 
       // Unary operators: no space after
-      if (L.kind === 'op' && '&*-!~?'.includes(L.text) && isUnaryPosition(LL)) { result += R.text; continue }
+      if (L.kind === 'op' && '&*-!~?'.includes(L.text)) {
+        const assertion = checkAssertions && R.kind !== 'comment' && followsAssertion(tokens, k - 2)
+        hasAssertion ||= assertion
+        if (assertion || isUnaryPosition(LL)) { result += R.text; continue }
+      }
 
       // Default: space
       result += ' ' + R.text
     }
-    return result
+    return { text: result, hasAssertion }
+  }
+
+  function formatLineTokens(line: string, start: number, leadingBlockComment = false): string | undefined {
+    const resumeBlockComments = line.includes('/*') && line.includes('assert')
+    const formatted = formatTokens(tokenizeLine(line, start, resumeBlockComments))
+    if (!resumeBlockComments || formatted.hasAssertion) return formatted.text
+    // Keep the usual handling of comments on lines without an assertion.
+    if (!leadingBlockComment) return formatTokens(tokenizeLine(line, start, false), false).text
   }
 
   const out: string[] = []
@@ -382,7 +485,7 @@ export function formatEncantis(source: string): string {
     const literal = breaksInLiteral.get(offset + raw.length)
     const trimmed = literal !== undefined ? raw.trimStart() : raw.trim()
     if (literal !== undefined) {
-      const line = '  '.repeat(lineDepths[lineIdx]) + formatTokens(tokenizeLine(trimmed))
+      const line = '  '.repeat(lineDepths[lineIdx]) + formatLineTokens(trimmed, offset + raw.length - trimmed.length)
       out.push(line.endsWith(source.slice(literal, offset + raw.length)) ? line : raw)
       prevBlank = false
       offset += raw.length + 1
@@ -397,12 +500,15 @@ export function formatEncantis(source: string): string {
     prevBlank = false
 
     const firstCharOffset = offset + raw.indexOf(trimmed)
-    if (firstCharOffset < inBlockComment.length && inBlockComment[firstCharOffset]) {
-      out.push(raw.trimEnd())
+    const leadingCommentEnd = trimmed.startsWith('/*') ? trimmed.indexOf('*/', 2) : -1
+    const assertionAfterComment = leadingCommentEnd !== -1 && trimmed.includes('assert', leadingCommentEnd + 2)
+    if (inBlockComment[firstCharOffset]) {
+      const formatted = assertionAfterComment ? formatLineTokens(trimmed, firstCharOffset, true) : undefined
+      out.push(formatted === undefined ? raw.trimEnd() : '  '.repeat(lineDepths[lineIdx]) + formatted)
     } else if (trimmed.startsWith('#!')) {
       out.push(trimmed)
     } else {
-      out.push('  '.repeat(lineDepths[lineIdx]) + formatTokens(tokenizeLine(trimmed)))
+      out.push('  '.repeat(lineDepths[lineIdx]) + formatLineTokens(trimmed, firstCharOffset))
     }
     offset += raw.length + 1
   }

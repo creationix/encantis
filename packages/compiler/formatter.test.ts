@@ -169,6 +169,77 @@ describe('formatter', () => {
     expect(formatted).toBe('func max(comptime T:type, a:T) -> T => a\nfunc f(a:i32) -> i32 => max(i32, -a)\n')
   })
 
+  test('prefix operators in assertions stay next to their operands', () => {
+    const source = `func ok(x:u32) -> bool => x > 1
+func f(n:i32, x:u32) {
+  assert ! ok(0)
+  assert - n < 1
+  assert ~ x != 0
+  assert & n != & n
+  assert((-n as i64) < 1)
+  if true { assert ! ok(0) }
+}
+test "neg" { assert - 0x10 == -16 }
+`
+    const expected = `func ok(x:u32) -> bool => x > 1
+func f(n:i32, x:u32) {
+  assert !ok(0)
+  assert -n < 1
+  assert ~x != 0
+  assert &n != &n
+  assert((-n as i64) < 1)
+  if true { assert !ok(0) }
+}
+test "neg" { assert -0x10 == -16 }
+`
+    const formatted = formatEncantis(source)
+    expect(formatted).toBe(expected)
+    expect(formatEncantis(formatted)).toBe(formatted)
+    expect(shape(formatted)).toEqual(shape(source))
+  })
+
+  test('assert used as an identifier keeps call and binary operator spacing', () => {
+    const source = `func assert(x:i32) -> i32 => x
+func f(x:i32) -> i32 => assert(x) - 1
+func g(assert:i32, n:i32) -> i32 {
+  return
+  assert - n
+}
+func h(assert:i32, n:i32) -> i32 {
+  return assert /* subtraction */ - n
+}
+func i(assert:i32, n:i32) -> i32 {
+  let pair = (0,
+  assert - n)
+  return pair.1
+}
+`
+    const formatted = formatEncantis(source)
+    expect(formatted).toBe(source)
+    expect(shape(formatted)).toEqual(shape(source))
+  })
+
+  test('block comments stay intact next to assertions and their operators', () => {
+    const source = `func f(n:i32) {
+  assert /*  gap */ - n < 0
+  /* α */ assert - n < 0
+  assert - /* operand */ n < 0
+  /* assert - n */ let unformatted=1
+}
+`
+    const expected = `func f(n:i32) {
+  assert /*  gap */ -n < 0
+  /* α */ assert -n < 0
+  assert - /* operand */ n < 0
+  /* assert - n */ let unformatted=1
+}
+`
+    const formatted = formatEncantis(source)
+    expect(formatted).toBe(expected)
+    expect(formatEncantis(formatted)).toBe(formatted)
+    expect(shape(formatted)).toEqual(shape(source))
+  })
+
   // A member's name is a whole identifier, hyphens included: p.u32-1 is a
   // member called u32-1. A subtraction is printed with spaces, so the two
   // read apart, and the formatter never joins or splits a hyphenated name.
