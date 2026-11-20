@@ -1,7 +1,7 @@
 {
   "examples/alloc/arena.ents": "8039d2b63537fa9a5f629ebceb29ef4675b0aa677c80586f961eabea8ad2f534",
   "examples/alloc/heap.ents": "b10aad184efb4082f0ab654951062b367867e532f4990a962c6e60f71f916825",
-  "examples/alloc/stack.ents": "754f8d815ea41282627a9156604d21ddb84d9721e9644e9a9804f2f59b260344",
+  "examples/alloc/stack.ents": "865e205d6acb1e3ea1fce66f632f44a4aa0143f123884b8000571ce027f6e929",
   "examples/alloc/static.ents": "be9b6b234752d3668e690ee3ecd2d715b2e6a6995b325f8db2534280d8f46ea3",
   "examples/aoc/day1.ents": "5f58626def999bd125ae46f08e53efa18aaf97773c364084410a1e4a30c67ff7",
   "examples/browser/lantern.ents": "5bc940f5264b1b981bd235b20fc37f55be75d8eca1a080442cef4adadbd9a621",
@@ -24,7 +24,7 @@
   "examples/crypto/xoroshiro128+.ents": "5389890f984989659e84a0295d969228011269ecdda4d5b33d4fb508e94df776",
   "examples/crypto/xxh32/xxh32.ents": "761c37be102741cfcfe783ccf00b87af23d628d0cd6ffbd4ac2aa4ae5412c542",
   "examples/crypto/xxh64/xxh64.ents": "bb661323929b407ba77c2db20cc3baeee0fec0b637070b5c110a9ac7348a7d36",
-  "examples/data/crit-bit/crit-bit.ents": "e08c3fabd862dcd62d330003e0d2331d833691b79222656841c0a0e0297258ec",
+  "examples/data/crit-bit/crit-bit.ents": "f9047928be81894185a3ec39a2b7a635ad895a660ff3c4ddd69f4a815ee896a2",
   "examples/data/ringbuf/ringbuf.ents": "35ae80a5b5bbfe31fba67ba437f149af3298e490341dab93ff9eedb3edbbf399",
   "examples/data/trie/trie.ents": "644d54eb2e246fa2bef58c3060d3e08a8d33efbae175d3c3ea88d216578d4853",
   "examples/generics/lengths.ents": "e8a6e79e57ba03fdf6abae505589a881041ec794ca59eea583bdb614a6ef2e4f",
