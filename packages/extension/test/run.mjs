@@ -19,7 +19,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repo = resolve(here, '../../..');
 const [target, vsix, version = 'stable'] = process.argv.slice(2);
 if (!['desktop', 'web'].includes(target) || !vsix) {
   console.error('usage: node packages/extension/test/run.mjs <desktop|web> <file.vsix> [version]');
@@ -38,10 +37,9 @@ mkdirSync(join(extension, 'encantis-test'));
 const runner = join(extension, 'encantis-test', 'runner.js');
 cpSync(join(here, 'vscode', 'runner.js'), runner);
 
-// The files it is tried on
+// The files it is tried on: its own, as the runner counts what is in them
 const workspace = join(work, 'workspace');
-mkdirSync(workspace);
-for (const file of ['main.ents', 'util.ents']) cpSync(join(repo, 'examples', 'modular', file), join(workspace, file));
+cpSync(join(here, 'vscode', 'workspace'), workspace, { recursive: true });
 
 const cache = process.env.VSCODE_TEST_CACHE;
 try {

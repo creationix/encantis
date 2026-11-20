@@ -1,6 +1,7 @@
 // Runs inside VS Code, desktop or web, with the extension as its .vsix
 // installs it (see ../run.mjs): what a user does, through VS Code's own
-// commands. The workspace holds examples/modular's main.ents and util.ents.
+// commands. The workspace is ./workspace: a main.ents that imports from
+// util.ents. (Its own, not an example's: the checks count what is in it.)
 // Plain CommonJS with nothing but `vscode`: the web extension host loads it
 // as it loads an extension.
 
