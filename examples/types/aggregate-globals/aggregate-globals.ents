@@ -133,7 +133,7 @@ test "a wide integer global" {
   wide = 5
   wide += 1
   assert wide == 6
-  wide = wide << 64
+  wide <<= 64
   assert wide >> 64 == 6
 }
 

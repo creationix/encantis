@@ -2,10 +2,10 @@
 
 // Ends in an if statement (no else): the results are the named locals. Each
 // starts at zero, so clipped is false unless the branch sets it.
-export func clamp_count(n: u32, max: u32) -> (count: u32, clipped: bool) {
+export func clamp_count(n: u32, limit: u32) -> (count: u32, clipped: bool) {
   count = n
-  if n > max {
-    count = max
+  if n > limit {
+    count = limit
     clipped = true
   }
 }
@@ -17,8 +17,8 @@ export func sum_to(n: u32) -> (total: u32) {
   }
 }
 
-export func clamped(n: u32, max: u32) -> u32 => clamp_count(n, max).count
-export func was_clipped(n: u32, max: u32) -> bool => clamp_count(n, max).clipped
+export func clamped(n: u32, limit: u32) -> u32 => clamp_count(n, limit).count
+export func was_clipped(n: u32, limit: u32) -> bool => clamp_count(n, limit).clipped
 
 test "a trailing if leaves the named results as set" {
   assert clamped(3, 5) == 3

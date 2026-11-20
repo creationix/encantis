@@ -6,7 +6,7 @@ data space = mut [0:u8; 1024]
 
 type Spot = (c: i32, di: i32, room: i32)
 type Lane = (cells: []i32, free: i32)
-type Option = (d: i32, lane: Lane)
+type Choice = (d: i32, lane: Lane)
 type Mixed = (a: u8, b: i16, c: u64, d: f32)
 type Row = (tag: u8, v: [3]i32)
 
@@ -20,7 +20,7 @@ func next() -> u32 {
 
 func spots() -> [*]mut Spot => space as [*]mut Spot
 func words() -> [*]mut i32 => (&space[512]) as [*]mut i32
-func options() -> [*]mut Option => (&space[256]) as [*]mut Option
+func choices() -> [*]mut Choice => (&space[256]) as [*]mut Choice
 
 func sum(s: Spot) -> i32 => s.c + s.di * 10 + s.room * 100
 func make(n: i32) -> Spot => Spot(n, n + 1, n + 2)
@@ -181,31 +181,31 @@ test "an element is destructured" {
 // --- nested structs and slices ---
 
 test "a struct inside a struct" {
-  let opts = options()
+  let picks = choices()
   let w = words()
   w[0] = 3
   w[1] = 4
-  opts[1] = Option(7, Lane(w[0..2], 9))
-  assert opts[1].d == 7
-  assert opts[1].lane.free == 9
-  assert opts[1].lane.cells.len == 2
-  opts[1].lane.free += 1
-  let lane = opts[1].lane
+  picks[1] = Choice(7, Lane(w[0..2], 9))
+  assert picks[1].d == 7
+  assert picks[1].lane.free == 9
+  assert picks[1].lane.cells.len == 2
+  picks[1].lane.free += 1
+  let lane = picks[1].lane
   assert lane.free == 10
   assert lane.cells.len == 2
-  opts[2].lane = lane
-  assert (opts[2].lane.cells[1] ?? 0) == 4
+  picks[2].lane = lane
+  assert (picks[2].lane.cells[1] ?? 0) == 4
 }
 
 test "a slice field of a nested struct" {
-  let opts = options()
+  let picks = choices()
   let w = words()
   w[0] = 3
   w[1] = 4
-  opts[1].d = 3
-  opts[1].lane.cells = w[0..2]
+  picks[1].d = 3
+  picks[1].lane.cells = w[0..2]
   let t = 0
-  for x in opts[1].lane.cells {
+  for x in picks[1].lane.cells {
     t += x
   }
   assert t == 7
@@ -216,9 +216,9 @@ test "a returned slice is stored directly" {
   lists[1] = pair()
   assert lists[1].len == 2
   assert (lists[1][1] ?? 0) == 22
-  let opts = options()
-  opts[3].lane.cells = pair()
-  assert opts[3].lane.cells.len == 2
+  let picks = choices()
+  picks[3].lane.cells = pair()
+  assert picks[3].lane.cells.len == 2
 }
 
 test "a slice rebuilt from its own fields" {
@@ -284,7 +284,7 @@ test "a bool takes one byte" {
   flags[0] = true
   assert flags[2]
   assert !flags[1]
-  let cells = options() as [*]mut Cell
+  let cells = choices() as [*]mut Cell
   cells[0] = Cell(false, true, 513)
   cells[0].open = true
   cells[0].seen = false
@@ -340,7 +340,7 @@ test "an index with effects is evaluated once" {
   list[next() - 2].c += 10
   assert calls == 3
   assert list[1].c == 11
-  let lists = options() as [*]mut []i32
+  let lists = choices() as [*]mut []i32
   lists[next()] = pair()
   assert calls == 4
   let stored = lists[next() - 1]
@@ -349,8 +349,8 @@ test "an index with effects is evaluated once" {
 }
 
 test "an address that reads memory is evaluated before its own stores" {
-  let lists = options() as [*]mut []i32
-  let w = options() as [*]mut u32
+  let lists = choices() as [*]mut []i32
+  let w = choices() as [*]mut u32
   w[..3] = 0
   // lists[0].ptr is 0, so the target is lists[0]: storing its pointer must
   // not move where its length goes.
@@ -364,7 +364,7 @@ test "an address that reads memory is evaluated before its own stores" {
 test "an array of pointers" {
   let list = spots()
   list[5] = Spot(7, 8, 9)
-  let ptrs = options() as [*]mut *mut Spot
+  let ptrs = choices() as [*]mut *mut Spot
   ptrs[1] = &list[5]
   let p = ptrs[1]
   assert p.room == 9

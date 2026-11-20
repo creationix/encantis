@@ -75,8 +75,11 @@ data c-names: [][!]u8 = ["alice", "bob", "charlie"]
 // Tests
 // ============================================================================
 
-test "sizeof data" {
-  assert sizeof data > 0
+test "sizeof data is past the end of every data block" {
+  assert sizeof data >= plain as u32 + plain.len * plain.wid
+  assert sizeof data >= mutable-buf as u32 + mutable-buf.len
+  assert sizeof data >= as-fixed as u32 + as-fixed.len
+  assert sizeof data >= matrix as u32 + matrix.len * 3 * matrix.wid
 }
 
 test "fixed arrays" {

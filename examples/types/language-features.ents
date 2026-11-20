@@ -84,13 +84,8 @@ func fibonacci(n: u32) -> u32 {
 
 func collatz_steps(n: u32) -> u32 {
   let steps: u32 = 0
-  loop {
-    break when n <= 1
-    if n % 2 == 0 {
-      n /= 2
-    } else {
-      n = n * 3 + 1
-    }
+  while n > 1 {
+    n = if n % 2 == 0 { n / 2 } else { n * 3 + 1 }
     steps += 1
   }
   return steps
@@ -126,37 +121,28 @@ func u64_size() -> u32 => sizeof(u64)
 // === Tests ===
 
 test "language features" {
-
-  func check_swap() -> bool {
+  test "swap returns its arguments the other way round" {
     let (x:, y:) = swap(10, 20)
-    return x == 20 && y == 10
+    assert x == 20 && y == 10
   }
 
-  func check_divmod() -> bool {
+  test "divmod returns the quotient and the remainder" {
     let (quot:, rem:) = divmod(17, 5)
-    return quot == 3 && rem == 2
+    assert quot == 3 && rem == 2
   }
 
-  test "swap" {
-    assert check_swap()
-  }
-
-  test "divmod" {
-    assert check_divmod()
-  }
-
-  test "struct construction" {
+  test "a point is built from its fields and read back" {
     let p = make_point(3, -4)
     assert p.x == 3 && p.y == -4
     assert manhattan(p) == 7
   }
 
-  test "expression bodies" {
+  test "an expression body is the function's result" {
     assert double(21) == 42
     assert square(7) == 49
   }
 
-  test "globals" {
+  test "a global keeps its value from one call to the next" {
     counter = 0
     increment()
     increment()
@@ -164,7 +150,7 @@ test "language features" {
     assert get_counter() == 3
   }
 
-  test "conditional return" {
+  test "an early return gives iabs and clamp their results" {
     assert iabs(-42) == 42
     assert iabs(42) == 42
     assert clamp(5, 0, 10) == 5
@@ -172,40 +158,40 @@ test "language features" {
     assert clamp(15, 0, 10) == 10
   }
 
-  test "fizzbuzz" {
+  test "fizzbuzz_type tells multiples of 3, of 5 and of both" {
     assert fizzbuzz_type(1) == 0
     assert fizzbuzz_type(3) == 1
     assert fizzbuzz_type(5) == 2
     assert fizzbuzz_type(15) == 3
   }
 
-  test "sum range" {
+  test "sum_range(n) is 0 + 1 + ... + (n - 1)" {
     assert sum_range(0) == 0
     assert sum_range(1) == 0
     assert sum_range(10) == 45
     assert sum_range(100) == 4950
   }
 
-  test "fibonacci" {
+  test "fibonacci(n) is the nth Fibonacci number" {
     assert fibonacci(0) == 0
     assert fibonacci(1) == 1
     assert fibonacci(10) == 55
     assert fibonacci(20) == 6765
   }
 
-  test "collatz" {
+  test "collatz_steps counts the steps down to 1" {
     assert collatz_steps(1) == 0
     assert collatz_steps(2) == 1
     assert collatz_steps(27) == 111
   }
 
-  test "float lerp" {
+  test "lerp at 0, 0.5 and 1 gives the start, the middle and the end" {
     assert approx_eq(lerp(0.0, 10.0, 0.5), 5.0)
     assert approx_eq(lerp(0.0, 10.0, 0.0), 0.0)
     assert approx_eq(lerp(0.0, 10.0, 1.0), 10.0)
   }
 
-  test "lookup table" {
+  test "the table holds each byte's square, cut to 8 bits" {
     init_lookup()
     assert lookup_square(0) == 0
     assert lookup_square(1) == 1
@@ -213,7 +199,7 @@ test "language features" {
     assert lookup_square(16) == 0  // 256 wraps to 0 in u8
   }
 
-  test "sizeof" {
+  test "sizeof gives the bytes of a type" {
     assert point_size() == 8
     assert u64_size() == 8
     assert sizeof(Color) == 3

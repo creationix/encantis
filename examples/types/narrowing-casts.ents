@@ -1,5 +1,7 @@
-// A cast to an 8- or 16-bit integer keeps only that many bits, whatever it
-// casts from, so the result compares and widens as a value of its type.
+// An integer cast to an 8- or 16-bit integer keeps only that many bits, so the
+// result compares and widens as a value of its type. A float is truncated to a
+// u32 or an i32 first and then cut the same way, and traps where it is no u32
+// or i32: -1.0 as u8 traps (reference 2.10).
 
 func low_byte(x: i64) -> u8 => x as u8
 func low_word(x: u64) -> u16 => x as u16

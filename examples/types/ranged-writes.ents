@@ -12,26 +12,33 @@ export func mask(x: u32) { pairs[x & 15] = 1 }         // a u32#16
 export func modulo(x: u32) { buf[x % buf.len] = 2 }    // a u32#12
 export func shift(x: u32) { pairs[x >> 28] = 3 }       // the top 4 bits: a u32#16
 export func byte(b: u8) { grid[b] = 4 }                // a u8 is below 256
+
 export func branch(x: u32) {
   if x < buf.len { buf[x] = 5 }
 }
+
 export func le(x: u32) {
   if x <= buf.len - 1 { buf[x] = 5 }
 }
+
 export func flipped(x: u32) {
   if buf.len > x { buf[x] = 5 }
 }
+
 export func both(x: u32, y: u32) {
   if x < buf.len && y < pairs.len { buf[x] = pairs[y] }
 }
+
 export func guard(x: u32) {
   return when x >= buf.len
   buf[x] = 6
 }
+
 export func guard_if(x: u32) -> u8 {
   if x >= buf.len { return 0 }      // a branch that always exits guards the rest
   return buf[x]
 }
+
 export func elif_else(x: u32) -> u8 {
   if x >= pairs.len {
     return 0
@@ -41,6 +48,7 @@ export func elif_else(x: u32) -> u8 {
     return buf[x]
   }
 }
+
 export func in_loop(n: u32) -> u32 {
   let t: u32 = 0
   for i in n {
@@ -49,6 +57,7 @@ export func in_loop(n: u32) -> u32 {
   }
   return t
 }
+
 test "writes land where they should" {
   branch(3)
   assert buf[3] == 5
@@ -91,10 +100,12 @@ export func const_idx() -> u32 {
   p.* = 42
   return buf[3]
 }
+
 export func ranged(i: u32#(buf.len)) {
   let p = &buf[i]                   // a ranged index: a plain *mut u8 too
   p.* = 1
 }
+
 export func checked(i: u32, v: u8) -> bool {
   if let p = &buf[i] {
     p.* = v
@@ -102,6 +113,7 @@ export func checked(i: u32, v: u8) -> bool {
   }
   return false
 }
+
 export func slice_write(s: []mut u8, i: u32, v: u8) -> bool {
   if let p = &s[i] {
     p.* = v
@@ -109,7 +121,11 @@ export func slice_write(s: []mut u8, i: u32, v: u8) -> bool {
   }
   return false
 }
-test "const index address" { assert const_idx() == 42 }
+
+test "const index address" {
+  assert const_idx() == 42
+}
+
 test "checked writes" {
   ranged(4)
   assert buf[4] == 1
@@ -120,6 +136,7 @@ test "checked writes" {
   assert !checked(12, 9)
   assert !checked(0xFFFFFFFF, 9)
 }
+
 test "slice writes" {
   assert slice_write(buf, 5, 77)
   assert buf[5] == 77
@@ -134,6 +151,7 @@ export func top(x: u32) -> u32 {
   pairs[x >> 60] = 7
   return x >> 60
 }
+
 export func whole(x: u32) -> bool {
   if let p = &pairs[x >> 32] {
     p.* = 8
@@ -141,6 +159,7 @@ export func whole(x: u32) -> bool {
   }
   return false
 }
+
 export func whole_byte(b: u8) -> bool {
   if let p = &pairs[b >> 32] {
     p.* = 9
@@ -148,11 +167,13 @@ export func whole_byte(b: u8) -> bool {
   }
   return false
 }
+
 // A shift of constants is a constant index: 60 >> 2 is 15.
 export func last() -> u8 {
   pairs[60 >> 2] = 10
   return pairs[15]
 }
+
 test "a shift count is taken modulo the width" {
   assert top(0xA0000000) == 10
   assert pairs[10] == 7
@@ -172,11 +193,14 @@ export func low_bits(x: u32) -> u32 {
   pairs[x & (~0 >> 28)] = 11
   return x & (~0 >> 28)
 }
+
 export func wrapped() -> u8 {
   pairs[(0 - 1) % 16] = 12
   return pairs[15]
 }
+
 export func sixteenth() -> u32 => (0 - 1) / 268435455
+
 test "a constant divides and shifts as its type holds it" {
   assert low_bits(0xFFFFFFF3) == 3
   assert pairs[3] == 11

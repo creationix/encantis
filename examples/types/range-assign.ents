@@ -9,12 +9,17 @@ data wsrc = [9:u32, 8, 7]
 
 func sum8(s: []u8) -> u32 {
   let t: u32 = 0
-  for c in s { t += c }
+  for c in s {
+    t += c
+  }
   return t
 }
+
 func sum32(s: []u32) -> u32 {
   let t: u32 = 0
-  for x in s { t += x }
+  for x in s {
+    t += x
+  }
   return t
 }
 
@@ -24,18 +29,21 @@ test "fill bytes" {
   buf[4..8] = 0
   assert sum8(buf) == 7 * (buf.len - 4)
 }
+
 test "fill with a runtime length that is proven to fit" {
   buf[..] = 0
   let n: u32#(buf.len + 1) = 5
   buf[..n] = 1
   assert sum8(buf) == 5
 }
+
 test "fill wider elements" {
   words[..] = 3
   assert sum32(words) == 3 * words.len
   words[2..5] = 0
   assert sum32(words) == 3 * (words.len - 3)
 }
+
 test "copy" {
   buf[..] = 0
   buf[8..16] = src

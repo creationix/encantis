@@ -9,22 +9,26 @@ export func to_i16(a: i128) -> i16 => a as i16
 export func sum_wide(x: i64) -> i128 => x + x       // an i64 sum, widened to the result
 func neg1() -> i64 => -1
 export func call_wide() -> i128 => neg1()
+
 export func hi_of(x: i64) -> i64 {
   let w: i256 = x + 0                               // a sum, not only a variable, sign-extends
   return (w >> 192) as i64
 }
+
 export func pick(x: i32) -> i32 {
   match x {
     0 => { return 1 }
     _ => { return 2 }
   }
 }
+
 test "subword casts from wide ints normalize" {
   assert to_u8(256) == 0
   assert to_u8(511) == 255
   assert to_i8(255) == -1
   assert to_i16(-1) == -1
 }
+
 test "signed widening of expressions and calls" {
   assert (sum_wide(-3) >> 64) as i64 == -1
   assert (call_wide() >> 100) as i64 == -1
@@ -32,6 +36,7 @@ test "signed widening of expressions and calls" {
   assert hi_of(-5) == -1
   assert hi_of(5) == 0
 }
+
 test "match arms that all return" {
   assert pick(0) == 1
   assert pick(9) == 2
@@ -40,10 +45,12 @@ test "match arms that all return" {
 export func widen_u(a: u64) -> u128 => a
 export func narrow(a: u128) -> u64 => a as u64
 export func narrow32(a: u128) -> u32 => a as u32
+
 export func hi_s(a: i64) -> u64 {
   let w: i128 = a
   return (w >> 64) as u64
 }
+
 test "widening and narrowing round trips" {
   assert narrow(widen_u(7)) == 7
   assert narrow32(widen_u(0x100000003)) == 3
