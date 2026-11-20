@@ -1,7 +1,8 @@
-// Writes through runtime indices. A ranged index needs no check: one from a
-// for loop, from & % or >> with a constant, a u8 into 256 elements, or one a
-// comparison with a constant narrows. &items[i] gives an optional pointer for
-// an index the compiler can't prove is in range.
+// Writes through runtime indices. A ranged index needs no check: the
+// variable of a for loop, x & K, x % K or x >> K with a constant K, a u8
+// into 256 elements, and a variable that a comparison with a constant
+// narrows. &items[i] gives an optional pointer for an index the compiler
+// can't prove is in range.
 
 data buf = mut [0:u8; 12]
 data grid = mut [0:u8; 256]
