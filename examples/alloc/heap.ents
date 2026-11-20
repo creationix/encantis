@@ -4,9 +4,7 @@
 // every header starts at a multiple of 8 into the buffer, and splits a free
 // block where what is left holds a header and 8 bytes. free does not join a
 // block with free neighbours: it is reused at the size it has.
-//
-// malloc gives an offset into heap, not an address: the host adds the address
-// of heap to it.
+// malloc and free take and give offsets into heap, not addresses.
 
 export "mem" memory
 

@@ -20,8 +20,8 @@ export func reset(m: u32) {
 }
 
 // The address of n bytes, or no_room when they do not fit in what is left of
-// space. top stays a multiple of 8, and space is the first data, at address 8,
-// so the address is a multiple of 8 too.
+// space. alloc keeps top a multiple of 8, and space is the first data, at
+// address 8, so the address is a multiple of 8 too.
 export func alloc(n: u32) -> u32 {
   let size = (n + 7) & ~7          // wraps only for an n past space.len
   return no_room when n > space.len || size > space.len - top
