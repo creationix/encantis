@@ -4,18 +4,24 @@
 // low 32 bytes, clamped) and a prefix (the high 32 bytes), which makes each
 // signature's nonce. The public key A is a times the base point B, encoded
 // in 32 bytes, and a signature is the encoded point R and the scalar S.
+//
+// A host passes keys, messages and signatures by their addresses in the
+// exported memory, past the module's own data: in a page that it adds with
+// memory.grow, for one.
+
+export memory
 
 import "../sha512/sha512" (
   "sha512" func sha512(input: []u8, output: *mut [64]u8)
 )
 
 import "./point" (
-  "pt-set-base" func pt-set-base(buf: *mut [6]Point, i: u32#6)
-  "scalar-mult" func scalar-mult(buf: *mut [6]Point, out: u32#6, base: u32#6, scalar: *[32]u8)
-  "point-encode" func point-encode(out: *mut [32]u8, buf: *[6]Point, i: u32#6)
-  "point-eq" func point-eq(buf: *[6]Point, p: u32#6, q: u32#6) -> bool
-  "point-decode" func point-decode(buf: *mut [6]Point, i: u32#6, encoded: *[32]u8) -> bool
-  "point-add" func point-add(buf: *mut [6]Point, out: u32#6, p: u32#6, q: u32#6)
+  "pt-set-base" func pt-set-base(buf: *mut [slots]Point, i: u32#slots)
+  "scalar-mult" func scalar-mult(buf: *mut [slots]Point, out: u32#slots, base: u32#slots, scalar: *[32]u8)
+  "point-encode" func point-encode(out: *mut [32]u8, buf: *[slots]Point, i: u32#slots)
+  "point-eq" func point-eq(buf: *[slots]Point, p: u32#slots, q: u32#slots) -> bool
+  "point-decode" func point-decode(buf: *mut [slots]Point, i: u32#slots, encoded: *[32]u8) -> bool
+  "point-add" func point-add(buf: *mut [slots]Point, out: u32#slots, p: u32#slots, q: u32#slots)
 )
 
 import "./scalar" (
@@ -27,11 +33,13 @@ import "./scalar" (
 type Fe = (u64, u64, u64, u64, u64)
 type Point = (x: Fe, y: Fe, z: Fe, t: Fe)
 
+def slots = 6
+
 // The 64 bytes of a signature
 type Signature = (r: [32]u8, s: [32]u8)
 
 // The longest message that sign and verify take: sign traps on a longer one,
-// and so does verify, once the key and the signature have decoded
+// and so does verify, once A and R have decoded and S is below L
 def max-msg = 4096
 
 // What SHA-512 hashes: the prefix and the message for r, then R, A and the
@@ -47,8 +55,8 @@ data expanded = mut [0:u8; 64]
 data r = mut [0:u8; 64]
 data k = mut [0:u8; 64]
 
-data points: *mut [6]Point = mut [
-  ((0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0)); 6
+data points: *mut [slots]Point = mut [
+  ((0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0)); slots
 ]
 
 // Hashes the private key into expanded and clamps a: a multiple of 8 (the
@@ -196,6 +204,14 @@ test "ed25519 signing" {
     data s-plus-l = x"e5564300c360ac72 9086e2cc806e828a 84877f1eb8e5d974 d873e06522490155
                       4c8c7872aa064e04 9dbb3013fbf29380 d25bf5f0595bbe24 655141438e7a101b"
     assert !verify(s-plus-l, tv1-msg, tv1-pubkey)
+  }
+
+  test "verify refuses an R in an encoding not its own" {
+    // R is the identity with the sign bit set, and S = k a, for r = 0: the
+    // equation holds, but the identity is encoded with the sign 0 only
+    data odd-r = x"0100000000000000 0000000000000000 0000000000000000 0000000000000080
+                   071a5da496e94c66 afbb4e14651192a3 dbaabae7118b915c 182ec4f3c2aace0a"
+    assert !verify(odd-r, tv1-msg, tv1-pubkey)
   }
 }
 
