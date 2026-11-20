@@ -106,7 +106,7 @@ func approx_eq(a: f64, b: f64) -> bool => abs(a - b) < tolerance
 
 // === Memory: a table in data ===
 
-// The square of each byte value, cut to its low 8 bits
+// init_lookup fills it with each byte value's square, cut to its low 8 bits
 data lookup = mut [0:u8; 256]
 
 func init_lookup() {
