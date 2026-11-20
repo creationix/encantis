@@ -1,5 +1,6 @@
 // Ranges: items[a..b] is a slice over the same memory. Constant ranges on a
-// fixed array are checked at compile time; runtime ones give an optional slice.
+// fixed array are checked at compile time; any other range but s[..] (a
+// runtime bound, or a range of a slice) gives an optional slice.
 
 data text = "hello, world"
 data nums = mut [1:u32, 2, 3, 4, 5]
@@ -55,15 +56,16 @@ test "writing through a mutable range" {
 
 export func tail_len() -> u32 => text[7..].len
 export func rest_len(s: []u8, i: u32) -> u32 => (s[i..] ?? "").len
-// The bytes of s before its first zero, plus the bytes of s[1..]: an index
-// of a parameter in a loop's condition, and a range of one in a loop's header.
+// The number of bytes of s before its first zero, plus the length of
+// s[1..]: an index of a parameter in a loop's condition, and a range of one
+// in a loop's header.
 export func count(s: []u8) -> u32 {
   let n: u32 = 0
   while (s[n] ?? 0) != 0 { n += 1 }
   for c in s[1..] ?? "" { n += 1 }
   return n
 }
-test "ranges off the stack and in loops" {
+test "the length of a range or of a ??, and ranges in loops" {
   assert tail_len() == 5
   assert rest_len("hello", 2) == 3
   assert rest_len("hello", 9) == 0
