@@ -22,7 +22,6 @@ import "../../lib/vec" (
 import "../../lib/fixedvec" (
   "FixedVec" func FixedVec(comptime n: u32, comptime T: type) -> type
   "push" func fixed_push(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T), x: T) -> bool
-  "items" func items(comptime n: u32, comptime T: type, v: *FixedVec(n, T)) -> []T
 )
 
 import "../../lib/ring" (
@@ -33,56 +32,63 @@ import "../../lib/ring" (
 
 import "../../lib/bits" (
   "set_bit" func set_bit(comptime w: u32, b: *mut [w]u32, i: u32#(w * 32))
-  "has_bit" func has_bit(comptime w: u32, b: *[w]u32, i: u32#(w * 32)) -> bool
+  "count_bits" func count_bits(comptime w: u32, b: *[w]u32) -> u32
 )
 
 type Cell = (x: i32, y: i32)
 
-// The four neighbours of a cell on a board of 16 by 16: at most four, so a
-// FixedVec(4, Cell) holds them with no growing.
+// The board is side by side cells.
+def side = 16
+
+// The neighbours of a cell on the board: at most four, so a FixedVec(4, Cell)
+// holds them with no growing.
 export func neighbours(c: Cell) -> u32 {
   let scope = mark()
   defer reset(scope)
   let out = fixedvec(4, Cell)
   if c.x > 0 { out.fixed_push(Cell(c.x - 1, c.y)) }
-  if c.x < 15 { out.fixed_push(Cell(c.x + 1, c.y)) }
+  if c.x < side - 1 { out.fixed_push(Cell(c.x + 1, c.y)) }
   if c.y > 0 { out.fixed_push(Cell(c.x, c.y - 1)) }
-  if c.y < 15 { out.fixed_push(Cell(c.x, c.y + 1)) }
-  return out.items().len
+  if c.y < side - 1 { out.fixed_push(Cell(c.x, c.y + 1)) }
+  return out.len
 }
 
-// All cells of the board, in a growing Vec, and the ones a walk visits, in a
-// bitset of 256 bits (8 words).
-data visited = mut [0:u32; 8]
+// One bit for each cell of the board.
+data visited = mut [0:u32; side * side / 32]
 
+// The bit of a cell of the board, row by row.
+func bit(c: Cell) -> u32#(side * side) => ((c.y * side + c.x) as u32) % (side * side)
+
+// How many cells a walk of `steps` steps sees, x going up by 7 and y by 3 at
+// each step and wrapping at the edge. The walk goes into a Vec, which grows
+// as long as the caller asks, and each cell it reaches is marked in visited.
 export func walk(steps: u32) -> u32 {
   let scope = mark()
   defer reset(scope)
   let path = vec(Cell, 4)
   for i in steps {
-    let x = (i * 7) & 15
-    let y = (i * 3) & 15
-    path.push(Cell(x as i32, y as i32))
-    visited.set_bit((y * 16 + x) & 255)
+    let c = Cell(((i * 7) % side) as i32, ((i * 3) % side) as i32)
+    path.push(c)
+    visited.set_bit(c.bit())
   }
-  let seen: u32 = 0
-  for k in 256 {
-    if visited.has_bit(k) { seen += 1 }
-  }
-  return seen
+  return visited.count_bits()
 }
 
-// The last eight moves, in a Ring laid out as data.
-data moves = mut [0:u32; 8]
-data last_moves: Ring(8, u32) = mut (0, 0, moves)
+// The last moves, in a Ring laid out as data.
+def kept = 8
+data moves = mut [0:u32; kept]
+data last_moves: Ring(kept, u32) = mut (0, 0, moves)
 
 export func move(m: u32) { last_moves.record(m) }
+
+// The oldest move the ring holds: once there have been eight, the eighth last.
 export func eighth_last() -> u32 => last_moves.oldest(0)
 
 test "neighbours" {
   assert neighbours(Cell(0, 0)) == 2
   assert neighbours(Cell(5, 0)) == 3
   assert neighbours(Cell(5, 5)) == 4
+  assert neighbours(Cell(side - 1, side - 1)) == 2
 }
 
 test "a walk, and the cells it saw" {
