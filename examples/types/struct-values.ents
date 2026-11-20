@@ -70,7 +70,7 @@ test "a struct rebuilt from its own fields" {
 func flipped(p: Point, s: []i32) -> i32 {
   p = Point(p.y, p.x)
   s = lists().chain
-  return p.x * 10 + p.y + (s.len as i32) * 100
+  return p.x * 10 + p.y + s.len as i32 * 100
 }
 
 test "struct and slice parameters are assigned" {
