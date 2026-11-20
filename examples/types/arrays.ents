@@ -42,7 +42,7 @@ data as-many-ptr: [*]u8 = "hello, world"
 data as-fixed: *[12]u8 = "hello, world"
 
 // ============================================================================
-// Multi-dimensional packed arrays — [NxM]T
+// Multi-dimensional packed arrays: *[NxM]T
 // ============================================================================
 
 // 3x3 matrix: 9 contiguous i32 values
@@ -62,7 +62,7 @@ data grid: *[4x4]u8#16 = [
 ]
 
 // ============================================================================
-// Nested pointer arrays — [][]T, [][!]T
+// Nested pointer arrays: [][]T, [][!]T
 // ============================================================================
 
 // Slice of slices: each inner string is a slice (ptr + len)
@@ -135,5 +135,5 @@ test "nested string arrays" {
   assert names.len == 3
   assert (names[1] ?? "").len == 3
   assert c-names.len == 3
-  assert (c-names[2] ?? as-cstr).len == 7   // scanned for its zero byte
+  assert (c-names[2] ?? "").len == 7        // scanned for its zero byte
 }
