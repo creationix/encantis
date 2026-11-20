@@ -30,6 +30,8 @@ func by_arm(k: i32) -> i64 {
   return v
 }
 
+// An if nested in a branch, written so rather than as an elif, is one more
+// constant branch.
 func nested(c: bool, d: bool) -> i64 {
   let v = if c { low } else { if d { 1 } else { 1073741824 * 2 } }
   return v

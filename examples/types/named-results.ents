@@ -1,32 +1,24 @@
 // Named results are returned as set, whatever statement ends the function.
 
-// Ends in an if statement (no else): the results are the named locals.
+// Ends in an if statement (no else): the results are the named locals. Each
+// starts at zero, so clipped is false unless the branch sets it.
 export func clamp_count(n: u32, max: u32) -> (count: u32, clipped: bool) {
   count = n
-  clipped = false
   if n > max {
     count = max
     clipped = true
   }
 }
 
-// Ends in a loop.
+// Ends in a loop; total starts at 0.
 export func sum_to(n: u32) -> (total: u32) {
-  total = 0
   for i in n {
     total += i
   }
 }
 
-export func clamped(n: u32, max: u32) -> u32 {
-  let (count:, clipped:) = clamp_count(n, max)
-  return count
-}
-
-export func was_clipped(n: u32, max: u32) -> bool {
-  let (count:, clipped:) = clamp_count(n, max)
-  return clipped
-}
+export func clamped(n: u32, max: u32) -> u32 => clamp_count(n, max).count
+export func was_clipped(n: u32, max: u32) -> bool => clamp_count(n, max).clipped
 
 test "a trailing if leaves the named results as set" {
   assert clamped(3, 5) == 3
@@ -41,16 +33,19 @@ test "a trailing loop leaves the named result as set" {
 
 // A bare return hands the named results back as they are set so far. (With an
 // unnamed result it is an error: there is nothing for it to return.)
+//
+// first_factor is the least factor of n from 2 up to its square root, and
+// whether there is one: there is none when n is prime or below 4. The loop
+// stops when factor > n / factor, since factor * factor wraps past 65535.
 export func first_factor(n: u32) -> (factor: u32, found: bool) {
   factor = 2
-  found = true
   loop {
-    return when n % factor == 0
-    factor += 1
-    if factor * factor > n {
-      found = false
+    return when factor > n / factor   // past the square root: found is false
+    if n % factor == 0 {
+      found = true
       return
     }
+    factor += 1
   }
 }
 
@@ -60,6 +55,10 @@ test "a bare return gives back the named results as set" {
   assert a.found
   let b = first_factor(97)
   assert !b.found
+  assert first_factor(4).found
+  assert !first_factor(2).found
+  assert first_factor(4294967295).factor == 3
+  assert !first_factor(4294967291).found      // the largest u32 prime
 }
 
 // A trailing value supplies the results, in order: a tuple literal (each
@@ -69,11 +68,11 @@ export func split(n: u32) -> (hi: u32, lo: u32) {
 }
 
 export func widened(n: u16) -> (count: u64, half: f64) {
-  (n, n / 2)
+  (n, n / 2)                        // a u16 division, then widened: 9 gives 4.0
 }
 
 export func swapped(n: u32) -> (lo: u32, hi: u32) {
-  split(n << 16 | n >> 16)
+  split(n <<< 16)
 }
 
 test "a trailing value fills the named results in order" {
@@ -104,7 +103,7 @@ test "an expression body supplies named results" {
 func digits(n: u32) -> (u32, u32) => (n / 10, n % 10)
 
 export func tens(n: u32) -> (q: u32, r: u32) => digits(n)
-export func turned(n: u32) -> (lo: u32, hi: u32) => split(n << 16 | n >> 16)
+export func turned(n: u32) -> (lo: u32, hi: u32) => split(n <<< 16)
 export func tens_or(n: u32, small: bool) -> (q: u32, r: u32) => if small { (0, n) } else { digits(n) }
 
 test "an expression body passes a call's results on in order" {

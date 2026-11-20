@@ -1,39 +1,41 @@
-// Writes through runtime indices. A ranged index (from a for loop, & or %, or
-// a comparison that narrows it) needs no check; &items[i] gives an optional
-// pointer for indices the compiler can't prove are in range.
+// Writes through runtime indices. A ranged index needs no check: the
+// variable of a for loop over a constant count, x & K, x % K or x >> K with a
+// constant K, a u8 into 256 elements, and a variable that a comparison with a
+// constant narrows. &items[i] gives an optional pointer for an index the
+// compiler can't prove is in range.
 
 data buf = mut [0:u8; 12]
 data grid = mut [0:u8; 256]
 data pairs = mut [0:u8; 16]
 
-export func mask(x: u32) { pairs[x & 15] = 1 }
-export func modulo(x: u32) { buf[x % 12] = 2 }
-export func shift(x: u32) { pairs[x >> 28] = 3 }
-export func byte(b: u8) { grid[b] = 4 }
+export func mask(x: u32) { pairs[x & 15] = 1 }         // a u32#16
+export func modulo(x: u32) { buf[x % buf.len] = 2 }    // a u32#12
+export func shift(x: u32) { pairs[x >> 28] = 3 }       // the top 4 bits: a u32#16
+export func byte(b: u8) { grid[b] = 4 }                // a u8 is below 256
 export func branch(x: u32) {
-  if x < 12 { buf[x] = 5 }
+  if x < buf.len { buf[x] = 5 }
 }
 export func le(x: u32) {
-  if x <= 11 { buf[x] = 5 }
+  if x <= buf.len - 1 { buf[x] = 5 }
 }
 export func flipped(x: u32) {
-  if 12 > x { buf[x] = 5 }
+  if buf.len > x { buf[x] = 5 }
 }
 export func both(x: u32, y: u32) {
-  if x < 12 && y < 16 { buf[x] = pairs[y] }
+  if x < buf.len && y < pairs.len { buf[x] = pairs[y] }
 }
 export func guard(x: u32) {
-  return when x >= 12
+  return when x >= buf.len
   buf[x] = 6
 }
 export func guard_if(x: u32) -> u8 {
-  if x >= 12 { return 0 }
+  if x >= buf.len { return 0 }      // a branch that always exits guards the rest
   return buf[x]
 }
 export func elif_else(x: u32) -> u8 {
-  if x >= 16 {
+  if x >= pairs.len {
     return 0
-  } elif x >= 12 {
+  } elif x >= buf.len {
     return pairs[x]
   } else {
     return buf[x]
@@ -42,31 +44,57 @@ export func elif_else(x: u32) -> u8 {
 export func in_loop(n: u32) -> u32 {
   let t: u32 = 0
   for i in n {
-    continue when i >= 12
-    t += buf[i] as u32
+    break when i >= buf.len
+    t += buf[i]
   }
   return t
 }
 test "writes land where they should" {
   branch(3)
-  assert (buf[3] ?? 0) == 5
+  assert buf[3] == 5
   guard(11)
-  assert (buf[11] ?? 0) == 6
+  assert buf[11] == 6
   guard(12)
   modulo(25)
-  assert (buf[1] ?? 0) == 2
+  assert buf[1] == 2
   assert guard_if(11) == 6
   assert guard_if(99) == 0
   assert elif_else(3) == 5
 }
 
-export func const_idx() -> u32 {
-  let p = &buf[3]
-  p.* = 42
-  return (buf[3] ?? 0) as u32
+test "a mask, a shift, a byte and each comparison prove the index" {
+  mask(0x2A)
+  assert pairs[10] == 1
+  shift(0xF0000000)
+  assert pairs[15] == 3
+  byte(255)
+  assert grid[255] == 4
+  modulo(13)
+  assert buf[1] == 2
+  le(11)
+  le(12)
+  assert buf[11] == 5
+  flipped(3)
+  flipped(12)
+  assert buf[3] == 5
+  both(2, 10)
+  both(2, 16)
+  assert buf[2] == 1
+  assert elif_else(15) == 3
+  assert elif_else(16) == 0
+  assert in_loop(4) == 2 + 1 + 5                // buf[0] (still 0) + buf[1] + buf[2] + buf[3]
+  assert in_loop(0xFFFFFFFF) == 2 + 1 + 5 + 5   // and buf[11]: the loop stops at buf.len
 }
-export func ranged(i: u32#12) { let p = &buf[i]
-  p.* = 1 }
+
+export func const_idx() -> u32 {
+  let p = &buf[3]                   // a constant index: a plain *mut u8
+  p.* = 42
+  return buf[3]
+}
+export func ranged(i: u32#(buf.len)) {
+  let p = &buf[i]                   // a ranged index: a plain *mut u8 too
+  p.* = 1
+}
 export func checked(i: u32, v: u8) -> bool {
   if let p = &buf[i] {
     p.* = v
@@ -83,18 +111,20 @@ export func slice_write(s: []mut u8, i: u32, v: u8) -> bool {
 }
 test "const index address" { assert const_idx() == 42 }
 test "checked writes" {
+  ranged(4)
+  assert buf[4] == 1
   assert checked(0, 9)
-  assert (buf[0] ?? 0) == 9
+  assert buf[0] == 9
   assert checked(11, 9)
-  assert (buf[11] ?? 0) == 9
+  assert buf[11] == 9
   assert !checked(12, 9)
   assert !checked(0xFFFFFFFF, 9)
 }
 test "slice writes" {
-  let s: []mut u8 = buf
-  assert slice_write(s, 5, 77)
-  assert (buf[5] ?? 0) == 77
-  assert !slice_write(s, 12, 1)
+  assert slice_write(buf, 5, 77)
+  assert buf[5] == 77
+  assert !slice_write(buf, 12, 1)
+  assert !slice_write(buf[6..], 6, 1)
 }
 
 // A shift takes its count modulo the width it's done in: 32 bits for a u32,
@@ -118,20 +148,20 @@ export func whole_byte(b: u8) -> bool {
   }
   return false
 }
-// A constant with a shift in it is the value the shift gives: 60 >> 34 is 15.
+// A shift of constants is a constant index: 60 >> 2 is 15.
 export func last() -> u8 {
-  pairs[60 >> 34] = 10
+  pairs[60 >> 2] = 10
   return pairs[15]
 }
 test "a shift count is taken modulo the width" {
   assert top(0xA0000000) == 10
-  assert (pairs[10] ?? 0) == 7
+  assert pairs[10] == 7
   assert whole(3)
-  assert (pairs[3] ?? 0) == 8
+  assert pairs[3] == 8
   assert !whole(16)
   assert !whole(0xFFFFFFFF)
   assert whole_byte(5)
-  assert (pairs[5] ?? 0) == 9
+  assert pairs[5] == 9
   assert !whole_byte(200)
   assert last() == 10
 }
@@ -149,7 +179,7 @@ export func wrapped() -> u8 {
 export func sixteenth() -> u32 => (0 - 1) / 268435455
 test "a constant divides and shifts as its type holds it" {
   assert low_bits(0xFFFFFFF3) == 3
-  assert (pairs[3] ?? 0) == 11
+  assert pairs[3] == 11
   assert wrapped() == 12
   assert sixteenth() == 16
 }

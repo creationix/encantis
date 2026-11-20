@@ -16,30 +16,30 @@ type Spot = (c: i32, di: i32, room: i32)
 type Lane = (cells: []i32, free: i32)
 type Rect = (origin: (x: i32, y: i32), size: (w: i32, h: i32))
 
-global list: []i32 = (0, 0)
+global list: []i32
 global here: Spot = Spot(1, 2, 3)
 global there: Spot
 global lane: Lane
 global rect: Rect = Rect((x: 1, y: 2), (w: 3, h: 4))
 global message: []u8 = "hello"
 global wide: u128 = 5
-global lanes: []Lane = (0, 0)
-global rows: [][]i32 = (0, 0)
-export global seen: []i32 = (0, 0)
+global lanes: []Lane
+global rows: [][]i32
+export global seen: []i32
 
 // A cast of a constant is a constant in each part too.
 data primes = [2:i32, 3, 5, 7]
-global first: []i32 = (primes as [*]i32, 3:u32)
-global low: []u8 = (primes as [*]u8, sizeof(i32) as u32)
+global first: []i32 = (primes as [*]i32, 3)
+global low: []u8 = (primes as [*]u8, sizeof(i32))
 global scaled: (u8, f64) = (300 as u8, 7 as f64)
 
 func count() -> u32 => list.len
 
-func words() -> []i32 => ((buf as [*]i32), 3:u32)
+func words() -> []i32 => (buf as [*]i32, 3)
 
 test "a slice global" {
   assert count() == 0
-  list = ((buf as [*]i32), 2:u32)
+  list = (buf as [*]i32, 2)
   assert count() == 2
   assert list.len == 2
   list = words()
@@ -50,10 +50,10 @@ test "a slice global" {
 
 test "a slice global starts as its initializer" {
   assert message.len == 5
-  assert message.ptr[1] == 101
+  assert (message[1] ?? 0) == 'e'
   let total: u32 = 0
-  for c in message { total += c as u32 }
-  assert total == 532
+  for c in message { total += c }
+  assert total == 'h' + 'e' + 'l' + 'l' + 'o'
 }
 
 test "a cast in a part of a global's initializer" {
@@ -66,9 +66,10 @@ test "a cast in a part of a global's initializer" {
 }
 
 test "a struct global starts as its initializer" {
-  assert here.c + here.di * 10 + here.room * 100 == 321
+  assert here.c == 1 && here.di == 2 && here.room == 3
   assert there.room == 0
-  assert rect.origin.x + rect.origin.y * 10 + rect.size.w * 100 + rect.size.h * 1000 == 4321
+  assert rect.origin.x == 1 && rect.origin.y == 2
+  assert rect.size.w == 3 && rect.size.h == 4
 }
 
 test "a struct global" {
@@ -95,7 +96,7 @@ test "a struct global rebuilt from its own fields" {
 test "nested fields of struct globals" {
   let w = buf as [*]mut i32
   w[0] = 5
-  lane = Lane((w, 1:u32), 2)
+  lane = Lane((w, 1), 2)
   lane.free += 1
   assert lane.free == 3
   assert lane.cells.len == 1
@@ -114,16 +115,16 @@ test "globals that are slices of structs and of slices" {
   assert rows.len == 0
   let w = buf as [*]mut i32
   w[0] = 5
-  let store = ((buf as u32) + 16) as [*]mut Lane
-  store[0] = Lane((w, 1:u32), 2)
-  store[1] = Lane((w, 3:u32), 4)
-  lanes = (store, 2:u32)
+  let store = (buf as [*]mut Lane) + 16
+  store[0] = Lane((w, 1), 2)
+  store[1] = Lane((w, 3), 4)
+  lanes = (store, 2)
   let t: u32 = 0
-  for l in lanes { t += l.cells.len * 10 + (l.free as u32) }
+  for entry in lanes { t += entry.cells.len * 10 + entry.free as u32 }
   assert t == 46
-  let lists = ((buf as u32) + 40) as [*]mut []i32
+  let lists = (buf as [*]mut []i32) + 40
   lists[0] = lanes.ptr[1].cells
-  rows = (lists, 1:u32)
+  rows = (lists, 1)
   for row in rows { t += row.len }
   assert t == 49
 }
@@ -140,7 +141,7 @@ test "globals shared with another module" {
   setup()
   seen = order
   assert seen.len == 4
-  assert seen.ptr[2] == 9
+  assert (seen[2] ?? 0) == 9
   size.w = 10
   assert size.w + size.h == 15
   ticks += 1
