@@ -74,7 +74,7 @@
   "examples/types/pointer-globals.ents": "fc898353388da6f9662b33de4ce4ed8728edb45990a8cc339ea44345a2f445f9",
   "examples/types/positional-destructuring.ents": "146c3d5b038e8292f13ab4644e44978a126468cd3add337e164cdcf5e28e22ed",
   "examples/types/range-assign.ents": "d9f3cb5c080e86b51b856729d155f47bded237e5e563e7482262cd0c04c20f26",
-  "examples/types/ranged-writes.ents": "7ce67eb6cdd841ab2b5f1498a2fca3bd94ee2768963af0e142df3c93b0d914c6",
+  "examples/types/ranged-writes.ents": "6b5f9da1922361517d4c59405381ab9d24f9fdb74526a8e932259336f4fbc27d",
   "examples/types/ranges.ents": "e68ba34cec59894da050eeceacd7416556d2b1891458bbc468158b18d4d45a8a",
   "examples/types/rotations.ents": "5b7367a44dc0911ca5e0604661211df8a25b9c764cd22626895732c911ae1129",
   "examples/types/struct-values.ents": "a328772fdfb0c650250796c961da50ff852ef316ea1159497a6cb3ba8a34a086",

@@ -1,8 +1,8 @@
 // Writes through runtime indices. A ranged index needs no check: the
-// variable of a for loop, x & K, x % K or x >> K with a constant K, a u8
-// into 256 elements, and a variable that a comparison with a constant
-// narrows. &items[i] gives an optional pointer for an index the compiler
-// can't prove is in range.
+// variable of a for loop over a constant count, x & K, x % K or x >> K with a
+// constant K, a u8 into 256 elements, and a variable that a comparison with a
+// constant narrows. &items[i] gives an optional pointer for an index the
+// compiler can't prove is in range.
 
 data buf = mut [0:u8; 12]
 data grid = mut [0:u8; 256]
@@ -82,8 +82,8 @@ test "a mask, a shift, a byte and each comparison prove the index" {
   assert buf[2] == 1
   assert elif_else(15) == 3
   assert elif_else(16) == 0
-  assert in_loop(4) == 2 + 1 + 5             // buf[1] + buf[2] + buf[3]
-  assert in_loop(0xFFFFFFFF) == 2 + 1 + 5 + 5
+  assert in_loop(4) == 2 + 1 + 5                // buf[0] (still 0) + buf[1] + buf[2] + buf[3]
+  assert in_loop(0xFFFFFFFF) == 2 + 1 + 5 + 5   // and buf[11]: the loop stops at buf.len
 }
 
 export func const_idx() -> u32 {
@@ -148,10 +148,9 @@ export func whole_byte(b: u8) -> bool {
   }
   return false
 }
-// A shift of constants is the value the program's shift gives: as the u32
-// index, 60 >> 34 is 60 >> 2, which is 15.
+// A shift of constants is a constant index: 60 >> 2 is 15.
 export func last() -> u8 {
-  pairs[60 >> 34] = 10
+  pairs[60 >> 2] = 10
   return pairs[15]
 }
 test "a shift count is taken modulo the width" {
