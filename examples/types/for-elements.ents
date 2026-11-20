@@ -96,9 +96,9 @@ test "slices of slices of wider elements" {
   assert lists.len == 2
   let t = 0
   let n: u32 = 0
-  for l in lists {
-    n += l.len
-    t += sum-of(l)
+  for list in lists {
+    n += list.len
+    t += sum-of(list)
   }
   assert n == 3
   assert t == 6
