@@ -24,7 +24,9 @@ export func return-cstr() -> *[!]u8 {
   return "c style string"
 }
 
-// An address, with the length before the text as a LEB128 number
+// An address, with the length before the text as a LEB128 number. The module
+// only lays it out: reading a *[?]T is not implemented (reference 2.5), so only
+// a host decodes the length.
 export func return-lstr() -> *[?]u8 {
   return "length-prefixed string"
 }
@@ -49,13 +51,6 @@ export func template-null-literal(name: *[!]u8, color: *[!]u8) -> []*[!]u8 {
   return `Welcome ${name} who likes ${color}.`
 }
 
-// The bytes of the parts, one after another
-func total(parts: [][]u8) -> (n: u32) {
-  for p in parts {
-    n += p.len
-  }
-}
-
 test "each kind of string has its length" {
   assert return-slice().len == 4
   assert return-ptr().len == 6
@@ -63,7 +58,8 @@ test "each kind of string has its length" {
   assert return-cstr().len == 14
   let both = return-slice-of-slices()
   assert both.len == 2
-  assert total(both) == 10
+  assert (both[0] ?? "").len == 5
+  assert (both[1] ?? "").len == 5
   let rows = return-nested-cstr()
   assert rows.len == 2
   assert rows[1].len == 5
@@ -73,7 +69,11 @@ test "each kind of string has its length" {
 test "a template is its fragments" {
   let parts = template-literal("Ann", "red")
   assert parts.len == 5
-  assert total(parts) == 8 + 3 + 11 + 3 + 1
+  assert (parts[0] ?? "").len == 8     // "Welcome "
+  assert (parts[1] ?? "").len == 3     // name
+  assert (parts[2] ?? "").len == 11    // " who likes "
+  assert (parts[3] ?? "").len == 3     // color
+  assert (parts[4] ?? "").len == 1     // "."
   let texts = template-null-literal("Ann", "red")
   assert texts.len == 5
   let name = texts[1] ?? "?"

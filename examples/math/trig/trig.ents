@@ -10,6 +10,9 @@ import "math" (
 // The host prints the fragments of a text one after another
 import "sys" "print" func print(parts: [][]u8)
 
+// The host reads the fragments print is given
+export memory
+
 // Writes a number in decimal into a buffer, and returns the text
 import "./write-float" "write-float" func write-float(buf: []mut u8, val: f64) -> []u8
 

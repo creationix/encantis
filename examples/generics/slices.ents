@@ -21,8 +21,9 @@ func sum(comptime T: type, xs: []T) -> (total: T) {
   }
 }
 
-// Sets every element of xs to x: one memory.fill for bytes or zeros, a store
-// into each element otherwise (reference 4.8).
+// Sets every element of xs to x: one memory.fill for bytes, a store into each
+// element otherwise (reference 4.8), 0 too: x is a parameter, so the compiler
+// does not see a zero.
 func fill(comptime T: type, xs: []mut T, x: T) {
   xs[..] = x
 }

@@ -7,13 +7,16 @@ data space = mut [0:u8; 4096]
 global top: u32 = 0
 
 // A bump allocator: n bytes of space, at an offset rounded up to a multiple
-// of 8. It traps when space has no room for them.
+// of 8. Where space has no room for them it traps, and top stays as it was.
 func alloc(n: u32) -> (p: u32) {
-  top = (top + 7) & ~7
-  assert n <= space.len - top      // not top + n <= space.len, which can wrap
-  p = (space as u32) + top
-  top += n
+  let at = (top + 7) & ~7
+  assert n <= space.len - at       // not at + n <= space.len, which can wrap
+  p = (space as u32) + at
+  top = at + n
 }
+
+// Gives back the space taken since top was mark.
+func reset(mark: u32) { top = mark }
 
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
 func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
@@ -22,6 +25,7 @@ func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
 // doubles the room.
 func vec(comptime T: type, cap: u32) -> *mut Vec(T) {
   let room = max(cap, 1)
+  assert room <= space.len / sizeof(T)   // so that room * sizeof(T) can't wrap
   let v = alloc(sizeof(Vec(T))) as *mut Vec(T)
   v.* = Vec(T)(alloc(room * sizeof(T)) as [*]mut T, 0, room)
   return v
@@ -51,10 +55,11 @@ func items(comptime T: type, v: *Vec(T)) -> []T => v.ptr[0..v.len]
 func swapped(comptime A: type, comptime B: type, p: Pair(A, B)) -> Pair(B, A) => Pair(B, A)(p.second, p.first)
 
 // The sum of 0 to n - 1, pushed onto a vector and read back. The space the
-// vector takes is given back when it returns; a call that traps, for want of
-// space, leaves it taken.
+// vector takes is given back on the way out; a call that traps for want of
+// space runs no defer, and leaves it taken.
 export func sum_to(n: u32) -> (s: u32) {
   let mark = top
+  defer reset(mark)
   let v = vec(u32, 2)
   for i in n {
     push(v, i)
@@ -62,7 +67,6 @@ export func sum_to(n: u32) -> (s: u32) {
   for x in items(v) {
     s += x
   }
-  top = mark
 }
 
 test "a vec grows and keeps its elements" {
@@ -107,6 +111,13 @@ test "sum_to gives back the space it takes" {
     assert sum_to(100) == 4950
   }
   assert top == before
+}
+
+test "a vector has room for one element at least" {
   let none = vec(u32, 0)
   assert none.cap == 1
+  push(none, 5)
+  push(none, 6)
+  assert none.cap == 2
+  assert get(none, 1) == 6
 }

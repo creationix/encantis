@@ -5627,7 +5627,7 @@ describe('examples/generics', () => {
 
   test('vec.ents: a generic type, its instances, and nothing for the type or for what only tests use', async () => {
     const wat = await compileExample('vec.ents')
-    expect(funcs(wat)).toEqual(['alloc', 'vec<u32>', 'push<u32>', 'items<u32>', 'sum_to'])
+    expect(funcs(wat)).toEqual(['alloc', 'reset', 'vec<u32>', 'push<u32>', 'items<u32>', 'sum_to'])
     expect(funcWat(wat, 'vec<u32>')).toContain('(call $alloc (i32.const 12))')
   })
 
@@ -5641,7 +5641,7 @@ describe('examples/generics', () => {
   })
 
   test('the tests of vec.ents and sort.ents pass', async () => {
-    for (const [name, count] of [['vec.ents', 5], ['sort.ents', 4]] as const) {
+    for (const [name, count] of [['vec.ents', 6], ['sort.ents', 4]] as const) {
       const { ran, failed } = await runTestsOfSource(await Bun.file(join(dir, name)).text())
       expect(failed).toEqual([])
       expect(ran).toHaveLength(count)
@@ -5651,7 +5651,7 @@ describe('examples/generics', () => {
   test('methods.ents: the receiver decides T, and each chain is nested direct calls', async () => {
     const wat = await compileExample('methods.ents')
     // What only the tests use (u8 vectors, pop, get, find, unique) is absent.
-    expect(funcs(wat)).toEqual(['alloc', 'vec<u32>', 'push<u32>', 'items<u32>', 'double', 'sum_to'])
+    expect(funcs(wat)).toEqual(['alloc', 'reset', 'vec<u32>', 'push<u32>', 'items<u32>', 'double', 'sum_to'])
     expect(funcWat(wat, 'sum_to')).toContain('(call $push<u32> (local.get $v) (local.get $i))')
     const source = await Bun.file(join(dir, 'methods.ents')).text()
     // v.push(i) and push(v, i) are the same instruction, and so is every other pair.

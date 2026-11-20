@@ -122,7 +122,8 @@ test "write-float" {
     assert strcmp(write-float(b2, -123.0), "-1") == 0
     assert strcmp(write-float(b2, 999.0), "99") == 0
 
-    // 3-byte buffer: the whole part and the '.' fill it, with no room for a digit
+    // 3-byte buffer: one digit fits after "3."; after "42" a '.' would leave no
+    // room for one, so it is left out
     let b3: []mut u8 = mut [0:u8; 3]
     assert strcmp(write-float(b3, 3.14), "3.1") == 0
     assert strcmp(write-float(b3, 42.5), "42") == 0

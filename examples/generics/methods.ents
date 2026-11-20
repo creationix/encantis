@@ -7,13 +7,16 @@ data space = mut [0:u8; 4096]
 global top: u32 = 0
 
 // A bump allocator: n bytes of space, at an offset rounded up to a multiple
-// of 8. It traps when space has no room for them.
+// of 8. Where space has no room for them it traps, and top stays as it was.
 func alloc(n: u32) -> (p: u32) {
-  top = (top + 7) & ~7
-  assert n <= space.len - top      // not top + n <= space.len, which can wrap
-  p = (space as u32) + top
-  top += n
+  let at = (top + 7) & ~7
+  assert n <= space.len - at       // not at + n <= space.len, which can wrap
+  p = (space as u32) + at
+  top = at + n
 }
+
+// Gives back the space taken since top was mark.
+func reset(mark: u32) { top = mark }
 
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
 
@@ -21,6 +24,7 @@ func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
 // doubles the room.
 func vec(comptime T: type, cap: u32) -> *mut Vec(T) {
   let room = max(cap, 1)
+  assert room <= space.len / sizeof(T)   // so that room * sizeof(T) can't wrap
   let v = alloc(sizeof(Vec(T))) as *mut Vec(T)
   v.* = Vec(T)(alloc(room * sizeof(T)) as [*]mut T, 0, room)
   return v
@@ -80,10 +84,11 @@ data repeats = [4:u32, 7, 4, 4, 9, 7, 1]
 data letters = "mississippi"
 
 // The sum of 0 to n - 1, pushed onto a vector and read back. The space the
-// vector takes is given back when it returns; a call that traps, for want of
-// space, leaves it taken.
+// vector takes is given back on the way out; a call that traps for want of
+// space runs no defer, and leaves it taken.
 export func sum_to(n: u32) -> (s: u32) {
   let mark = top
+  defer reset(mark)
   let v = vec(u32, 4)
   for i in n {
     v.push(i)
@@ -91,7 +96,6 @@ export func sum_to(n: u32) -> (s: u32) {
   for x in v.items() {
     s += x
   }
-  top = mark
 }
 
 test "the receiver decides T" {
