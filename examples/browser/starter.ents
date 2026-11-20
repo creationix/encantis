@@ -4,7 +4,7 @@
 
 export memory
 
-// ---- The host's side: input bits and drawing commands (as in lantern.ents) ---
+// === The host's side: input bits and drawing commands (as in lantern.ents) ===
 
 def btn-left = 1
 def btn-right = 2
@@ -42,7 +42,7 @@ func sound(from: f32, to: f32, secs: f32, volume: f32, wave: u32) { emit(op-soun
 
 export func commands() -> u32 => (&cmds.list) as u32
 
-// ---- The game: positions are in [0, 1] across the canvas --------------------
+// === The game: positions are in [0, 1] across the canvas ===
 
 def speed = 0.5      // of the canvas a second
 def reach = 0.002    // the squared distance at which the dot is on the target

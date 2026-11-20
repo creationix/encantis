@@ -56,8 +56,7 @@
  *   - Adam Langley's implementation notes
  */
 
-// Implementation
-// ==============
+// === Implementation ===
 //
 // This follows Bernstein's crit-bit code, adapted for byte slices that can be
 // prefixes of each other ("a" and "a\x00" are different keys): byte i of a key is

@@ -17,7 +17,7 @@
 
 export memory
 
-// ---- Input: the bits of the host's button word -----------------------------
+// === Input: the bits of the host's button word ===
 
 def btn-left = 1
 def btn-right = 2
@@ -26,7 +26,7 @@ def btn-down = 8
 def btn-dash = 16
 def btn-start = 32
 
-// ---- Commands: what a frame asks the host to draw and play -------------------
+// === Commands: what a frame asks the host to draw and play ===
 
 def op-clear = 1   // the whole canvas in `color`
 def op-rect = 2    // a b c d = x y w h
@@ -113,7 +113,7 @@ def glow-near = 0xffcf6b1a
 def straw-halo = 0xfff1a840
 def pale-halo = 0xfff4d660
 
-// ---- Levels ------------------------------------------------------------------
+// === Levels ===
 
 def map-w = 24
 def map-h = 14
@@ -213,7 +213,7 @@ data levels: *[level-count]Level = [
   ])
 ]
 
-// ---- The world -----------------------------------------------------------------
+// === The world ===
 
 def max-wisps = 32
 def max-sparks = 3
@@ -331,7 +331,7 @@ func sin(a: f32) -> f32 {
 }
 func cos(a: f32) -> f32 => sin(a + 1.5707963)
 
-// ---- Rules -----------------------------------------------------------------------
+// === Rules ===
 
 // The lantern at the middle of the level's start tile, facing right.
 func enter(lv: *Level) {
@@ -554,7 +554,7 @@ export func commands() -> u32 => (&cmds.list) as u32
 export func score() -> u32 => world.score
 export func mode() -> u32 => world.mode
 
-// ---- Drawing -------------------------------------------------------------------
+// === Drawing ===
 
 def hud = 40.0           // the height of the strip along the top, in CSS pixels
 
@@ -665,7 +665,7 @@ func draw(width: f32, height: f32) {
   }
 }
 
-// ---- Tests -------------------------------------------------------------------------
+// === Tests ===
 
 test "every room is walled in, and starts the lantern on floor" {
   for k in level-count {

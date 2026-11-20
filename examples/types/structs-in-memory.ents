@@ -31,7 +31,7 @@ func pair() -> []i32 {
   return w[0..2]
 }
 
-// --- whole structs through an index ---
+// === Whole structs through an index ===
 
 test "a struct stored in an array can be read back" {
   let list = spots()
@@ -93,7 +93,7 @@ test "elements of a slice are bounds-checked" {
   assert seen == 6
 }
 
-// --- through a pointer to one struct ---
+// === Through a pointer to one struct ===
 
 func turn(p: *mut Spot) -> i32 {
   p.c = 5
@@ -178,7 +178,7 @@ test "an element is destructured" {
   assert c + di * 10 + room * 100 == 351
 }
 
-// --- nested structs and slices ---
+// === Nested structs and slices ===
 
 test "a struct inside a struct" {
   let picks = choices()
@@ -266,7 +266,7 @@ test "a tuple with a wide integer" {
   assert list[1].1 == 4
 }
 
-// --- bools ---
+// === Bools ===
 
 type Cell = (open: bool, seen: bool, id: u16)
 
@@ -295,7 +295,7 @@ test "a bool takes one byte" {
   assert sizeof(Cell) == 4
 }
 
-// --- element loops ---
+// === Element loops ===
 
 test "a loop over the structs of a slice" {
   let list = spots()
@@ -327,7 +327,7 @@ test "the loop variable is a copy" {
   assert fixed[0].c == 1
 }
 
-// --- addresses are evaluated once ---
+// === Addresses are evaluated once ===
 
 test "an index with effects is evaluated once" {
   let list = spots()
@@ -359,7 +359,7 @@ test "an address that reads memory is evaluated before its own stores" {
   assert w[2] == 0
 }
 
-// --- pointers as elements ---
+// === Pointers as elements ===
 
 test "an array of pointers" {
   let list = spots()
