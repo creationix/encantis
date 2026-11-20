@@ -5905,7 +5905,7 @@ A block, `{ ... }`, is a sequence of statements, run in order. Statements need n
 
 `if` and `match` are expressions. Written as a statement, one runs for what its branches do; written where a value is wanted, it gives one.
 
-**Bodies.** Everything that has a body takes either a block or `=>` and one expression: a function ([3.4](#34-functions)), each branch of an `if`, and `while`, `for` and `loop`. A match arm is its patterns, `=>`, and an expression or a block ([5.4](#54-match-expressions)). An arrow body is one expression, never a statement: `for i in n => add(i)` calls `add` on each pass, but `for i in n => t += i` is a syntax error, since an assignment is a statement. Where nothing takes an arrow body's value, as in a loop, the value is dropped.
+**Bodies.** Everything that has a body takes either a block or `=>` and one expression: a function ([3.4](#34-functions)), each branch of an `if`, and `while`, `for` and `loop`. A match arm is its patterns, `=>`, and an expression or a block ([5.4](#54-match-expressions)). An arrow body is one expression, never a statement: `for i in n => add(i)` calls `add` on each pass, but `for i in n => t += i` is a syntax error, since an assignment is a statement, and so is the arm `1 => t = 6` (write `1 => { t = 6 }`). Where nothing takes an arrow body's value, as in a loop, the value is dropped.
 
 <!-- spec:begin compile -->
 
@@ -6093,7 +6093,7 @@ A `for` binds one variable, `for x in xs`, or two, `for i, x in xs`: the index f
 
 #### Counting
 
-`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that counts up from 0 while it is below the count, so a negative count runs the loop zero times. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`).
+`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that counts up from 0 while it is below the count, so a negative count runs the loop zero times. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`.
 
 There is no range form: `for i in 2..10` is a syntax error. Count from 0 and add the start, or loop over the elements of a range of an array or slice ([4.8](#48-slicerange-syntax)). A count loop has one variable; with two, `for i, j in n`, the first is never set (a known bug).
 
@@ -6372,7 +6372,7 @@ test "a loop's variables are its body's" {
 
 <!-- spec:end -->
 
-The body can assign its loop's variables. The element is a copy, so assigning to it changes nothing else. A count's variable is the one the loop steps: after each pass it goes up by one from the value it holds and is compared with the count, so assigning to it changes the passes that follow (`i = n - 1` makes the pass the last). An element loop's index counts on from a value assigned to it, while the elements are walked as before. A `u32#N` variable takes only values below `N` (`cannot assign int(20) to u32#10`).
+The body can assign its loop's variables. The element is a copy, so assigning to it changes nothing else. A count's variable is the one the loop steps: after each pass it goes up by one from the value it holds and is compared with the count, so assigning to it changes the passes that follow, never the rest of the pass it is in: `i = n - 1` makes the pass the last, and so does any value at or past the count. The step wraps, so after `i = 0xFFFFFFFF` the next pass has `i` 0. An element loop's index counts on from a value assigned to it, while the elements are walked as before. A `u32#N` variable takes only values below `N` (`cannot assign int(20) to u32#10`).
 
 ### 5.3 Control Statements
 
@@ -6667,7 +6667,7 @@ These are the patterns that are implemented:
 | Pattern | Matches |
 |---|---|
 | an integer literal: `42`, `-1`, `0x2A`, `0b101` | the subject equal to it |
-| a float literal: `1.5` | the subject equal to it |
+| a float literal: `1.5` | the subject equal to it, as `==` compares floats: `0.0` also matches `-0.0`, and NaN matches no float pattern, only `_` |
 | one codepoint: `'a'` | the subject equal to its number, 97 ([Codepoint Literals](#codepoint-literals)) |
 | `true`, `false` | that bool |
 | `_` | any value |
@@ -7214,7 +7214,7 @@ test "lines" {
 
 <!-- spec:end -->
 
-The declaration an import writes is checked against nothing: of it, only the kind (`func`, `global`, `func Name(...) -> type`), the export name and the local name count. What the other module exports under the name is what is imported, with its own signature (parameters, results and comptime parameters), and the importing module is checked against that: an import that writes `"tally" func tally(x: u32) -> u64` for an export `tally() -> u32` is called `tally()` and gives a `u32`. Write it as the export is anyway: it is what a reader of the importing file sees, and what an editor knows of the function when it checks that file without the other (below). The kind must match, and the name must be exported:
+The declaration an import writes is checked against nothing: of it, only the kind (`func`, `global`, `func Name(...) -> type`), the export name and the local name count. What the other module exports under the name is what is imported, with its own signature (parameters, results and comptime parameters), and the importing module is checked against that: an import that writes `"tally" func tally(x: u32) -> u64` for an export `tally() -> u32` is called `tally()` and gives a `u32`, and one that writes `"Bag" func Bag(comptime T: type, comptime U: type) -> type` for an export with one parameter is applied as the export is, `Bag(u32)`. Write it as the export is anyway: it is what a reader of the importing file sees, and what an editor knows of the function when it checks that file without the other (below). The kind must match, and the name must be exported:
 
 | Mistake | Error |
 |---|---|
@@ -7413,7 +7413,7 @@ A memory declaration, `memory`, then optionally a minimum and a maximum in pages
 | `memory 8 256` | 8 pages | 256 pages | not exported |
 | `export memory` | what the data needs | none | `"memory"` |
 | `export memory 8 256` | 8 pages | 256 pages | `"memory"` |
-| `export "mem" memory 8` | 8 pages | none | `"mem"` |
+| `export "mem" memory 8 256` | 8 pages | 256 pages | `"mem"` |
 
 - The minimum is the number of pages the module has when it starts. Without one written, it is what the data needs: `max(1, ceil(sizeof data / 65536))`, where `sizeof data` is the address just past the last byte of data, which starts at address 8 ([9.0](#90-data-layout)).
 - The maximum is how far the memory may grow. Without one, none is written in the module, and the engine's own limit applies.
@@ -7535,7 +7535,7 @@ export func f(xs: []u64) -> u64 => head(u64, xs)
 export func g(c: bool, n: []u8, p: Pt) -> []u8 => pick((name: []u8, at: Pt), c, (name: n, at: p), (name: "-", at: p)).name
 ```
 
-In that position a name is read as a type even if a variable of the same name is in scope (`u8` there is the type, as it is in `let x: u8`).
+In that position a name is read as a type even if a variable of the same name is in scope (`u8` there is the type, as it is in `let x: u8`). A ranged type is a type argument like any other, and the instance keeps it: with `keep(comptime T: type, x: T) -> T`, `keep(u32#8, k & 7)` is a `u32#8`, which indexes a `*[8]u32` with no check, where the inferred `keep(k & 7)` is a plain `u32` (the range is dropped, [below](#how-type-parameters-are-inferred)).
 
 **Inferred.** All type parameters are left out, and the compiler finds them from the other arguments:
 
@@ -7758,7 +7758,7 @@ An *instance* is one generic function with all its comptime arguments fixed.
 - **Once.** An instance is one function in the output however many calls use it. Across source modules, one whose body calls a function of the module that asked for it is one for each such module ([8.8](#88-generics-across-modules)).
 - **On demand.** An instance is created by the first call that needs it. A generic nobody calls has no instances; a generic used only from `test` blocks has instances only in test builds.
 - **Zero cost.** An instance is the function you would get by writing the generic out by hand for those arguments, and it compiles to the same bytes. A call compiles to one `call` of the instance with only the non-comptime arguments. Nothing exists at run time for a type parameter, for a generic type, or for a generic that is not used. No function tables and no indirect calls are involved.
-- **Statics.** A data literal in a generic body belongs to each instance separately, as it would in hand-written copies; a `mut` literal is one buffer per instance.
+- **Statics.** A data literal in a generic body belongs to each instance separately, as it would in hand-written copies; a `mut` or `&` literal is one cell per instance, kept from one call of that instance to the next ([Literals in Memory](#literals-in-memory)). With `let c = &0:u32` and `c.* += 1` in the body of `tick(comptime T: type)`, `tick(u32)` gives 1 and then 2, and `tick(u64)` then gives 1.
 - **Recursion.** A generic may call itself or another generic. A generic that instantiates itself with a larger type each time never finishes; the compiler stops with one error after 64 nested instantiations (`too many nested instantiations (64) while instantiating 'f'`), or sooner when one call has led to 1000 instances (`too many instantiations (1000) from one call while instantiating 'f'`) or to type arguments many times the size of its own (`type arguments grow without end while instantiating 'f'`). A type argument written in ordinary code may be of any size.
 - **Limits.** A module has fewer than 2^24 (16777216) instances of its generics, and a generic is declared within the first 2^28 bytes (256 MiB) of its file. A call past either is `cannot instantiate 'f': the source is too large or has too many instances`.
 - **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$max<u32>`, `$head<''u8>`, `$sort<i32|ascending>`, `$push<8|u32>` (a number in decimal); a type is spelled by its structure, as types are structural, so `insertion_sort` given `Rec = (key: u32, name: []u8)` and `by_key` is `$insertion_sort<<key:u32|name:''u8>|by_key>`; the exact spelling is not part of the language and names do not reach the `.wasm` file.
@@ -8096,7 +8096,7 @@ test "a step that returns Stats by its fields" {
 }
 ```
 
-The arguments that are not functions, or not of the type:
+The arguments that are not functions, or not of the type, are errors at the call: they are reported with the bodies of functions, before any error in an instance, and the call makes no instance. A message numbers an argument by its place in the call as written, the receiver of a method call not counted: `twice(abs, x)` and `x.twice(abs)` are `argument 1 of 'twice' ...`, and `twice(i32, abs, x)` is `argument 2 of 'twice' ...`:
 
 ```ents
 func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
@@ -8282,7 +8282,7 @@ The two forms of [8.2](#82-calling-a-generic-function) hold, with value paramete
 | `comptime f: (*[n]u8) -> u32` | a function `g(p: *[8]u8) -> u32` | `n = 8`: a function argument decides as any argument does ([8.6](#86-comptime-function-parameters)) |
 | `*[n]T` | a slice `[]u32`, a `[*]u32`, a `*[!]u32`, a packed `*[2x3]u32` | nothing: there is no length in the type, or not one of that shape |
 | `*[n]T` | a `[4]u32` held in registers | nothing: it has no address ([2.4](#24-fixed-arrays-value-type)), so it matches no pointer, as for `T`; written out, `sum(4, v)` is `argument 2: cannot assign [4]u32 to *[4]u32` |
-| `*[n * 2]u8` | `*[8]u8` | nothing: only a length that is the name alone decides |
+| `*[n * 2]u8` | `*[8]u8` | nothing: only a length that is the name alone decides (`[n * 2] does not decide n`, or, for a length in a generic type's body, `'Grid(n, T)' has no length that is n alone`) |
 | `u32#n` | a `u32#8` | nothing: a range is dropped, as it is for `T` |
 | `*[n]u32` | an array literal `[1, 2, 3]` | nothing: literals never decide (8.2, rule 3) |
 
@@ -8374,7 +8374,7 @@ A generic that is meant to work for 0 is written so that no index needs a proof:
 A generic type ([8.5](#85-generic-types)) takes value parameters as a generic function does, and is applied to numbers as to types: `Ring(8, u32)`. All its arguments are written, numbers and types alike, and a wrong count names them all as arguments: `Ring(8)` is `Ring expects 2 arguments, got 1`.
 
 ```ents
-func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
+func Ring(comptime n: u32#2147483649, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
 
 // Adds x after the newest element; when the ring is full, x takes the oldest one's place.
 func push(comptime n: u32, comptime T: type, r: *mut Ring(n, T), x: T) {
@@ -8404,7 +8404,7 @@ test "the ring keeps the last eight" {
 }
 ```
 
-`Ring(8, u32)` is the struct `(head: u32#8, count: u32, items: *mut [8]u32)`, as any generic type is its body. Its value arguments are computed before it is applied, so `Ring(8, u32)`, `Ring(4 + 4, u32)` and the struct written out are one type; `Ring(16, u32)` is another because its body is (`cannot assign *mut Ring(16, u32) to *mut Ring(8, u32)`). As for type parameters, a value the body does not use makes no difference: with `func Tagged(comptime n: u32) -> type => (id: u32)`, `Tagged(4)` and `Tagged(5)` are one type. `log.push(x)` finds `n` and `T` from `log` by the body of `Ring`, through `items: *mut [n]T`; `head: u32#n` decides nothing. It builds a value like any generic type, `Ring(8, u32)(0, 0, cells)`, and a method call writes its comptime arguments after the receiver, `log.push(8, u32, x)`, which is `push(8, u32, log, x)`.
+`n` is at most 2^31, the values of a `u32#2147483649`: `r.head` is below `n` and `r.count` at most `n`, so `r.head + r.count` never wraps, and `% n` finds the right slot (`Ring(3000000000, u8)` is `argument 1 of 'Ring': cannot assign int(3000000000) to u32#2147483649`). `Ring(8, u32)` is the struct `(head: u32#8, count: u32, items: *mut [8]u32)`, as any generic type is its body. Its value arguments are computed before it is applied, so `Ring(8, u32)`, `Ring(4 + 4, u32)` and the struct written out are one type; `Ring(16, u32)` is another because its body is (`cannot assign *mut Ring(16, u32) to *mut Ring(8, u32)`). As for type parameters, a value the body does not use makes no difference: with `func Tagged(comptime n: u32) -> type => (id: u32)`, `Tagged(4)` and `Tagged(5)` are one type. `log.push(x)` finds `n` and `T` from `log` by the body of `Ring`, through `items: *mut [n]T`; `head: u32#n` decides nothing. It builds a value like any generic type, `Ring(8, u32)(0, 0, cells)`, and a method call writes its comptime arguments after the receiver, `log.push(8, u32, x)`, which is `push(8, u32, log, x)`.
 
 Its value arguments are compile-time constants, as an explicit argument of a generic function is ([above](#calling-a-function-with-value-parameters)), checked against the parameter's type the same way: a `def` declared further down is a number there too, `Small(300)` is `argument 1 of 'Small': cannot assign int(300) to u8` for a `comptime n: u8`, and so are the typed `Small(4:u32)` and `Small(sizeof(u64))`, as `cannot assign u32 to u8`. An error that a number makes in the body is the application's (8.5): with `Ring(0, u32)`, `head: u32#0` is `range bound must be at least 1: u32#0 has no values, in Ring(0, u32)`, with the use as a note. A body that applies its type to numbers that grow is stopped: by the parameter's type, as in `func Grow(comptime n: u32) -> type => (a: u32, next: *Grow(n * 2))` (`argument 1 of 'Grow': cannot assign int(4294967296) to u32, in Grow(2147483648)`), or at 1000 levels, with `next: *Grow(n + 1)` (`generic types are nested more than 1000 deep in 'Grow(1)'`).
 
@@ -8527,7 +8527,7 @@ What the import writes is checked against nothing: the generic is the one the ot
 
 **An instance belongs to the module that declares the generic**, whichever module asks for it: its body's names are that module's names, its errors are reported against that module's source, and its code is emitted with that module's functions. A second module that also pushes to a `Vec(u32)` uses the same instance: the program has one `push<u32>`. A generic type applied in another module is the type its body gives, as in its own. A value argument is computed in the module that writes it, with that module's `def`s.
 
-**Where a call in a generic body is looked up.** A call in an instance's body, `hash(k)`, is resolved among the functions of the generic's own module first, by name and argument types ([3.4](#functions-that-share-a-name)). Where no function there of that name accepts the arguments, it is resolved among the plain (non-generic) functions of the *site*: the module whose ordinary, non-generic code started the chain of instantiations. So a library provides `hash` and `eq` for the common key types, and a program that keeps a `Set(Cell)` of its own `Cell` writes `hash(c: Cell)` and `eq(a: Cell, b: Cell)` in the module that makes the set:
+**Where a call in a generic body is looked up.** A call in an instance's body, `hash(k)`, is resolved among the functions of the generic's own module first, by name and argument types ([3.4](#functions-that-share-a-name)). Where no function there of that name accepts the arguments, it is resolved among the plain (non-generic) functions of the *site*: the module whose ordinary, non-generic code (a function, or a `test` block, of that module) started the chain of instantiations. So a library provides `hash` and `eq` for the common key types, and a program that keeps a `Set(Cell)` of its own `Cell` writes `hash(c: Cell)` and `eq(a: Cell, b: Cell)` in the module that makes the set:
 
 ```ents
 // cells.ents, next to lib/
@@ -8564,7 +8564,7 @@ export func visited(n: u32) -> u32 {
 - **Only calls are looked up at the site, and only plain functions.** The types, globals and helpers of a generic's body are always its own module's. A generic function of the site's with the name is not looked up, and the error for want of the function says so in a note: `the site's 'hash' is generic, and only plain functions are looked up at the site`.
 - **A function declared in a test is no function of the site.** It belongs to the test ([12.4](#124-declarations-in-a-test)), so a generic called in a test does not find it (`no function 'hash' accepts (...), in bucket(K = ...)`). A requirement for a type that only tests use is declared in the module.
 - **A comptime function argument is not looked up**: it is written where the generic is called, in the module that calls it ([8.6](#86-comptime-function-parameters)). `sort(xs, by_cost)` with `by_cost` declared in, or imported from, another module is an instance that calls that function directly, and two modules that give the same function, under whatever names they import it, share the instance.
-- **An instance that needed the site belongs to that site**, and so does an instance that calls one. Another module that uses the same generic with the same arguments shares it where its own functions of the names looked up are the same functions (both import `hash` and `eq` for `Cell` from one module), and otherwise gets its own copy, which calls its own functions: two functions in the output, the second named with its site after the arguments in WAT, `add<<x:i32|y:i32>>@other`. An instance that did not need the site exists once in the program.
+- **An instance that needed the site is made for that site**, and so is an instance that calls one: it is still the generic's module's function, with that module's names and code, but it calls the site's functions. Another module that uses the same generic with the same arguments shares it where its own functions of the names looked up are the same functions (both import `hash` and `eq` for `Cell` from one module), and otherwise gets its own copy, which calls its own functions: two functions in the output, the second named with its site after the arguments in WAT, `add<<x:i32|y:i32>>@other`. An instance that did not need the site exists once in the program.
 
 **Errors.** An error in an instance is the generic's module's, at its line in the generic, labelled with the instance, and with the calls it was required from, each in the module of that call. Where the chain of instantiations was started by ordinary code of another module, that module is told too, once, at its call, of the first error of the instance it asked for or of an instance that one's body asked for, however deep; nothing is said at the calls between. For a `cells.ents` that keeps a `Set(Cell)` and writes an `eq` for `Cell` but no `hash`:
 
@@ -8678,14 +8678,14 @@ Entries follow one another with no padding and no alignment, so a `u32` or a `u6
 
 A literal laid out in memory takes one place in the data for each place it is written in the source:
 
-- Constant bytes may be shared. Equal constant literals can be one address (`"abc"` written in two functions), and a constant literal whose bytes already lie inside an earlier constant entry can be given the address of that part: `data b = "bc"` after `data a = "abc"` is `a`'s address plus 1. A `mut` literal and mutable `data` always have bytes of their own ([3.2](#32-data-declarations-data)).
+- Constant bytes are shared. Equal constant literals are one address (`"abc"` written in two functions), and a constant literal whose bytes already lie inside an earlier constant entry is given the address of that part: `data b = "bc"` after `data a = "abc"` is `a`'s address plus 1. A `mut` literal and mutable `data` always have bytes of their own ([3.2](#32-data-declarations-data)).
 - A literal with a part known only at run time, `sum([x, 5, 6])`, is laid out once, with its constant parts. Each time the expression runs, the run-time parts are stored into that place, so a pointer kept from an earlier run sees the values of the latest.
 - Bytes that are zero cost nothing in the module: memory starts zeroed, so a data segment stops at the last byte that is not zero, and `data buf = mut [0:u8; 65536]` adds no bytes to the `.wasm` file. The zeros still hold their place: the data after them lies where it would. Laying out zeros takes the compiler no time or memory, however many there are (`mut [0:u8; 2147483648]`).
 - All the data has to fit in the 4 GiB a wasm memory can hold: more is an error.
 
 Memory has no read-only part. Const data is const in the type system: nothing writes through a const pointer, but a cast to a `*mut` pointer does (`text as *mut [3]u8`), and every literal that shares those bytes then reads what was written.
 
-`sizeof data` is the address just past the last byte of the program's data: where the memory that nothing is laid out in begins. It is a `u32`, at least 8, the same in every module of the program ([10.4](#104-sizes)); in a program with no data at all it reads 0, which is a known bug. The test build ([12. Tests](#12-tests)) lays out more than the program: after all of the program's data come the `data` blocks declared in tests and the literals that tests lay out. The program's data keeps its addresses, but `sizeof data` is larger in the test build than in the compiled program, so a test that asserts its value checks the test build only.
+`sizeof data` is the address just past the last byte of the program's data: where the memory that nothing is laid out in begins. It is a `u32`, at least 8, the same in every module of the program ([10.4](#104-sizes)); in a program with no data at all it reads 0, which is a known bug. The test build ([12. Tests](#12-tests)) lays out more than the program: after all of the program's data come the `data` blocks declared in tests and the literals that tests lay out. The program's data keeps its addresses, and `sizeof data` there is the address past the last of these, larger than in the compiled program whenever a test lays something out, so a test that asserts its value checks the test build only.
 
 <!-- spec:begin compile -->
 
@@ -9321,7 +9321,7 @@ A call with another number of operands is an error that says how many it takes (
 | `min(a, b)` | two integers or two floats | their type | The smaller | float: `f32.min`/`f64.min`; integer: a `select` on `lt_s` or `lt_u` |
 | `max(a, b)` | two integers or two floats | their type | The larger | float: `f32.max`/`f64.max`; integer: a `select` on `gt_s` or `gt_u` |
 
-The float builtins take a float, and the others a number: anything else is an error (`sqrt requires a float type, got i32`, `max requires a numeric type, got bool`). Their operands are typed together, like the operands of a binary operator. A literal takes the type of the other operand, whichever comes first, and two typed operands meet at the wider type ([2.10](#implicit-widening)). With only literals, the operands take their default type, `i32` or `f64`, and an integer literal given to a float builtin is an `f64`: `sqrt(2)` is `sqrt(2.0)`, an `f64` also where an `f32` is wanted (`cannot assign f64 to f32`), so a typed literal says which, `sqrt(2.0:f32)`.
+The float builtins take a float, and the others a number: anything else is an error (`sqrt requires a float type, got i32`, `max requires a numeric type, got bool`). Their operands are typed together, like the operands of a binary operator. A literal takes the type of the other operand, whichever comes first, and has to fit it (`min(x, 300)` with `x: u8` is `min: cannot assign int(300) to u8`), and two typed operands meet at the wider type ([2.10](#implicit-widening)). With only literals, the operands take their default type, `i32` or `f64`, and an integer literal given to a float builtin is an `f64`: `sqrt(2)` is `sqrt(2.0)`, an `f64` also where an `f32` is wanted (`cannot assign f64 to f32`), so a typed literal says which, `sqrt(2.0:f32)`.
 
 On integers, `min` and `max` compare signed or unsigned as the operands' type says, and `abs` of an unsigned value is the value itself. `abs` of the most negative value of a type wraps back to it, as negating it does: `abs(-128:i8)` is `-128`. `min`, `max` and `abs` also take the wide integers, `i128` to `u512`, through functions the compiler adds ([11.5](#115-functions-the-compiler-adds)). `min` and `max` return one of their operands, so when every operand is in a range ([Ranged Integers](#ranged-integers)), or is a constant inside the widest of those ranges, the result has the widest range: with `i: u32#4`, `min(i, 2)` is still a `u32#4`, and indexes a `*[4]T` with no check, but `min(i, 7)` is a plain `u32`. On floats they are the wasm instructions: NaN if either operand is NaN, and `-0.0` below `0.0`.
 
@@ -9431,7 +9431,7 @@ The destination is a pointer to an array of a size known at compile time, of any
 
 The source of a `memcpy` is a pointer to an array, or a many-pointer, which has no size to check; a slice is passed as its `.ptr`. `len` counts bytes, whatever the element types (`memset(words, 0, 16)` clears four `u32`), and `value` is the byte each is set to (`memset value: cannot assign int(256) to u8`). With a constant `len`, the compiler checks it against the size of the destination and of a sized source (`memcpy length 20 exceeds buffer size 16 bytes`). A `len` known only at run time is not checked: it warns that it can't be, and a length past the array but inside memory writes over what follows it, silently; past the end of memory it traps ([9.7](#97-traps)).
 
-The size of a table (`*[N][M]T`) is its N row pointers, 4 bytes each, and `memzero` of a table is an error ([Nesting](#nesting)). A length past a table's bytes is an error, and a runtime length for a table warns, each with a note that the rows lie apart: `n * sizeof(T)` for a `T` that is a fixed array counts the rows' cells, not the table.
+The size of a table (`*[N][M]T`) is its N row pointers, 4 bytes each, and `memzero` of a table is an error, since it would clear the row pointers: `memzero dest: *mut [2][2]u8 is a table, its elements pointers to rows (reference 2.5): zero each row, for row in grid { memzero(row) }` ([Nesting](#nesting)). A length past a table's bytes is an error, and a runtime length for a table warns, each with a note that the rows lie apart: `n * sizeof(T)` for a `T` that is a fixed array counts the rows' cells, not the table.
 
 The range forms of [4.8](#48-slicerange-syntax) do the same, checked: `p[..] = 0` is `memzero(p)`, a fill of a range of bytes is a `memset` and a copy between ranges of lengths known at compile time a `memcpy`. `memcpy` and `memset` are the forms for a length known only at run time. There is no bulk copy into a slice whose length is known only at run time: neither form takes a slice destination, so such a copy is a loop over the elements ([5.2](#52-loops)).
 
@@ -9605,7 +9605,7 @@ A float truncates toward zero, and the `trunc` instructions trap on NaN, an infi
 | `return`, `return x when c` | `return`, `(if c (then x (return)))` |
 | `a && b`, `a \|\| b` | `(if (result i32) a (then b) (else (i32.const 0)))`, `(if (result i32) a (then (i32.const 1)) (else b))` |
 | `if let`, `??` | an `if` on the check: the index against the length, the pointer against 0 |
-| `defer e` | `e` written out again at each way out of its block: after a `return`'s value is computed, or a bare `return`'s named results are read; at the end of a function body, before its named results are read |
+| `defer e` | `e` written out again at each way out of its block: after a `return`'s value is computed; at a bare `return`, after the named results are read (as in [Defer](#defer), the deferred code runs after they are read); at the end of a function body, before they are read |
 | `assert c` | `(if (i32.eqz c) (then (unreachable)))` |
 
 A `match` is never a `br_table`: its arms are compared one after another. A function's code may end in an `unreachable` that never runs: every path through a function with results returns a value, as the checker requires.
@@ -9662,7 +9662,7 @@ test "the area of a square" {
 
 <!-- spec:end -->
 
-A test is declared at module level or inside another test. Its statements are the body of a function with no parameters and no result: a `let` in it is a variable of that test, and a bare `return` ends the test, which then passes: write it last in its block, or with `when` (`return when done`). `return` takes the expression on the next line ([5.3](#53-control-statements)), so a `return` on its own line followed by `assert c` is `unknown identifier 'assert'`. A `return` with a value is an error, as in any function with no result; the compiler accepts one in a test and drops the value (a known bug), so a `return` followed by a line `bump()` calls `bump`. A test calls any function of the module, exported or not, and reads and writes the module's globals and memory.
+A test is declared at module level or inside another test. Its statements are the body of a function with no parameters and no result: a `let` in it is a variable of that test, a `defer` in it runs when the test's statements end, and a bare `return` ends the test, which then passes: write it last in its block, or with `when` (`return when done`). `return` takes the expression on the next line ([5.3](#53-control-statements)), so a `return` on its own line followed by `assert c` is `unknown identifier 'assert'`. A `return` with a value is an error, as in any function with no result; the compiler accepts one in a test and drops the value (a known bug), so a `return` followed by a line `bump()` calls `bump`. A test calls any function of the module, exported or not, and reads and writes the module's globals and memory.
 
 `test` and `assert` are not reserved words: they can name a variable or a function.
 
@@ -9780,7 +9780,7 @@ a generic type is declared at module level, not inside a test
 
 ### 12.5 Running Tests
 
-`encantis test file.ents` checks the module with its tests, compiles it, starts one instance of it and runs its tests in the order they are written. Given a directory, it does this for every `.ents` file under it. Only the tests of the files named are run, not those of the modules they import.
+`encantis test file.ents` checks the module with its tests, compiles it, starts one instance of it and runs its tests in the order they are written. Given a directory, it does this for every `.ents` file under it, each the entry of a program of its own: a module that two of them import starts afresh for each, and the files run in no set order. Only the tests of the files named are run, not those of the modules they import.
 
 A test passes when its statements run to their end (or to a `return`). It fails when an `assert` in it is false or when anything it calls traps: a false `assert` in a function, an import the test host does not provide (below), a division by zero, an access past the end of memory. Each test is reported on a line of its own, a failing `assert` of the test's own statements with its file, line and source, and a summary follows. Were the last `assert` of `no rows` above `assert strip(0) == 1`, in a file `area.ents`, `encantis test area.ents` would print:
 
@@ -9800,7 +9800,7 @@ The exit status is 1 when a test fails and 0 otherwise. A file that does not che
 
 Tests run without the program's host. `encantis test` gives each import of the module a stand-in:
 
-- WASI (`wasi_snapshot_preview1`): `fd_write` to file descriptor 1 or 2 writes each buffer to the standard output or error of `encantis test`, stores the number of bytes written in the cell its last argument points to, and returns 0; to any other descriptor it writes nothing and returns 8 (`EBADF`). `fd_read` from 0 stores 0 in its count cell and returns 0 (the end of input); from any other descriptor it returns 8. `proc_exit` fails the test, and every other WASI function returns 52 (`ENOSYS`). As under any WASI host, the module has to export its memory (`export memory`, [7.2](#72-exports)), or a WASI call fails the test.
+- WASI (`wasi_snapshot_preview1`): `fd_write` to file descriptor 1 or 2 writes each buffer to the standard output or error of `encantis test`, stores the number of bytes written in the cell its last argument points to, and returns 0; to any other descriptor it writes nothing, leaves the count cell as it was, and returns 8 (`EBADF`). `fd_read` from 0 stores 0 in its count cell and returns 0 (the end of input); from any other descriptor it leaves the cell and returns 8. `proc_exit` fails the test, and every other WASI function returns 52 (`ENOSYS`). As under any WASI host, the module has to export its memory (`export memory`, [7.2](#72-exports)), or a WASI call fails the test.
 - Any other imported function throws when it is called, which fails the test that called it. The functions that do not reach it are tested as usual.
 - An imported global is the zero of its type: 0 for a number, none for an optional host reference. One of a plain host type, which is never null, is a stand-in object ([2.13](#213-host-references)).
 
