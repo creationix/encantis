@@ -12,27 +12,27 @@ export func strcmp(a: []u8, b: []u8) -> i32 {
 }
 
 test "strcmp" {
-  test "equal strings" {
+  test "equal strings compare as 0" {
     assert strcmp("hello", "hello") == 0
     assert strcmp("", "") == 0
     assert strcmp("a", "a") == 0
   }
 
-  test "ordering" {
+  test "the first differing byte orders two strings" {
     assert strcmp("a", "b") < 0
     assert strcmp("b", "a") > 0
     assert strcmp("abc", "abd") < 0
     assert strcmp("abd", "abc") > 0
   }
 
-  test "length differences" {
+  test "a string is after its own prefix" {
     assert strcmp("abc", "ab") > 0
     assert strcmp("ab", "abc") < 0
     assert strcmp("", "a") < 0
     assert strcmp("a", "") > 0
   }
 
-  test "common prefix" {
+  test "after a common prefix the next byte decides" {
     assert strcmp("hello", "help") < 0
     assert strcmp("help", "hello") > 0
     assert strcmp("abc", "abcd") < 0

@@ -10,46 +10,30 @@
 export memory
 
 // An address and a length: two i32s
-export func return-slice() -> []u8 {
-  return "Test"
-}
+export func return-slice() -> []u8 => "Test"
 
 // An address, with the length in the type
-export func return-ptr() -> *[6]u8 {
-  return "simple"
-}
+export func return-ptr() -> *[6]u8 => "simple"
 
 // An address, with a zero byte after the text
-export func return-cstr() -> *[!]u8 {
-  return "c style string"
-}
+export func return-cstr() -> *[!]u8 => "c style string"
 
 // An address, with the length before the text as a LEB128 number. The module
 // only lays it out: reading a *[?]T is not implemented (reference 2.5), so only
 // a host decodes the length.
-export func return-lstr() -> *[?]u8 {
-  return "length-prefixed string"
-}
+export func return-lstr() -> *[?]u8 => "length-prefixed string"
 
 // The address and length of two slices, each an address and a length
-export func return-slice-of-slices() -> [][]u8 {
-  return ["Hello", "World"]
-}
+export func return-slice-of-slices() -> [][]u8 => ["Hello", "World"]
 
 // The address of two row pointers, each the address of a zero-terminated text
-export func return-nested-cstr() -> *[2][!]u8 {
-  return ["Hello", "World"]
-}
+export func return-nested-cstr() -> *[2][!]u8 => ["Hello", "World"]
 
 // Five slices: three of constant text, name's and color's
-export func template-literal(name: []u8, color: []u8) -> [][]u8 {
-  return `Welcome ${name} who likes ${color}.`
-}
+export func template-literal(name: []u8, color: []u8) -> [][]u8 => `Welcome ${name} who likes ${color}.`
 
 // Five zero-terminated texts
-export func template-null-literal(name: *[!]u8, color: *[!]u8) -> []*[!]u8 {
-  return `Welcome ${name} who likes ${color}.`
-}
+export func template-null-literal(name: *[!]u8, color: *[!]u8) -> []*[!]u8 => `Welcome ${name} who likes ${color}.`
 
 test "each kind of string has its length" {
   assert return-slice().len == 4
