@@ -144,7 +144,7 @@ function oz(binaryen: Binaryen, wasm: Uint8Array): Uint8Array {
 //
 // Over the 93 programs of examples/ and lib/ (57192 bytes at -O) this takes
 // 3.5% off -O: repeating 0.7%, keeping a module as it came 2.6% (ed25519's
-// point.ents, which -Oz grows from 7572 bytes to 8885), the -O3 try 0.2%.
+// point.ents, which -Oz grows from 7127 bytes to 8136), the -O3 try 0.2%.
 // Stripping custom sections would take nothing off: wabt writes none, and
 // binaryen without debug info adds none.
 function release(binaryen: Binaryen, wasm: Uint8Array): Uint8Array {
