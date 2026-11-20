@@ -2,7 +2,7 @@
 
 // What encode and decode return when the output is too short, and decode
 // when its input is no base64url
-def failed = 0xFFFFFFFF
+def failed = 0xFFFFFFFF:u32
 
 // The alphabet: the character of each 6-bit value, A-Z a-z 0-9 - _
 data encode_table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -127,29 +127,29 @@ test "base64url" {
   data dec_buf = mut [0:u8; 4096]
 
   // Whether input encodes to code, and code decodes back to input
-  func round-trip(input: []u8, code: []u8) -> bool {
+  func round_trip(input: []u8, code: []u8) -> bool {
     return false when encode(input, enc_buf) != code.len || !starts_with(enc_buf, code)
     return false when decode(code, dec_buf) != input.len || !starts_with(dec_buf, input)
     return true
   }
 
   test "the RFC 4648 vectors" {
-    assert round-trip("", "")
-    assert round-trip("f", "Zg")
-    assert round-trip("fo", "Zm8")
-    assert round-trip("foo", "Zm9v")
-    assert round-trip("foob", "Zm9vYg")
-    assert round-trip("fooba", "Zm9vYmE")
-    assert round-trip("foobar", "Zm9vYmFy")
+    assert round_trip("", "")
+    assert round_trip("f", "Zg")
+    assert round_trip("fo", "Zm8")
+    assert round_trip("foo", "Zm9v")
+    assert round_trip("foob", "Zm9vYg")
+    assert round_trip("fooba", "Zm9vYmE")
+    assert round_trip("foobar", "Zm9vYmFy")
   }
 
   test "the last two values are - and _" {
-    assert round-trip(x"fbff", "-_8")
-    assert round-trip(x"fbefbe", "----")
-    assert round-trip(x"ffffff", "____")
+    assert round_trip(x"fbff", "-_8")
+    assert round_trip(x"fbefbe", "----")
+    assert round_trip(x"ffffff", "____")
   }
 
-  test "reject invalid" {
+  test "decode refuses what is not base64url" {
     assert decode("!!!", dec_buf) == failed
     assert decode("Zm9v+g", dec_buf) == failed       // + and / are base64, not base64url
     assert decode("Zm9vYg==", dec_buf) == failed     // no padding
@@ -157,7 +157,7 @@ test "base64url" {
     assert decode("\xC1\xC1", dec_buf) == failed     // bytes past ASCII
   }
 
-  test "too short an output" {
+  test "an output too short fails, and one just long enough is filled" {
     assert encode("foo", enc_buf[..3]) == failed
     assert encode("foo", enc_buf[..4]) == 4
     assert decode("Zm9vYg", dec_buf[..3]) == failed

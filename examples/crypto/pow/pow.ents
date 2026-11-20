@@ -4,14 +4,15 @@
 // Protocol:
 //   1. Server sends challenge (32 bytes) + difficulty (a number of zero bits)
 //   2. Client finds a 4-byte nonce such that gimli-hash(challenge || nonce)
-//      starts with `difficulty` zero bits (see trailing_zeros)
+//      starts with `difficulty` zero bits (see trailing-zeros)
 //   3. Client returns the nonce, which the server checks with verify
 //
 // Gimli properties:
 //   + Not in WebCrypto (can't shortcut with native APIs)
 //   + Simple enough for tiny wasm (no lookup tables, no 64-bit math)
-//   - Gimli IS SIMD-friendly (4 columns map to vector lanes, ~2.5x speedup)
-//   - Nonce search IS GPU-parallelizable (independent hashes per nonce, ~8x+)
+//   - Gimli is SIMD-friendly (4 columns map to vector lanes, ~2.5x speedup)
+//   - The nonce search parallelizes on a GPU (each nonce's hash is
+//     independent, ~8x+)
 //   - Combined attacker advantage: 40-100x vs browser wasm
 //
 // See pow-sequential.ents for a design that defeats parallelization
@@ -20,26 +21,26 @@ import "../gimli/gimli" "gimli" func gimli(state: *mut [12]u32)
 
 export "mem" memory
 
-data hash_state = mut [0:u32; 12]
+data hash-state = mut [0:u32; 12]
 
 // Gimli-Hash of the 36 bytes challenge || nonce, the nonce little-endian:
 // two full 16-byte blocks, then the nonce and the padding. The hash starts
-// with the first 16 bytes of hash_state, which is all that is read of it.
-func gimli_absorb_36(challenge: *[32]u8, nonce: u32) {
-  hash_state[..] = 0
-  hash_state.u128[0] = challenge.u128[0]
-  gimli(hash_state)
-  hash_state.u128[0] ^= challenge.u128[1]
-  gimli(hash_state)
-  hash_state[0] ^= nonce                // its 4 bytes, little-endian as memory is
-  hash_state.u8[4] ^= 0x1f
-  hash_state.u8[15] ^= 0x80
-  gimli(hash_state)
+// with the first 16 bytes of hash-state, which is all that is read of it.
+func gimli-absorb-36(challenge: *[32]u8, nonce: u32) {
+  hash-state[..] = 0
+  hash-state.u128[0] = challenge.u128[0]
+  gimli(hash-state)
+  hash-state.u128[0] ^= challenge.u128[1]
+  gimli(hash-state)
+  hash-state[0] ^= nonce                // its 4 bytes, little-endian as memory is
+  hash-state.u8[4] ^= 0x1f
+  hash-state.u8[15] ^= 0x80
+  gimli(hash-state)
 }
 
 // The zero bits the hash starts with, counted from the low bit of its first
 // byte up: the trailing zeros of its first word, 32 when the word is 0
-func trailing_zeros() -> u32 => ctz(hash_state[0])
+func trailing-zeros() -> u32 => ctz(hash-state[0])
 
 // The first nonce, counting from 0, whose hash starts with at least
 // `difficulty` zero bits. The search goes on until it finds one, so with a
@@ -47,16 +48,16 @@ func trailing_zeros() -> u32 => ctz(hash_state[0])
 export func solve(challenge: *[32]u8, difficulty: u32) -> u32 {
   let nonce: u32 = 0
   loop {
-    gimli_absorb_36(challenge, nonce)
-    return nonce when trailing_zeros() >= difficulty
+    gimli-absorb-36(challenge, nonce)
+    return nonce when trailing-zeros() >= difficulty
     nonce += 1
   }
 }
 
 // Whether nonce's hash starts with at least `difficulty` zero bits
 export func verify(challenge: *[32]u8, difficulty: u32, nonce: u32) -> bool {
-  gimli_absorb_36(challenge, nonce)
-  return trailing_zeros() >= difficulty
+  gimli-absorb-36(challenge, nonce)
+  return trailing-zeros() >= difficulty
 }
 
 test "pow" {
@@ -67,47 +68,47 @@ test "pow" {
   data digest = mut [0:u8; 4]
 
   // A fixed challenge: byte i is i * 7 + 13
-  func set_challenge() {
+  func set-challenge() {
     for i in challenge.len {
       challenge[i] = (i * 7 + 13) as u8
     }
   }
 
   test "verify accepts solved nonce" {
-    set_challenge()
+    set-challenge()
     let nonce = solve(challenge, 4)       // about 16 tries
     assert verify(challenge, 4, nonce)
   }
 
   test "verify rejects wrong nonce" {
-    set_challenge()
+    set-challenge()
     let nonce = solve(challenge, 12)
     assert !verify(challenge, 12, nonce + 1)
   }
 
-  test "difficulty 8 solvable" {
-    set_challenge()
+  test "a difficulty of 8 is solved and verified" {
+    set-challenge()
     let nonce = solve(challenge, 8)       // about 256 tries
     assert verify(challenge, 8, nonce)
   }
 
   test "solve finds the first nonce that is enough" {
-    set_challenge()
+    set-challenge()
     assert solve(challenge, 0) == 0
     assert solve(challenge, 4) == 35
     for nonce in 35 {
       assert !verify(challenge, 4, nonce)
     }
     assert solve(challenge, 8) == 1320
-    assert trailing_zeros() == 10         // more than asked for
+    assert trailing-zeros() == 10         // more than asked for
   }
 
   test "the hash is gimli-hash of the challenge and the nonce" {
-    set_challenge()
+    set-challenge()
     message[0..32] = challenge
     message.u32[8] = 1320
     gimli-hash(message, digest)
     assert verify(challenge, 8, 1320)
-    assert hash_state[0] == digest.u32[0]
+    assert hash-state[0] == digest.u32[0]
   }
 }

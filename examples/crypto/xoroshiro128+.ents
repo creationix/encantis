@@ -67,53 +67,53 @@ export func long-jump(state: *mut [2]u64) {
 
 // The expected values are those of the C reference code
 test "xoroshiro128+" {
-  data tv_state = mut [0:u64; 2]
+  data tv-state = mut [0:u64; 2]
 
   func seed(s0: u64, s1: u64) {
-    tv_state[0] = s0
-    tv_state[1] = s1
+    tv-state[0] = s0
+    tv-state[1] = s1
   }
 
-  test "first output" {
+  test "the first output of (1, 2) is their sum" {
     seed(1, 2)
-    assert next(tv_state) == 3
+    assert next(tv-state) == 3
   }
 
-  test "second output" {
+  test "the second output of (1, 2) is the reference's" {
     seed(1, 2)
-    next(tv_state)
-    assert next(tv_state) == 0x0000006001030003
+    next(tv-state)
+    assert next(tv-state) == 0x0000006001030003
   }
 
-  test "third output" {
+  test "the third output of (1, 2) is the reference's" {
     seed(1, 2)
-    next(tv_state)
-    next(tv_state)
-    assert next(tv_state) == 0x20c102c302000c03
+    next(tv-state)
+    next(tv-state)
+    assert next(tv-state) == 0x20c102c302000c03
   }
 
-  test "state after three" {
+  test "the state after three outputs is the reference's" {
     seed(1, 2)
-    next(tv_state)
-    next(tv_state)
-    next(tv_state)
-    assert tv_state[0] == 0x410000030d036d01
-    assert tv_state[1] == 0x4001806400204060
+    next(tv-state)
+    next(tv-state)
+    next(tv-state)
+    assert tv-state[0] == 0x410000030d036d01
+    assert tv-state[1] == 0x4001806400204060
   }
 
-  test "jump" {
+  test "jump moves the state as the reference's does" {
     seed(1, 2)
-    jump(tv_state)
-    assert tv_state[0] == 0x66fbd4be1df0a7b5
-    assert tv_state[1] == 0x830c3ddbb4aa3172
-    assert next(tv_state) == 0xea081299d29ad927
+    jump(tv-state)
+    assert tv-state[0] == 0x66fbd4be1df0a7b5
+    assert tv-state[1] == 0x830c3ddbb4aa3172
+    assert next(tv-state) == 0xea081299d29ad927
   }
 
-  test "long-jump" {
+  test "long-jump moves the state as the reference's does" {
     seed(1, 2)
-    long-jump(tv_state)
-    assert tv_state[0] == 0x3ce44494d47d323a
-    assert tv_state[1] == 0x2aa25ca8d61de643
-    assert next(tv_state) == 0x6786a13daa9b187d
+    long-jump(tv-state)
+    assert tv-state[0] == 0x3ce44494d47d323a
+    assert tv-state[1] == 0x2aa25ca8d61de643
+    assert next(tv-state) == 0x6786a13daa9b187d
   }
 }

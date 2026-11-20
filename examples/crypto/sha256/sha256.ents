@@ -122,43 +122,40 @@ export func sha256(input: []u8, output: *mut [32]u8) {
 }
 
 test "sha256" {
+  // Each digest is written to out and compared whole, as one u256: its 32
+  // bytes, little-endian.
   data out = mut [0:u8; 32]
-
-  // Whether input hashes to expected
-  func hashes-to(input: []u8, expected: *[32]u8) -> bool {
-    sha256(input, out)
-    for i in out.len {
-      return false when out[i] != expected[i]
-    }
-    return true
-  }
 
   data expected-abc = x"ba7816bf8f01cfea 414140de5dae2223 b00361a396177a9c b410ff61f20015ad"
 
-  test "abc" {
-    assert hashes-to("abc", expected-abc)
+  test "abc hashes to its known digest" {
+    sha256("abc", out)
+    assert out.u256[0] == expected-abc.u256[0]
   }
 
   data expected-empty = x"e3b0c44298fc1c14 9afbf4c8996fb924 27ae41e4649b934c a495991b7852b855"
 
-  test "empty" {
-    assert hashes-to("", expected-empty)
+  test "the empty message hashes to its known digest" {
+    sha256("", out)
+    assert out.u256[0] == expected-empty.u256[0]
   }
 
   // 56 bytes: the length no longer fits the block, so it takes a second one
   data expected-448 = x"248d6a61d20638b8 e5c026930c3e6039 a33ce45964ff2167 f6ecedd419db06c1"
 
-  test "448 bit message" {
-    assert hashes-to("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", expected-448)
+  test "a 448-bit message hashes to its known digest" {
+    sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", out)
+    assert out.u256[0] == expected-448.u256[0]
   }
 
   // 112 bytes: one whole block, then 48 bytes
   data expected-896 = x"cf5b16a778af8380 036ce59e7b049237 0b249b11e8f07a51 afac45037afee9d1"
 
-  test "896 bit message" {
-    assert hashes-to(
+  test "an 896-bit message hashes to its known digest" {
+    sha256(
       "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
-      expected-896
+      out
     )
+    assert out.u256[0] == expected-896.u256[0]
   }
 }

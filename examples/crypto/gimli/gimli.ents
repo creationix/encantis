@@ -47,107 +47,105 @@ export func gimli(state: *mut [12]u32) {
 def rate = 16
 
 // The sponge state of gimli-hash
-data hash_state = mut [0:u32; 12]
+data hash-state = mut [0:u32; 12]
 
 // Gimli-Hash of input, as many bytes of it as output holds: an extendable
 // output, so a longer output starts with the bytes of a shorter one
 export func gimli-hash(input: []u8, output: []mut u8) {
-  hash_state[..] = 0
+  hash-state[..] = 0
 
   // Absorb each full block, then the last bytes and the padding
   let src = input.ptr
   let len = input.len
   while len >= rate {
-    hash_state.u128[0] ^= src.u128[0]
-    gimli(hash_state)
+    hash-state.u128[0] ^= src.u128[0]
+    gimli(hash-state)
     src += rate
     len -= rate
   }
   for i in len {
-    hash_state.u8[i] ^= src[i]
+    hash-state.u8[i] ^= src[i]
   }
-  hash_state.u8[len] ^= 0x1f
-  hash_state.u8[rate - 1] ^= 0x80
-  gimli(hash_state)
+  hash-state.u8[len] ^= 0x1f
+  hash-state.u8[rate - 1] ^= 0x80
+  gimli(hash-state)
 
   // Squeeze a block at a time, permuting between blocks
   let out = output.ptr
   let left = output.len
   while left >= rate {
-    out.u128[0] = hash_state.u128[0]
+    out.u128[0] = hash-state.u128[0]
     out += rate
     left -= rate
     if left > 0 {
-      gimli(hash_state)
+      gimli(hash-state)
     }
   }
   for i in left {
-    out[i] = hash_state.u8[i]
+    out[i] = hash-state.u8[i]
   }
 }
 
 test "gimli" {
-  import "../../../lib/text" "starts_with" func starts_with(s: []u8, prefix: []u8) -> bool
+  import "../../../lib/text" "starts_with" func starts-with(s: []u8, prefix: []u8) -> bool
 
-  data tv_state = mut [0:u32; 12]
+  data tv-state = mut [0:u32; 12]
   data digest = mut [0:u8; 48]
 
   // The specification's test input: word i is i * i * i + i * 0x9e3779b9
-  func spec_input() {
-    for i in tv_state.len {
-      tv_state[i] = i * i * i + i * 0x9e3779b9
+  func spec-input() {
+    for i in tv-state.len {
+      tv-state[i] = i * i * i + i * 0x9e3779b9
     }
   }
 
-  // Whether digest starts with the bytes of want
-  func digest_is(want: []u8) -> bool => starts_with(digest, want)
-
-  test "spec vector" {
-    spec_input()
-    gimli(tv_state)
-    assert tv_state[0] == 0xba11c85a
-    assert tv_state[1] == 0x91bad119
-    assert tv_state[2] == 0x380ce880
-    assert tv_state[3] == 0xd24c2c68
-    assert tv_state[4] == 0x3eceffea
-    assert tv_state[8] == 0x84b673f0
-    assert tv_state[11] == 0xf41bb8d6
+  test "the specification's input permutes to its output" {
+    spec-input()
+    gimli(tv-state)
+    assert tv-state[0] == 0xba11c85a
+    assert tv-state[1] == 0x91bad119
+    assert tv-state[2] == 0x380ce880
+    assert tv-state[3] == 0xd24c2c68
+    assert tv-state[4] == 0x3eceffea
+    assert tv-state[8] == 0x84b673f0
+    assert tv-state[11] == 0xf41bb8d6
   }
 
-  test "all zero input" {
-    tv_state[..] = 0
-    gimli(tv_state)
-    assert tv_state[0] == 0x6467d8c4
-    assert tv_state[1] == 0x07dcf83b
-    assert tv_state[2] == 0x3b0bb0d4
-    assert tv_state[3] == 0x1b21364c
+  test "zeros permute to the known state" {
+    tv-state[..] = 0
+    gimli(tv-state)
+    assert tv-state[0] == 0x6467d8c4
+    assert tv-state[1] == 0x07dcf83b
+    assert tv-state[2] == 0x3b0bb0d4
+    assert tv-state[3] == 0x1b21364c
   }
 
-  test "double permute" {
-    spec_input()
-    gimli(tv_state)
-    gimli(tv_state)
-    assert tv_state[0] == 0xea223492
-    assert tv_state[1] == 0x3fbb2166
-    assert tv_state[2] == 0x68314a61
-    assert tv_state[3] == 0x9165986e
+  test "the specification's input permuted twice gives the known state" {
+    spec-input()
+    gimli(tv-state)
+    gimli(tv-state)
+    assert tv-state[0] == 0xea223492
+    assert tv-state[1] == 0x3fbb2166
+    assert tv-state[2] == 0x68314a61
+    assert tv-state[3] == 0x9165986e
   }
 
-  test "hash vectors" {
+  test "Gimli-Hash gives the specification's 32-byte digests" {
+    // Each compared whole, as one u256: its 32 bytes, little-endian
     gimli-hash("", digest[..32])
-    assert digest_is(x"b0634b2c0b082aedc5c0a2fe4ee3adcfc989ec05de6f00addb04b3aaac271f67")
+    assert digest.u256[0] == x"b0634b2c0b082aedc5c0a2fe4ee3adcfc989ec05de6f00addb04b3aaac271f67".u256[0]
     gimli-hash("Speak words we can all understand!", digest[..32])
-    assert digest_is(x"8dd4d132059b72f8e8493f9afb86c6d86263e7439fc64cbb361fcbccf8b01267")
+    assert digest.u256[0] == x"8dd4d132059b72f8e8493f9afb86c6d86263e7439fc64cbb361fcbccf8b01267".u256[0]
     gimli-hash("There's plenty for the both of us, may the best Dwarf win.", digest[..32])
-    assert digest_is(x"4afb3ff784c7ad6943d49cf5da79facfa7c4434e1ce44f5dd4b28f91a84d22c8")
+    assert digest.u256[0] == x"4afb3ff784c7ad6943d49cf5da79facfa7c4434e1ce44f5dd4b28f91a84d22c8".u256[0]
   }
 
   test "a longer output extends a shorter one" {
     gimli-hash("Speak words we can all understand!", digest)
-    assert digest_is(x"8dd4d132059b72f8e8493f9afb86c6d86263e7439fc64cbb361fcbccf8b01267cb04b0abcdcc71546a44f889b2196524")
+    assert starts-with(digest, x"8dd4d132059b72f8e8493f9afb86c6d86263e7439fc64cbb361fcbccf8b01267cb04b0abcdcc71546a44f889b2196524")
     digest[..] = 0
     gimli-hash("Speak words we can all understand!", digest[..20])
-    assert digest_is(x"8dd4d132059b72f8e8493f9afb86c6d86263e743")
+    assert starts-with(digest, x"8dd4d132059b72f8e8493f9afb86c6d86263e743")
     assert digest[20] == 0
   }
 }

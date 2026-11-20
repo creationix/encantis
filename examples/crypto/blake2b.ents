@@ -130,24 +130,12 @@ test "blake2b" {
     return result-buf[idx]
   }
 
-  test "256 empty first bytes" {
+  test "a 256-bit digest stored to memory is its bytes in order" {
     // BLAKE2b-256("") = 0e5751c026e543b2...
     assert hash-byte("", 0) == 0x0e
     assert hash-byte("", 1) == 0x57
     assert hash-byte("", 2) == 0x51
     assert hash-byte("", 3) == 0xc0
-  }
-
-  test "256 deterministic" {
-    let h1 = blake2b-256("")
-    let h2 = blake2b-256("")
-    assert h1 == h2
-  }
-
-  test "256 abc differs from empty" {
-    let empty = blake2b-256("")
-    let abc = blake2b-256("abc")
-    assert empty != abc
   }
 
   // Each digest read as the integer the functions return
@@ -156,13 +144,14 @@ test "blake2b" {
   data empty-512 = x"786a02f742015903 c6c6fd852552d272 912f4740e1584761 8a86e217f71f5419 d25e1031afee5853 13896444934eb04b 903a685b1448b755 d56f701afe9be2ce"
   data abc-512 = x"ba80a53f981c4d0d 6a2797b69f12f6e9 4c212f14685ac4b7 4b12bb6fdbffa2d1 7d87c5392aab792d c252d5de4533cc95 18d38aa8dbf1925a b92386edd4009923"
 
-  test "256 known answers" {
+  test "BLAKE2b-256 gives the known digests, the same on every call" {
     assert blake2b-256("") == empty-256.u256[0]
     assert blake2b-256("abc") == abc-256.u256[0]
+    assert blake2b-256("") == empty-256.u256[0]   // nothing of the last call is left
   }
 
   // RFC 7693, Appendix A
-  test "512 known answers" {
+  test "BLAKE2b-512 gives the known digests" {
     assert blake2b-512("") == empty-512.u512[0]
     assert blake2b-512("abc") == abc-512.u512[0]
   }
@@ -172,7 +161,7 @@ test "blake2b" {
   data m896-256 = x"90a0bcf5e5a67ac1 578c2754617994cf c248109275a809a0 721feebd1e918738"
   data m896-512 = x"ce741ac5930fe346 811175c5227bb7bf cd47f42612fae46c 0809514f9e0e3a11 ee1773287147cdea eedff50709aa7163 41fe65240f4ad677 7d6bfaf9726e5e52"
 
-  test "896 bit message" {
+  test "a 112-byte message whose words all differ gives the known digests" {
     let m = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
     assert blake2b-256(m) == m896-256.u256[0]
     assert blake2b-512(m) == m896-512.u512[0]
@@ -182,7 +171,7 @@ test "blake2b" {
   data m1024-256 = x"dc8b3f85e59c45a9 2c02e5a698886a6f fc373cd421839432 611db7a5eb49f65b"
   data m1024-512 = x"eec14c7e99a04020 bd2993f49237fca1 51d8e94b65b9f94b 6f26f01dc41fe3ae 1db81b10ba15ffc0 6d80630763004cfa 6488a29e55384ad1 07aa0f2df84d0d05"
 
-  test "one whole block" {
+  test "one whole block, compressed as the last, gives the known digests" {
     let m = "abcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnop"
     assert blake2b-256(m) == m1024-256.u256[0]
     assert blake2b-512(m) == m1024-512.u512[0]
@@ -193,7 +182,7 @@ test "blake2b" {
   data zeros-256 = x"c978e85c0d32724e d4550cc0901a10e5 412f3dcf29fd20ff e35a419f097dd113"
   data zeros-512 = x"ebf901427c25273f ae72776171b82d3b ae6fdd9a037b232d 32f4f9ab81f3ea6b 38fc8eb2f9be5b39 3cb3aef824a8087f 5b685752d397ab58 af969da8aae40f9b"
 
-  test "two blocks" {
+  test "a block and a last of 72 bytes give the known digests" {
     assert blake2b-256(zeros) == zeros-256.u256[0]
     assert blake2b-512(zeros) == zeros-512.u512[0]
   }

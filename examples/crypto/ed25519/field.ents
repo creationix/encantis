@@ -189,29 +189,29 @@ test "field arithmetic" {
   // Limb 0 of p, whose limbs 1 to 4 are mask51
   def p0 = 0x7FFFFFFFFFFED // 2^51 - 19
 
-  test "add and reduce" {
+  test "1 + 1 is 2" {
     let c = fe-carry(fe-add(fe-one(), fe-one()))
     assert c.0 == 2
     assert c.1 == 0
   }
 
-  test "sub identity" {
+  test "a - a is zero" {
     let a: Fe = (100, 200, 300, 400, 500)
     // a - a is 2p before it is reduced
     assert fe-eq(fe-sub(a, a), fe-zero())
   }
 
-  test "mul by one" {
+  test "42 times 1 is 42" {
     let result = fe-mul((42, 0, 0, 0, 0), fe-one())
     assert result.0 == 42
   }
 
-  test "mul by zero" {
+  test "a times 0 is 0" {
     let a: Fe = (12345, 67890, 0, 0, 0)
     assert fe-eq(fe-mul(a, fe-zero()), fe-zero())
   }
 
-  test "mul commutativity" {
+  test "a times b is b times a" {
     let a: Fe = (7, 0, 0, 0, 0)
     let b: Fe = (13, 0, 0, 0, 0)
     assert fe-eq(fe-mul(a, b), fe-mul(b, a))
@@ -226,17 +226,17 @@ test "field arithmetic" {
     assert w.0 == 19 && w.4 == 0
   }
 
-  test "small mul" {
+  test "7 times the small 6 is 42" {
     let result = fe-mul-small((7, 0, 0, 0, 0), 6)
     assert result.0 == 42
   }
 
-  test "square equals mul self" {
+  test "a squared is a times a" {
     let a: Fe = (123, 456, 0, 0, 0)
     assert fe-eq(fe-sq(a), fe-mul(a, a))
   }
 
-  test "reduction wraps mod p" {
+  test "2^255 reduces to 19" {
     // 2^255 is 19 mod p: a limb 4 of 2^51 carries 19 into limb 0
     let reduced = fe-carry((0, 0, 0, 0, mask51 + 1))
     assert reduced.0 == 19
@@ -256,21 +256,21 @@ test "field arithmetic" {
     assert fe-eq(fe-inv(fe-one()), fe-one())
   }
 
-  test "x * x^-1 = 1" {
+  test "42 times its inverse is 1" {
     let x: Fe = (42, 0, 0, 0, 0)
     assert fe-eq(fe-mul(x, fe-inv(x)), fe-one())
   }
 
-  test "inverse of large value" {
+  test "a large value times its inverse is 1" {
     let x: Fe = (0x123456789ABCD, 0xFEDCBA987654, 0, 0, 0)
     assert fe-eq(fe-mul(x, fe-inv(x)), fe-one())
   }
 
-  test "d constant nonzero" {
+  test "d is not zero" {
     assert !fe-eq(fe-d(), fe-zero())
   }
 
-  test "d * 121666 = -121665" {
+  test "d times 121666 is -121665" {
     let lhs = fe-mul(fe-d(), (121666, 0, 0, 0, 0))
     assert fe-eq(lhs, fe-sub(fe-zero(), (121665, 0, 0, 0, 0)))
   }
