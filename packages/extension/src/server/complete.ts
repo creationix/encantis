@@ -82,27 +82,51 @@ function functionAt(module: Module, offset: number, slack = 0): FuncDecl | null 
 // The source that knows the declarations around an offset of the text: the
 // analysis of the text as it is, where it answers there, or the last one of
 // the text when it parsed, where the text up to the function asked in is as
-// it was then
-function sourceFor(text: string, offset: number, current: Source | null, parsed: Source | null, answers: (offset: number) => boolean): { source: Source; func: FuncDecl | null } | null {
-  if (current && answers(offset)) return { source: current, func: functionAt(current.module, offset) };
+// it was then. `slack` is how much longer the text has grown since: what ends
+// after the place asked at in that analysis can end that much later now.
+type Found = { source: Source; func: FuncDecl | null; slack: number };
+
+function sourceFor(text: string, offset: number, current: Source | null, parsed: Source | null, answers: (offset: number) => boolean): Found | null {
+  if (current && answers(offset)) return { source: current, func: functionAt(current.module, offset), slack: 0 };
   if (parsed) {
     const slack = Math.max(0, text.length - parsed.text.length);
     const func = functionAt(parsed.module, offset, slack);
-    if (!func || text.slice(0, func.span.start) === parsed.text.slice(0, func.span.start)) return { source: parsed, func };
+    if (!func || text.slice(0, func.span.start) === parsed.text.slice(0, func.span.start)) return { source: parsed, func, slack };
   }
-  return current ? { source: current, func: null } : null;
+  return current ? { source: current, func: null, slack: 0 } : null;
 }
 
-// The parameters and locals declared in a function before an offset, the
-// latest of each name: what a name there means, but for one declared in a
-// block that has closed
-function ownNames(source: Source, func: FuncDecl | null, offset: number): Map<string, { symbol: MetaSymbol; at: number }> {
+// What a local is seen in: the innermost block, for, if let or match arm it
+// is declared in. Where it ends, in the function's source
+const SCOPES = new Set(['Block', 'ForStmt', 'IfExpr', 'MatchArm']);
+
+function scopeEnd(func: FuncDecl, at: number): number {
+  let end = func.span.end;
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const each of node) visit(each);
+      return;
+    }
+    const { kind, span } = node as { kind?: string; span?: { start: number; end: number } };
+    if (span && (at < span.start || at >= span.end)) return;
+    if (span && kind && SCOPES.has(kind) && span.end < end) end = span.end;
+    for (const [key, value] of Object.entries(node)) if (key !== 'span') visit(value);
+  };
+  visit(func.body);
+  return end;
+}
+
+// The parameters and locals declared in a function before an offset and
+// seen there, the latest of each name: what a name there means
+function ownNames(source: Source, func: FuncDecl | null, offset: number, slack = 0): Map<string, { symbol: MetaSymbol; at: number }> {
   const names = new Map<string, { symbol: MetaSymbol; at: number }>();
   if (!func) return names;
   for (const symbol of source.meta.symbols) {
     if (!OWN_KINDS.includes(symbol.kind)) continue;
     const at = offsetOf(source.text, symbol.def);
     if (at < func.span.start || at >= offset) continue;
+    if (symbol.kind === 'local' && scopeEnd(func, at) + slack <= offset) continue;
     const known = names.get(symbol.name);
     if (!known || known.at < at) names.set(symbol.name, { symbol, at });
   }
@@ -156,7 +180,7 @@ export function complete(text: string, offset: number, current: Source | null, p
     items.push(entry);
   };
   if (found) {
-    for (const { symbol } of ownNames(found.source, found.func, start).values()) add(item(symbol, found.source, '0'));
+    for (const { symbol } of ownNames(found.source, found.func, start, found.slack).values()) add(item(symbol, found.source, '0'));
   }
   for (const { symbol, source } of moduleNames([found?.source ?? null, current, parsed]).values()) add(item(symbol, source, '1'));
   for (const name of BUILTIN_NAMES) {
@@ -248,8 +272,8 @@ function step(type: ResolvedType, by: Step): ResolvedType | null {
 // The type a name has at an offset of the text: a parameter or local
 // declared before it in its function, also one declared on a line of the text
 // no analysis has seen yet, or else a name of the module
-function nameType(text: string, source: Source, func: FuncDecl | null, name: string, offset: number, depth = 0): ResolvedType | null {
-  const own = ownNames(source, func, offset).get(name);
+function nameType(text: string, source: Source, func: FuncDecl | null, name: string, offset: number, depth = 0, slack = 0): ResolvedType | null {
+  const own = ownNames(source, func, offset, slack).get(name);
   const written = depth < 4 ? writtenLet(text, func, name, offset) : null;
   if (written && (!own || written.at > own.at)) {
     const type = writtenType(text, source, func, written, depth);
@@ -281,11 +305,14 @@ function writtenType(text: string, source: Source, func: FuncDecl | null, writte
     return symbol?.kind === 'type' ? symbol.type : null;
   }
   const value = written.value ?? '';
-  // A call of a function that is no generic: what it returns
-  const call = /^([a-z][A-Za-z0-9_-]*)\(/.exec(value);
+  // A call: what the function returns, and a generic's result as its
+  // declaration writes it, with the comptime arguments written here
+  const call = /^([a-z][A-Za-z0-9_-]*)\((.*)\)\s*$/.exec(value);
   if (call) {
     const symbol = source.check.symbols.get(call[1]);
-    return symbol?.kind === 'func' && symbol.type.returns.length === 1 ? symbol.type.returns[0].type : null;
+    if (symbol?.kind === 'func') return symbol.type.returns.length === 1 ? symbol.type.returns[0].type : null;
+    if (symbol?.kind === 'generic') return genericResult(symbol.decl, splitArguments(call[2]), source.check);
+    return null;
   }
   // A name and its fields: what the last field is
   const chain = /^([a-z][A-Za-z0-9_-]*)((?:\.[a-z][A-Za-z0-9_-]*)*)\s*$/.exec(value);
@@ -299,10 +326,14 @@ function writtenType(text: string, source: Source, func: FuncDecl | null, writte
 // pointers: a struct by the names of its fields (a generic type's
 // application is its body, Vec(u32) a (ptr, len, cap)), anything else by
 // how it is written
-function receiverKey(type: ResolvedType): string {
+// The fields' types count, but for a generic's parameter (writtenKey), whose
+// fields' types are written with its type parameters.
+function receiverKey(type: ResolvedType, typed = true): string {
   let t = unwrap(type);
   while (t.kind === 'pointer') t = unwrap(t.pointee);
-  if (t.kind === 'tuple' && t.fields.length > 0 && t.fields.every((f) => f.name)) return `fields:${t.fields.map((f) => f.name).join(',')}`;
+  if (t.kind === 'tuple' && t.fields.length > 0 && t.fields.every((f) => f.name)) {
+    return `fields:${t.fields.map((f) => (typed ? `${f.name}:${typeToString(f.type)}` : f.name)).join(',')}`;
+  }
   return shape(typeToString(t));
 }
 
@@ -322,9 +353,77 @@ function writtenKey(type: Type, check: TypeCheckResult): string | null {
   }
   if (t.kind === 'TypeRef') {
     const symbol = check.symbols.get(t.name);
-    return symbol?.kind === 'type' ? receiverKey(symbol.type) : null;
+    return symbol?.kind === 'type' ? receiverKey(symbol.type, false) : null;
   }
   return shape(typeText(t));
+}
+
+// The arguments of a call as written, split at its own commas
+function splitArguments(written: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < written.length; i++) {
+    const ch = written[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (ch === ',' && depth === 0) {
+      args.push(written.slice(from, i).trim());
+      from = i + 1;
+    }
+  }
+  if (written.trim()) args.push(written.slice(from).trim());
+  return args;
+}
+
+// Each whole name in a type as written replaced by what it is given
+function substituted(written: string, given: Map<string, string>): string {
+  return written.replace(/[A-Za-z_][A-Za-z0-9_-]*/g, (name) => given.get(name) ?? name);
+}
+
+// What a generic returns as its declaration writes it, with these arguments
+// given for its comptime parameters: enough of a type to list its fields and
+// to find its methods (a generic type's body, its fields' types written out)
+function genericResult(decl: FuncDecl, args: string[], check: TypeCheckResult): ResolvedType | null {
+  const input = decl.signature.input;
+  const given = new Map<string, string>();
+  if (input.kind === 'CompositeType') {
+    input.fields.forEach((param, i) => {
+      if (param.comptime && param.ident && args[i] !== undefined) given.set(param.ident, args[i]);
+    });
+  }
+  return writtenAsType(decl.signature.output, given, check);
+}
+
+function writtenAsType(type: Type, given: Map<string, string>, check: TypeCheckResult): ResolvedType | null {
+  switch (type.kind) {
+    case 'PointerType': {
+      const pointee = writtenAsType(type.pointee, given, check);
+      return pointee && { kind: 'pointer', pointee, ...(type.mutable ? { mutable: true } : {}) };
+    }
+    case 'TypeRef': {
+      const name = given.get(type.name) ?? type.name;
+      if (PRIMITIVE_NAMES.has(name)) return { kind: 'primitive', name } as ResolvedType;
+      const symbol = check.symbols.get(name);
+      return symbol?.kind === 'type' ? symbol.type : null;
+    }
+    case 'TypeApply': {
+      const symbol = check.symbols.get(type.name);
+      if (symbol?.kind !== 'typefunc' || symbol.decl.body.kind !== 'CompositeType') return null;
+      const own = new Map<string, string>();
+      symbol.decl.params.forEach((param, i) => {
+        const arg = type.args[i];
+        if (param.ident && arg && arg.kind !== 'ValueArg') own.set(param.ident, substituted(typeText(arg), given));
+      });
+      const fields = symbol.decl.body.fields.map((field) => ({
+        name: field.ident,
+        type: { kind: 'named', name: substituted(typeText(field.type), own), type: { kind: 'void' } } as ResolvedType,
+      }));
+      return { kind: 'tuple', fields };
+    }
+    default:
+      return null;
+  }
 }
 
 // A type as written, past pointers and optionals
@@ -337,8 +436,8 @@ function members(text: string, dot: number, current: Source | null, parsed: Sour
   if (!chain) return [];
   const found = sourceFor(text, chain.at, current, parsed, answers);
   if (!found) return [];
-  const { source, func } = found;
-  let type = nameType(text, source, func, chain.head, chain.at);
+  const { source, func, slack } = found;
+  let type = nameType(text, source, func, chain.head, chain.at, 0, slack);
   for (const by of chain.steps) type = type && step(type, by);
   if (!type) return [];
 
@@ -347,7 +446,17 @@ function members(text: string, dot: number, current: Source | null, parsed: Sour
   const t = unwrap(type);
   const inner = t.kind === 'pointer' ? unwrap(t.pointee) : t;
   if (inner.kind === 'tuple') {
-    for (const f of inner.fields) if (f.name) field(f.name, typeToString(f.type));
+    inner.fields.forEach((f, i) => field(f.name ?? String(i), typeToString(f.type)));
+  }
+  // .* on a pointer to one value (a many-pointer is indexed instead), and
+  // the memory of a pointer, a slice or an array read as another type
+  if (t.kind === 'pointer' && !(inner.kind === 'array' && inner.sizes === null)) {
+    items.push({ label: '*', kind: CompletionItemKind.Operator, detail: typeToString(t.pointee), sortText: '1*' });
+  }
+  if (t.kind === 'pointer' || t.kind === 'slice' || t.kind === 'array') {
+    for (const name of PRIMITIVE_NAMES) {
+      if (name !== 'bool') items.push({ label: name, kind: CompletionItemKind.TypeParameter, detail: `[*]${name}: the memory read as ${name}`, sortText: `3${name}` });
+    }
   }
   if (inner.kind === 'slice' || inner.kind === 'array') {
     if (inner.kind === 'slice' || inner.sizes !== null) field('len', 'u32', '1');
@@ -358,22 +467,24 @@ function members(text: string, dot: number, current: Source | null, parsed: Sour
   // Functions called as methods: x.f(a) is f(x, a), for an f whose first
   // parameter (past its comptime ones) takes what x is
   const receiver = receiverKey(type);
+  const byNames = receiverKey(type, false);
   const seen = new Set(items.map((i) => i.label));
   for (const [key, symbol] of source.check.symbols) {
     const name = declaredName(key);
-    if (seen.has(name)) continue;
-    let first: string | null = null;
+    // An instance of a generic (second<u32>) is no name to write.
+    if (seen.has(name) || name.includes('<')) continue;
+    let matches = false;
     let signature = '';
     if (symbol.kind === 'func' && !symbol.alias) {
       const param = symbol.type.params[0];
-      first = param ? receiverKey(param.type) : null;
+      matches = !!param && receiverKey(param.type) === receiver;
       signature = typeToString(symbol.type).replace(/^func/, '');
     } else if (symbol.kind === 'generic') {
       const param = runtimeParams(symbol.decl)[0];
-      first = param ? writtenKey(param.type, source.check) : null;
+      matches = !!param && writtenKey(param.type, source.check) === byNames;
       signature = genericSignature(symbol.decl);
     }
-    if (first === null || first !== receiver) continue;
+    if (!matches) continue;
     seen.add(name);
     items.push({ label: name, kind: CompletionItemKind.Method, detail: signature, sortText: `2${name}` });
   }

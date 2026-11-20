@@ -254,6 +254,64 @@ describe('completion', () => {
     expect((await complete(SHAPES.replace('  return w * h', '  let z = origin.|\n  return w * h'))).labels.slice(0, 2)).toEqual(['x', 'y'])
   })
 
+  // Completed in a text of its own, edited to the text with | taken out
+  async function completeIn(base: string, edited: string) {
+    const s = server()
+    await s.open(uri, base)
+    const at = edited.indexOf('|')
+    const text = edited.replace('|', '')
+    await s.change(uri, text)
+    return s.at<CompletionItem[]>('onCompletion', uri, text, at)
+  }
+  const GENERIC = `func Pair(comptime T: type) -> type => (a: T, b: T)
+func make(comptime T: type, x: T) -> Pair(T) => Pair(T)(x, x)
+func second(comptime T: type, p: Pair(T)) -> T => p.b
+type A = (x: i32)
+type B = (x: f64)
+func fa(a: A) -> i32 => a.x
+func fb(b: B) -> f64 => b.x
+export func f(n: u32, t: (i32, i32), q: *mut A) -> u32 {
+  let v = make(u32, n)
+  if n > 3 {
+    let inner = 1
+  }
+  return second(v) + fa(q.*) as u32
+}
+`
+
+  test('a local of a block that has closed is not offered, one of the block it is in is', async () => {
+    const after = await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = |\n  return second'))
+    expect(after.map((i) => i.label)).not.toContain('inner')
+    expect(after.map((i) => i.label)).toContain('v')
+    const within = await completeIn(GENERIC, GENERIC.replace('    let inner = 1', '    let inner = 1\n    let z = |'))
+    expect(within.map((i) => i.label)).toContain('inner')
+  })
+
+  test('after a point: unnamed fields by position, .* and the type puns of a pointer', async () => {
+    const tuple = await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = t.|\n  return second'))
+    expect(tuple.map((i) => [i.label, i.detail]).slice(0, 2)).toEqual([['0', 'i32'], ['1', 'i32']])
+    const pointer = (await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = q.|\n  return second'))).map((i) => i.label)
+    expect(pointer.slice(0, 2)).toEqual(['x', '*'])
+    expect(pointer).toContain('u32')
+    // A value is no memory to read as another type.
+    expect((await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = t.|\n  return second'))).map((i) => i.label)).not.toContain('u32')
+  })
+
+  test("a local given a generic's result, on a line not yet checked", async () => {
+    const items = await completeIn(GENERIC, GENERIC.replace('  return second', '  let w = make(u32, n)\n  let z = w.|\n  return second'))
+    expect(items.map((i) => [i.label, i.detail])).toEqual([
+      ['a', 'u32'],
+      ['b', 'u32'],
+      ['second', '(p: Pair(T)) -> T'],
+    ])
+  })
+
+  test("methods of a struct, not of another with fields of the same names", async () => {
+    const labels = (await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = q.|\n  return second'))).map((i) => i.label)
+    expect(labels).toContain('fa')
+    expect(labels).not.toContain('fb')
+  })
+
   test('nothing in a comment, a string or a number', async () => {
     expect((await complete(SHAPES.replace('  return w * h', '  // p.|\n  return w * h'))).labels).toEqual([])
     expect((await complete(SHAPES.replace('  return w * h', '  let s = "p.|"\n  return w * h'))).labels).toEqual([])
