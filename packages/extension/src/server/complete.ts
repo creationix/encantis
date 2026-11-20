@@ -448,7 +448,7 @@ function members(text: string, dot: number, current: Source | null, parsed: Sour
   const t = unwrap(type);
   const inner = t.kind === 'pointer' ? unwrap(t.pointee) : t;
   if (inner.kind === 'tuple') {
-    inner.fields.forEach((f, i) => field(f.name ?? String(i), typeToString(f.type)));
+    for (const [i, f] of inner.fields.entries()) field(f.name ?? String(i), typeToString(f.type));
   }
   // .* on a pointer to one value (a many-pointer is indexed instead), and
   // the memory of a pointer, a slice or an array read as another type
