@@ -1,11 +1,14 @@
-// SHA-256 (FIPS 180-4)
-// Produces a 32-byte (256-bit) hash
+// SHA-256 (FIPS 180-4): the 32-byte (256-bit) hash of a message.
 
+def block-size = 64
+
+// The first 32 bits of the fractional parts of the square roots of the first 8 primes
 data iv = [
   0x6a09e667:u32, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
   0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 ]
 
+// The first 32 bits of the fractional parts of the cube roots of the first 64 primes
 data k = [
   0x428a2f98:u32, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
   0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -27,20 +30,22 @@ data k = [
 
 data state = mut [0:u32; 8]
 data w = mut [0:u32; 64]
-data pad-block = mut [0:u8; 64]
+data pad-block = mut [0:u8; block-size]
 
-inline func ch(x: u32, y: u32, z: u32) -> u32 => (x & y) ^ (~x & z)
-inline func maj(x: u32, y: u32, z: u32) -> u32 => (x & y) ^ (x & z) ^ (y & z)
-inline func big-sigma0(x: u32) -> u32 => (x <<< 30) ^ (x <<< 19) ^ (x <<< 10)
-inline func big-sigma1(x: u32) -> u32 => (x <<< 26) ^ (x <<< 21) ^ (x <<< 7)
-inline func small-sigma0(x: u32) -> u32 => (x <<< 25) ^ (x <<< 14) ^ (x >> 3)
-inline func small-sigma1(x: u32) -> u32 => (x <<< 15) ^ (x <<< 13) ^ (x >> 10)
+func ch(x: u32, y: u32, z: u32) -> u32 => (x & y) ^ (~x & z)
+func maj(x: u32, y: u32, z: u32) -> u32 => (x & y) ^ (x & z) ^ (y & z)
+func big-sigma0(x: u32) -> u32 => (x >>> 2) ^ (x >>> 13) ^ (x >>> 22)
+func big-sigma1(x: u32) -> u32 => (x >>> 6) ^ (x >>> 11) ^ (x >>> 25)
+func small-sigma0(x: u32) -> u32 => (x >>> 7) ^ (x >>> 18) ^ (x >> 3)
+func small-sigma1(x: u32) -> u32 => (x >>> 17) ^ (x >>> 19) ^ (x >> 10)
 
+// The big-endian u32 at ptr + offset
 func load-be32(ptr: [*]u8, offset: u32) -> u32 {
   let p = ptr + offset
-  return (p[0] as u32 << 24) | (p[1] as u32 << 16) | (p[2] as u32 << 8) | p[3] as u32
+  return (p[0]:u32 << 24) | (p[1]:u32 << 16) | (p[2]:u32 << 8) | p[3]
 }
 
+// Stores value big-endian at ptr + offset
 func store-be32(ptr: [*]mut u8, offset: u32, value: u32) {
   let p = ptr + offset
   p[0] = (value >> 24) as u8
@@ -49,15 +54,14 @@ func store-be32(ptr: [*]mut u8, offset: u32, value: u32) {
   p[3] = value as u8
 }
 
-func compress(block: *[64]u8) {
+// Mixes one block of the message into the state
+func compress(block: *[block-size]u8) {
   for i in 16 {
-    w[i] = load-be32(block as [*]u8, i * 4)
+    w[i] = load-be32(block.ptr, i * 4)
   }
-
-  let j: u32 = 16
-  while j < 64 {
-    w.u32[j] = small-sigma1(w.u32[j - 2]) + w.u32[j - 7] + small-sigma0(w.u32[j - 15]) + w.u32[j - 16]
-    j += 1
+  // w[t] for t from 16 to 63, from the words 16, 15, 7 and 2 before it
+  for i in 48 {
+    w[i + 16] = small-sigma1(w[i + 14]) + w[i + 9] + small-sigma0(w[i + 1]) + w[i]
   }
 
   let a = state[0]
@@ -69,17 +73,10 @@ func compress(block: *[64]u8) {
   let g = state[6]
   let h = state[7]
 
-  for round in 64 {
-    let t1 = h + big-sigma1(e) + ch(e, f, g) + k[round] + w[round]
+  for t in 64 {
+    let t1 = h + big-sigma1(e) + ch(e, f, g) + k[t] + w[t]
     let t2 = big-sigma0(a) + maj(a, b, c)
-    h = g
-    g = f
-    f = e
-    e = d + t1
-    d = c
-    c = b
-    b = a
-    a = t1 + t2
+    set a, b, c, d, e, f, g, h = (t1 + t2, a, b, c, d + t1, e, f, g)
   }
 
   state[0] += a
@@ -93,35 +90,28 @@ func compress(block: *[64]u8) {
 }
 
 export func sha256(input: []u8, output: *mut [32]u8) {
-  for i in 8 {
-    state[i] = iv[i]
-  }
+  state[..] = iv
 
   let ptr = input.ptr
-  let remaining = input.len
-  let total-bits: u64 = input.len as u64 * 8
-
-  while remaining >= 64 {
-    compress(ptr as *[64]u8)
-    ptr += 64
-    remaining -= 64
+  for i in input.len / block-size {
+    compress(ptr as *[block-size]u8)
+    ptr += block-size
   }
 
-  memset(pad-block, 0, 64)
-  let n: u32 = 0
-  while n < remaining {
-    pad-block.u8[n] = ptr[n]
-    n += 1
-  }
-  pad-block.u8[remaining] = 0x80:u8
-
-  if remaining >= 56 {
+  // Padding: the bytes after the last whole block, the byte 0x80, zeros, and
+  // the message's length in bits in the last 8 bytes of a block. When the
+  // length does not fit after the 0x80, it takes a block of its own.
+  let rest = input.len % block-size
+  pad-block[..] = 0
+  memcpy(pad-block, ptr, rest)
+  pad-block[rest] = 0x80
+  if rest >= block-size - 8 {
     compress(pad-block)
-    memset(pad-block, 0, 64)
+    pad-block[..] = 0
   }
-
-  store-be32(pad-block as [*]mut u8, 56, (total-bits >> 32) as u32)
-  store-be32(pad-block as [*]mut u8, 60, total-bits as u32)
+  let bits = input.len:u64 * 8
+  store-be32(pad-block as [*]mut u8, block-size - 8, (bits >> 32) as u32)
+  store-be32(pad-block as [*]mut u8, block-size - 4, bits as u32)
   compress(pad-block)
 
   for i in 8 {
@@ -130,36 +120,43 @@ export func sha256(input: []u8, output: *mut [32]u8) {
 }
 
 test "sha256" {
-  data hash-out = mut [0:u8; 32]
+  data out = mut [0:u8; 32]
 
-  func check-hash(input: []u8, expected: *[32]u8) -> bool {
-    sha256(input, hash-out)
-    let i: u32 = 0
-    while i < 32 {
-      return false when hash-out.u8[i] != expected.u8[i]
-      i += 1
+  // Whether input hashes to expected
+  func hashes-to(input: []u8, expected: *[32]u8) -> bool {
+    sha256(input, out)
+    for i in out.len {
+      return false when out[i] != expected[i]
     }
     return true
   }
 
-  data tv-abc = "abc"
   data expected-abc = x"ba7816bf8f01cfea 414140de5dae2223 b00361a396177a9c b410ff61f20015ad"
 
   test "abc" {
-    assert check-hash(tv-abc, expected-abc)
+    assert hashes-to("abc", expected-abc)
   }
 
-  data tv-empty = ""
   data expected-empty = x"e3b0c44298fc1c14 9afbf4c8996fb924 27ae41e4649b934c a495991b7852b855"
 
   test "empty" {
-    assert check-hash(tv-empty, expected-empty)
+    assert hashes-to("", expected-empty)
   }
 
-  data tv-448 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+  // 56 bytes: the length no longer fits the block, so it takes a second one
   data expected-448 = x"248d6a61d20638b8 e5c026930c3e6039 a33ce45964ff2167 f6ecedd419db06c1"
 
   test "448 bit message" {
-    assert check-hash(tv-448, expected-448)
+    assert hashes-to("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", expected-448)
+  }
+
+  // 112 bytes: one whole block, then 48 bytes
+  data expected-896 = x"cf5b16a778af8380 036ce59e7b049237 0b249b11e8f07a51 afac45037afee9d1"
+
+  test "896 bit message" {
+    assert hashes-to(
+      "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
+      expected-896
+    )
   }
 }
