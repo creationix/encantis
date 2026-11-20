@@ -69,19 +69,21 @@ test "a mask, a shift, a byte and each comparison prove the index" {
   assert pairs[15] == 3
   byte(255)
   assert grid[255] == 4
+  modulo(13)
+  assert buf[1] == 2
   le(11)
   le(12)
   assert buf[11] == 5
-  flipped(7)
+  flipped(3)
   flipped(12)
-  assert buf[7] == 5
+  assert buf[3] == 5
   both(2, 10)
   both(2, 16)
   assert buf[2] == 1
   assert elif_else(15) == 3
   assert elif_else(16) == 0
-  assert in_loop(4) == 2 + 1 + 5
-  assert in_loop(0xFFFFFFFF) == 2 + 1 + 5 + 5 + 5
+  assert in_loop(4) == 2 + 1 + 5             // buf[1] + buf[2] + buf[3]
+  assert in_loop(0xFFFFFFFF) == 2 + 1 + 5 + 5
 }
 
 export func const_idx() -> u32 {
