@@ -71,7 +71,7 @@
   "examples/types/narrowing-casts.ents": "f9d8790d471cb5def6704a9667696ea54df9495731d1a341446ed6bc827762de",
   "examples/types/nested-operands.ents": "6e16c5d68e1de8fe661a78390fe280b85e8aaf5578613fc8bca6b8d3873a3686",
   "examples/types/optional.ents": "cfcb82471a90f0cc1dc271326c2298cfcf63c8571d45b33fe55f9b126c7cc7c1",
-  "examples/types/pointer-globals.ents": "fc898353388da6f9662b33de4ce4ed8728edb45990a8cc339ea44345a2f445f9",
+  "examples/types/pointer-globals.ents": "086e72eef97e188aba49ab53845fe7571c0f98c0a80e528f87e022d3a8fb2390",
   "examples/types/positional-destructuring.ents": "146c3d5b038e8292f13ab4644e44978a126468cd3add337e164cdcf5e28e22ed",
   "examples/types/range-assign.ents": "d9f3cb5c080e86b51b856729d155f47bded237e5e563e7482262cd0c04c20f26",
   "examples/types/ranged-writes.ents": "e3a2fd90b6d3a6c044e5c37bdbd3256394533d19cf122eabe1c489637faa3f01",

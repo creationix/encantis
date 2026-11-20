@@ -9,9 +9,11 @@ global words: [*]mut u32 = 0
 global slots: [*]mut Slot = 0
 global count: u32 = 0
 
+// Lays out n words in space, and n slots after them.
 func setup(n: u32) {
+  assert n <= space.len / (words.wid + slots.wid)     // both arrays fit in space
   words = space as [*]mut u32
-  slots = ((space as u32) + n * 4) as [*]mut Slot
+  slots = (words + n * words.wid) as [*]mut Slot
   count = n
 }
 
