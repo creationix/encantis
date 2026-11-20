@@ -96,6 +96,7 @@ func digits(n: u32) -> []u8 {
 
 // The colours of what it draws, as 0xRRGGBBAA.
 def ink = 0x07080fff
+def shadow = 0x0f1120ff    // the floor
 def wall-lit = 0x3a3f66ff
 def amber = 0xffcf6bff
 def pale = 0xfff4d6ff
@@ -103,6 +104,14 @@ def straw = 0xfff1a8ff     // sparks
 def violet = 0xb9a6ffff    // a wisp forming, and one scattered
 def dusk = 0x6f5bd6ff      // a wisp's halo, and the dash bar refilling
 def mist = 0x9aa0d0ff      // the title's hints
+def lilac = 0xd8ceffff     // a wisp's core
+// Amber, straw and pale again, see-through: the lantern's glow in three
+// layers, a spark's halo and the halo of a dash.
+def glow-far = 0xffcf6b0c
+def glow-mid = 0xffcf6b12
+def glow-near = 0xffcf6b1a
+def straw-halo = 0xfff1a840
+def pale-halo = 0xfff4d660
 
 // ---- Levels ------------------------------------------------------------------
 
@@ -358,16 +367,16 @@ export func init(seed: u32) {
   enter(&levels[0])
 }
 
-func pressed(buttons: u32, bit: u32) -> bool => (buttons & bit) != 0 && (world.held & bit) == 0
+func pressed(buttons: u32, bit: u32) -> bool => buttons & bit != 0 && world.held & bit == 0
 
 // Moves the lantern by the stick (ix, iy) and the arrows held, and starts a
 // dash when it is pressed and ready.
 func update-player(dt: f32, buttons: u32, ix: f32, iy: f32) {
   let p = &world.player
-  if (buttons & btn-left) != 0 { ix -= 1.0 }
-  if (buttons & btn-right) != 0 { ix += 1.0 }
-  if (buttons & btn-up) != 0 { iy -= 1.0 }
-  if (buttons & btn-down) != 0 { iy += 1.0 }
+  if buttons & btn-left != 0 { ix -= 1.0 }
+  if buttons & btn-right != 0 { ix += 1.0 }
+  if buttons & btn-up != 0 { iy -= 1.0 }
+  if buttons & btn-down != 0 { iy += 1.0 }
   let len = sqrt(ix * ix + iy * iy)
   // It faces the way it is steered, as a vector 1 long whatever the tilt,
   // so that every dash goes at dash-speed. It walks at most at walk-speed.
@@ -456,18 +465,23 @@ func update-wisps(dt: f32) {
   }
 }
 
+// Lights a spark in an empty slot while fewer are shown than are left to
+// collect, so the room never shows more sparks than the count says.
 func update-sparks(dt: f32) {
   let p: *Player = &world.player
   let shown: u32 = 0
+  for i in max-sparks {
+    if world.sparks[i].alive { shown += 1 }
+  }
   for i in max-sparks {
     let s = &world.sparks[i]
     if !s.alive {
       continue when shown >= world.goal
       let (x, y) = open-tile(3.0)
       s.* = Spark(x, y, 0.0, true)
+      shown += 1
     }
     s.age += dt
-    shown += 1
     let dx = p.x - s.x
     let dy = p.y - s.y
     if dx * dx + dy * dy < 0.36 {
@@ -563,7 +577,7 @@ func draw(width: f32, height: f32) {
   let light = if world.mode == mode-dead { max(light-radius - world.clock * 6.0, 0.0) } else { light-radius }
 
   // The floor, and the walls as far as the lantern lights them.
-  rect(ox, oy, ts * map-w, ts * map-h, 0x0f1120ff)
+  rect(ox, oy, ts * map-w, ts * map-h, shadow)
   for y in map-h {
     for x in map-w {
       if m.rows[y][x] == '#' {
@@ -579,15 +593,15 @@ func draw(width: f32, height: f32) {
   let lx = ox + p.x * ts
   let ly = oy + p.y * ts
   if world.mode != mode-title {
-    circle(lx, ly, light * ts, 0xffcf6b0c)
-    circle(lx, ly, light * ts * 0.6, 0xffcf6b12)
-    circle(lx, ly, light * ts * 0.3, 0xffcf6b1a)
+    circle(lx, ly, light * ts, glow-far)
+    circle(lx, ly, light * ts * 0.6, glow-mid)
+    circle(lx, ly, light * ts * 0.3, glow-near)
   }
 
   for s in world.sparks {
     if s.alive {
       let pulse = 0.18 + 0.05 * sin(s.age * 7.0)
-      circle(ox + s.x * ts, oy + s.y * ts, ts * (pulse + 0.18), 0xfff1a840)
+      circle(ox + s.x * ts, oy + s.y * ts, ts * (pulse + 0.18), straw-halo)
       circle(ox + s.x * ts, oy + s.y * ts, ts * pulse, straw)
     }
   }
@@ -601,7 +615,7 @@ func draw(width: f32, height: f32) {
       } else {
         let flicker = 0.85 + 0.15 * sin(wsp.age * 13.0 + wsp.x)
         circle(wx, wy, ts * 0.42, fade(dusk, 0.35 * flicker))
-        circle(wx, wy, ts * 0.27, fade(0xd8ceffff, flicker))
+        circle(wx, wy, ts * 0.27, fade(lilac, flicker))
       }
     }
   }
@@ -614,7 +628,7 @@ func draw(width: f32, height: f32) {
   }
 
   if world.mode == mode-play || world.mode == mode-clear {
-    if p.dash > 0.0 { circle(lx, ly, ts * 0.45, 0xfff4d660) }
+    if p.dash > 0.0 { circle(lx, ly, ts * 0.45, pale-halo) }
     circle(lx, ly, ts * 0.3, amber)
     circle(lx, ly, ts * 0.16, pale)
   }
@@ -705,6 +719,26 @@ test "a full mote pool replaces its oldest" {
   assert world.next-mote == 200 % max-motes
 }
 
+test "the room never shows more sparks than are left to collect" {
+  init(1)
+  frame(16.0, 800.0, 600.0, btn-start, 0.0, 0.0)
+  world.goal = 3
+  world.sparks[0] = Spark(20.5, 10.5, 0.0, true)
+  world.sparks[1] = Spark(20.5, 11.5, 0.0, true)
+  world.sparks[2] = Spark(19.5, 11.5, 0.0, true)
+  world.player.x = 20.5                    // on the first spark
+  world.player.y = 10.5
+  update-sparks(0.0)
+  world.player.x = 2.5                     // away from the other two
+  world.player.y = 2.5
+  update-sparks(0.0)
+  let shown: u32 = 0
+  for s in world.sparks {
+    if s.alive { shown += 1 }
+  }
+  assert world.goal == 2 && shown == 2
+}
+
 test "nothing goes wrong on a hostile frame" {
   init(1)
   frame(-1.0, 0.0, 0.0, 0xffffffff, 1.0 / 0.0, 0.0 / 0.0)
@@ -759,9 +793,9 @@ test "walls, the space off the map and NaN are solid" {
 }
 
 test "fade scales the alpha, kept within [0, 1]" {
-  assert fade(0xffcf6bff, 0.5) == 0xffcf6b7f
-  assert fade(0xffcf6bff, 2.0) == 0xffcf6bff
-  assert fade(0xffcf6bff, -1.0) == 0xffcf6b00
+  assert fade(amber, 0.5) == 0xffcf6b7f
+  assert fade(amber, 2.0) == 0xffcf6bff
+  assert fade(amber, -1.0) == 0xffcf6b00
 }
 
 test "sin and cos are near enough" {

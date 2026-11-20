@@ -78,10 +78,10 @@ export func frame(dt-ms: f32, width: f32, height: f32, buttons: u32, ax: f32, ay
   let dt = if dt-ms >= 0.0 { min(dt-ms, 50.0) * 0.001 } else { 0.0 }
   let dx = if ax >= -1.0 && ax <= 1.0 { ax } else { 0.0 }
   let dy = if ay >= -1.0 && ay <= 1.0 { ay } else { 0.0 }
-  if (buttons & btn-left) != 0 { dx -= 1.0 }
-  if (buttons & btn-right) != 0 { dx += 1.0 }
-  if (buttons & btn-up) != 0 { dy -= 1.0 }
-  if (buttons & btn-down) != 0 { dy += 1.0 }
+  if buttons & btn-left != 0 { dx -= 1.0 }
+  if buttons & btn-right != 0 { dx += 1.0 }
+  if buttons & btn-up != 0 { dy -= 1.0 }
+  if buttons & btn-down != 0 { dy += 1.0 }
   game.x = min(max(game.x + dx * speed * dt, 0.0), 1.0)
   game.y = min(max(game.y + dy * speed * dt, 0.0), 1.0)
 
