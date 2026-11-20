@@ -1,53 +1,39 @@
-// Trigonometry example: coordinate conversion between polar and cartesian
+// Converts a point from cartesian to polar coordinates and back, with the
+// host's trigonometry, and prints it in both forms.
 
-// Import math functions from the host environment
 import "math" (
-  "sin" func sin(a:f64) -> f64
-  "cos" func cos(a:f64) -> f64
-  "atan2" func atan2(y:f64, x:f64) -> f64
+  "sin" func sin(x: f64) -> f64
+  "cos" func cos(x: f64) -> f64
+  "atan2" func atan2(y: f64, x: f64) -> f64
 )
 
-// Import a way to print things
-import "sys" "print"
-func print([][]u8)
+// The host prints the fragments of a text one after another
+import "sys" "print" func print(parts: [][]u8)
 
-// Import write-float utility
-import "./write-float" "write-float"
-func write-float(buf:[]mut u8, val:f64) -> []u8
+// Writes a number in decimal into a buffer, and returns the text
+import "./write-float" "write-float" func write-float(buf: []mut u8, val: f64) -> []u8
 
-// A point in polar coordinates (distance, angle)
-type PolarPoint = (d:f64, a:f64)
-// A point in cartesian coordinates (x, y)
-type CartesianPoint = (x:f64, y:f64)
+// The room each number's text is written in
+def room = 10
 
-// Convert from cartesian to polar coordinates
-export func to_polar(c:CartesianPoint) -> (p:PolarPoint) {
-  p.d = sqrt(c.x * c.x + c.y * c.y)
-  p.a = atan2(c.y, c.x)
-}
+// A point as its distance from the origin and its angle, in radians
+type PolarPoint = (d: f64, a: f64)
+// A point as its x and y coordinates
+type CartesianPoint = (x: f64, y: f64)
 
-// Convert from polar to cartesian coordinates
-export func from_polar(p:PolarPoint) -> (c:CartesianPoint) {
-  c.x = cos(p.a) * p.d
-  c.y = sin(p.a) * p.d
-}
+export func to_polar(c: CartesianPoint) -> PolarPoint => (d: sqrt(c.x * c.x + c.y * c.y), a: atan2(c.y, c.x))
+
+export func from_polar(p: PolarPoint) -> CartesianPoint => (x: cos(p.a) * p.d, y: sin(p.a) * p.d)
 
 export func main() {
-  // Declare some variables
-  let x:f64 = 3.1
-  let y:f64 = 4.2
+  let x: f64 = 3.1
+  let y: f64 = 4.2
 
-  // Convert from cartesian to polar coordinates
+  // Each buffer literal is a cell of its own, so the texts written into
+  // them don't overwrite one another.
   let (d:, a:) = to_polar((x:, y:))
+  print(`Polar coordinates: (${write-float(mut [0:u8; room], d)}, ${write-float(mut [0:u8; room], a)})`)
 
-  // Print the result
-  let dTxt = write-float(mut [0:u8; 10], d)
-  let aTxt = write-float(mut [0:u8; 10], a)
-  print(`Polar coordinates: (${dTxt}, ${aTxt})`)
-
-  // Convert from polar to cartesian coordinates
   set (x:, y:) = from_polar((d:, a:))
-
-  // Print the result
-  print(`Cartesian coordinates: (${write-float(mut [0:u8;10],x)}, ${write-float(mut [0:u8;10],y)})`)
+  print(`Cartesian coordinates: (${write-float(mut [0:u8; room], x)}, ${write-float(mut [0:u8; room], y)})`)
 }
