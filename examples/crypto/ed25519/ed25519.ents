@@ -11,12 +11,12 @@ import "../sha512/sha512" (
 )
 
 import "./point" (
-  "pt-set-base" func pt-set-base(buf: *mut[120]u64, i: u32#6)
-  "scalar-mult" func scalar-mult(buf: *mut[120]u64, out: u32#6, base: u32#6, scalar: *[32]u8)
-  "point-encode" func point-encode(out: *mut[32]u8, buf: *mut[120]u64, i: u32#6)
-  "point-eq" func point-eq(buf: *mut[120]u64, p: u32#6, q: u32#6) -> bool
-  "point-decode" func point-decode(buf: *mut[120]u64, i: u32#6, encoded: *[32]u8) -> bool
-  "point-add" func point-add(buf: *mut[120]u64, out: u32#6, p: u32#6, q: u32#6)
+  "pt-set-base" func pt-set-base(buf: *mut [6]Point, i: u32#6)
+  "scalar-mult" func scalar-mult(buf: *mut [6]Point, out: u32#6, base: u32#6, scalar: *[32]u8)
+  "point-encode" func point-encode(out: *mut [32]u8, buf: *[6]Point, i: u32#6)
+  "point-eq" func point-eq(buf: *[6]Point, p: u32#6, q: u32#6) -> bool
+  "point-decode" func point-decode(buf: *mut [6]Point, i: u32#6, encoded: *[32]u8) -> bool
+  "point-add" func point-add(buf: *mut [6]Point, out: u32#6, p: u32#6, q: u32#6)
 )
 
 import "./scalar" (
@@ -25,11 +25,12 @@ import "./scalar" (
 )
 
 type Fe = (u64, u64, u64, u64, u64)
+type Point = (x: Fe, y: Fe, z: Fe, t: Fe)
 
 // Scratch buffers
 data hash-buf = mut [0:u8; 64]
 data scalar-buf = mut [0:u8; 32]
-data pt-work = mut [0:u64; 120]
+data pt-work: *mut [6]Point = mut [((0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0)); 6]
 data concat-buf = mut [0:u8; 512]
 data sign-hash = mut [0:u8; 64]
 data sign-a = mut [0:u8; 32]
@@ -39,11 +40,11 @@ data sign-k-hash = mut [0:u8; 64]
 data sign-s = mut [0:u8; 32]
 data sign-r-scalar = mut [0:u8; 32]
 data sign-k-scalar = mut [0:u8; 32]
-data sign-pt = mut [0:u64; 120]
+data sign-pt: *mut [6]Point = mut [((0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0)); 6]
 data vf-k-hash = mut [0:u8; 64]
 data vf-s-bytes = mut [0:u8; 32]
 data vf-r-bytes = mut [0:u8; 32]
-data vf-pt = mut [0:u64; 120]
+data vf-pt: *mut [6]Point = mut [((0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0)); 6]
 
 // === Scalar clamping ===
 
