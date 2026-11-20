@@ -88,6 +88,11 @@ exports.run = async function run() {
   const names = (symbols ?? []).map((s) => s.name);
   check('the outline', names.includes('square_sum') && names.includes('import "./util"'), names.join(', '));
 
+  // util.ents is not open: found in the workspace
+  const inWorkspace = await vscode.commands.executeCommand('vscode.executeWorkspaceSymbolProvider', 'add');
+  const add = (inWorkspace ?? []).find((s) => s.name === 'add' && s.location.uri.path.endsWith('/util.ents'));
+  check('Go to Symbol in Workspace finds a declaration of a file that is not open', !!add, (inWorkspace ?? []).map((s) => `${s.name} ${s.location.uri.path}`).join(', '));
+
   const definitions = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', main.uri, position('"add"'));
   const target = definitions?.[0] && (definitions[0].targetUri ?? definitions[0].uri);
   check('Go to Definition from an import opens the file it imports', !!target && target.path.endsWith('/util.ents'), target?.toString());

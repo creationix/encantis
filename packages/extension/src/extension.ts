@@ -6,6 +6,7 @@
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { ExtensionContext } from 'vscode';
+import * as vscode from 'vscode';
 import {
   LanguageClient,
   type LanguageClientOptions,
@@ -50,6 +51,11 @@ export function activate(context: ExtensionContext): void {
     clientOptions
   );
 
+  // The workspace's .ents files, for the server's Go to Symbol in Workspace
+  client.onRequest('encantis/findFiles', async (): Promise<string[]> => {
+    const files = await vscode.workspace.findFiles('**/*.ents', '**/node_modules/**');
+    return files.map((uri) => uri.toString());
+  });
   client.start();
 
   // -------------------------------------------------------------------------

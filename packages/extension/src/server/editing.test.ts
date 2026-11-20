@@ -389,6 +389,30 @@ export func f(n: u32, t: (i32, i32), q: *mut A) -> u32 {
   })
 })
 
+describe('workspace symbols', () => {
+  test('the declarations of the files the editor finds and of the open documents', async () => {
+    const files = new Map([
+      [pathOf('file:///ws/a.ents') as string, 'export func alpha() -> u32 => 1\ntype Point = (x: i32, y: i32)\nimport "./b" ("beta" func beta())\n'],
+      [pathOf('file:///ws/b.ents') as string, 'export func beta() {}\n'],
+    ])
+    const s = server({ findFiles: async () => ['file:///ws/a.ents', 'file:///ws/b.ents'], readFile: async (path) => files.get(path) ?? null })
+    await s.open('file:///ws/c.ents', 'func gamma() {}\n')
+    type Found = { name: string; location: { uri: string; range: { start: { line: number; character: number } } }; containerName?: string }
+    const shown = (found: Found[]) => found.map((f) => `${f.name}${f.containerName ? ` in ${f.containerName}` : ''} ${f.location.uri.slice(-6)}:${f.location.range.start.line}:${f.location.range.start.character}`)
+    // An import is not a declaration of the file that imports it.
+    expect(shown(await s.ask<Promise<Found[]>>('onWorkspaceSymbol', { query: '' }))).toEqual([
+      'gamma c.ents:0:5',
+      'alpha a.ents:0:12',
+      'Point a.ents:1:5',
+      'x in Point a.ents:1:14',
+      'y in Point a.ents:1:22',
+      'beta b.ents:0:12',
+    ])
+    // The letters of the query, in order
+    expect(shown(await s.ask<Promise<Found[]>>('onWorkspaceSymbol', { query: 'pt' }))).toEqual(['Point a.ents:1:5'])
+  })
+})
+
 describe("a web editor's documents", () => {
   test('are named by the paths of their URIs, and the files beside them by theirs', () => {
     const main = 'vscode-vfs://github/creationix/encantis/examples/modular/main.ents'

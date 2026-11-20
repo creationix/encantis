@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Go to Symbol in Workspace (Ctrl+T) over the workspace's `.ents` files.
 - Inlay hints: the inferred type of a `let` or `for` binding with none written, and the parameter name of a literal argument.
 - Completion no longer offers a local of a block that has closed; after a `.` it offers `.*` on a pointer, the type puns (`.u32`, …) of a pointer, slice or array, and a tuple's unnamed fields (`.0`); a local just given a generic's result (`let v = vec(Cell, 4)`) has its fields and methods; and a struct's methods are no longer offered for another struct whose fields have the same names.
 - The other uses of the name under the cursor are highlighted, its declaration and assignments as writes.

@@ -9,4 +9,5 @@ declare const self: DedicatedWorkerGlobalScope;
 const connection = createConnection(new BrowserMessageReader(self), new BrowserMessageWriter(self));
 startServer(connection, {
   readUri: (uri) => connection.sendRequest<string | null>('encantis/readFile', uri),
+  findFiles: () => connection.sendRequest<string[]>('encantis/findFiles'),
 });
