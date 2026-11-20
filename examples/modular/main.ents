@@ -1,12 +1,21 @@
+// A program of two source modules: this one imports add and mul from
+// util.ents, and the compiler joins the two into one wasm module, where each
+// call of an imported function is a direct call.
+
 import "./util" (
   "add" func add(a: i32, b: i32) -> i32
   "mul" func mul(a: i32, b: i32) -> i32
 )
 
-export func square_sum(a: i32, b: i32) -> i32 => mul(add(a, b), add(a, b))
+// (a + b) squared.
+export func square_sum(a: i32, b: i32) -> i32 {
+  let sum = add(a, b)
+  return mul(sum, sum)
+}
 
 test "square_sum" {
   assert square_sum(3, 4) == 49
   assert square_sum(0, 0) == 0
   assert square_sum(1, 1) == 4
+  assert square_sum(-5, 2) == 9
 }
