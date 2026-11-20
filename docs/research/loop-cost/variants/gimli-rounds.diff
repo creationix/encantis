@@ -1,0 +1,22 @@
+--- a/examples/crypto/gimli/gimli.ents
++++ b/examples/crypto/gimli/gimli-rounds.ents
+@@ -11,8 +11,8 @@
+ 
+ // The Gimli permutation, in place
+ export func gimli(state: *mut [12]u32) {
+-  let round: u32 = rounds              // 24 down to 1, as the specification counts
+-  loop {
++  for r in rounds {
++    let round = rounds - r
+     // The SP-box, on each column
+     for col in 4 {
+       let x = state[col] <<< 24
+@@ -37,8 +37,6 @@
+       _ => {}
+     }
+ 
+-    round -= 1
+-    break when round == 0
+   }
+ }
+ 

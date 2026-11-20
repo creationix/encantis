@@ -1,0 +1,17 @@
+--- a/examples/crypto/xxh64/xxh64.ents
++++ b/examples/crypto/xxh64/xxh64-while.ents
+@@ -36,13 +36,12 @@
+     // Each 32-byte stripe gives each of the four accumulators one 64-bit
+     // word; limit is the last place a whole stripe can start
+     let limit = end - 32
+-    loop {
++    while ptr <= limit {
+       v1 = round64(v1, ptr.u64[0])
+       v2 = round64(v2, ptr.u64[1])
+       v3 = round64(v3, ptr.u64[2])
+       v4 = round64(v4, ptr.u64[3])
+       ptr += 32
+-      break when ptr > limit
+     }
+ 
+     h64 = (v1 <<< 1) + (v2 <<< 7) + (v3 <<< 12) + (v4 <<< 18)

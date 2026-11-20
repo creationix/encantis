@@ -1,0 +1,18 @@
+--- a/examples/crypto/gimli/gimli.ents
++++ b/examples/crypto/gimli/gimli-absorb.ents
+@@ -56,13 +56,12 @@
+ 
+   // Absorb each full block, then the last bytes and the padding
+   let src = input.ptr
+-  let len = input.len
+-  while len >= rate {
++  for b in input.len / rate {
+     hash-state.u128[0] ^= src.u128[0]
+     gimli(hash-state)
+     src += rate
+-    len -= rate
+   }
++  let len = input.len % rate
+   for i in len {
+     hash-state.u8[i] ^= src[i]
+   }

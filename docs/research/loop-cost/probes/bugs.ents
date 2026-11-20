@@ -1,0 +1,58 @@
+export "mem" memory
+
+export func count8(s: []u8) -> (n: u32) {
+  for x in s {
+    n += 1
+  }
+}
+
+export func count32(s: []u32) -> (n: u32) {
+  for x in s {
+    n += 1
+  }
+}
+
+export func by_index8(s: []u8) -> (n: u32) {
+  for i in s.len {
+    n += s[i] ?? 0
+    n += 1
+  }
+}
+
+export func arr_ptr(a: u32) -> (t: u32) {
+  let p = a as *[4]u32
+  for x in p {
+    t += 1
+  }
+}
+
+export func arr_ptr_huge(a: u32) -> (t: u32) {
+  let p = a as *[1073741823]u32
+  for x in p {
+    t += 1
+    break when t == 100000
+  }
+}
+
+export func c_assign_signed(n: i32) -> (t: u32) {
+  for i in n {
+    t += 1
+    if t == 1 { i = 0x80000000 }
+    break when t > 10
+  }
+}
+
+export func c_assign_unsigned(n: u32) -> (t: u32) {
+  for i in n {
+    t += 1
+    if t == 1 { i = 0x80000000 }
+    break when t > 10
+  }
+}
+
+export func idx_assigned8(s: []u8) -> (n: u32) {
+  for i, x in s {
+    n += 1
+    i = 0
+  }
+}
