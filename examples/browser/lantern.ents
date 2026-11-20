@@ -364,9 +364,10 @@ func update-player(dt: f32, buttons: u32, ix: f32, iy: f32) {
     ix /= len
     iy /= len
   }
+  // It faces the way it is steered; (ix, iy) is at most 1 long already.
   if len > 0.2 {
-    p.fx = ix / max(len, 1.0)
-    p.fy = iy / max(len, 1.0)
+    p.fx = ix
+    p.fy = iy
   }
   p.cool = max(p.cool - dt, 0.0)
   p.dash = max(p.dash - dt, 0.0)
@@ -680,7 +681,7 @@ test "a game starts from the title and plays" {
   play(1, btn-start)
   assert mode() == mode-play
   let most = play(600, btn-right)
-  assert most <= 1024
+  assert most <= max-cmds
   assert world.wisps[0].alive || mode() == mode-dead
 }
 
@@ -691,8 +692,9 @@ test "a frame's text lives in the arena until the next frame" {
   assert a.len == 3 && (a[0] ?? 0) == '4' && (a[2] ?? 0) == '7'
   assert b.len == 1 && (b[0] ?? 0) == '0'
   assert scratch.used == 4
-  scratch.used = 254
+  scratch.used = arena-bytes - 2           // room for two digits, not five
   assert digits(12345).len == 0
+  assert scratch.used == arena-bytes - 2
 }
 
 test "a full mote pool replaces its oldest" {
@@ -705,5 +707,61 @@ test "nothing goes wrong on a hostile frame" {
   init(1)
   frame(-1.0, 0.0, 0.0, 0xffffffff, 1.0 / 0.0, 0.0 / 0.0)
   frame(1000000.0, 100000.0, 1.0, 0, -5.0, 5.0)
-  assert cmds.count <= 1024
+  assert cmds.count <= max-cmds
+}
+
+test "a time step or a stick that is out of range counts as none" {
+  init(1)
+  frame(16.0, 800.0, 600.0, btn-start, 0.0, 0.0)
+  let clock = world.clock
+  let x = world.player.x
+  frame(0.0 / 0.0, 800.0, 600.0, 0, 0.0, 0.0)
+  frame(-16.0, 800.0, 600.0, 0, 0.0, 0.0)
+  assert world.clock == clock
+  frame(16.0, 800.0, 600.0, 0, 5.0, 0.0 / 0.0)
+  assert world.player.x == x
+  frame(16.0, 800.0, 600.0, 0, 1.0, 0.0)
+  assert world.player.x > x
+  let before = world.clock
+  frame(1.0 / 0.0, 800.0, 600.0, 0, 0.0, 0.0)   // past 50 ms counts as 50
+  assert abs(world.clock - before - 0.05) < 0.0001
+}
+
+test "a dash is as fast on a diagonal as straight" {
+  func speed() -> f32 => sqrt(world.player.vx * world.player.vx + world.player.vy * world.player.vy)
+
+  init(1)
+  frame(16.0, 800.0, 600.0, btn-start, 0.0, 0.0)
+  frame(16.0, 800.0, 600.0, btn-right | btn-dash, 0.0, 0.0)
+  frame(16.0, 800.0, 600.0, btn-right | btn-dash, 0.0, 0.0)
+  assert speed() == dash-speed
+  for i in 60 { frame(16.0, 800.0, 600.0, 0, 0.0, 0.0) }   // the cooldown
+  frame(16.0, 800.0, 600.0, btn-left | btn-down | btn-dash, 0.0, 0.0)
+  frame(16.0, 800.0, 600.0, btn-left | btn-down | btn-dash, 0.0, 0.0)
+  assert abs(speed() - dash-speed) < 0.001
+}
+
+test "walls, the space off the map and NaN are solid" {
+  init(1)                                  // the first room
+  assert solid(0.5, 0.5)                   // the corner wall
+  assert !solid(1.5, 1.5)
+  assert solid(7.5, 3.5)                   // a pillar
+  assert solid(-0.1, 1.5) && solid(1.5, 14.0) && solid(24.0, 1.5)
+  assert solid(0.0 / 0.0, 1.5)
+}
+
+test "fade scales the alpha, kept within [0, 1]" {
+  assert fade(0xffcf6bff, 0.5) == 0xffcf6b7f
+  assert fade(0xffcf6bff, 2.0) == 0xffcf6bff
+  assert fade(0xffcf6bff, -1.0) == 0xffcf6b00
+}
+
+test "sin and cos are near enough" {
+  assert abs(sin(0.0)) < 0.002
+  assert abs(sin(1.5707963) - 1.0) < 0.002
+  assert abs(sin(0.5235988) - 0.5) < 0.002     // pi / 6
+  assert abs(sin(-1.5707963) + 1.0) < 0.002
+  assert abs(cos(0.0) - 1.0) < 0.002
+  assert abs(cos(3.1415927) + 1.0) < 0.002
+  assert abs(sin(100.0) + 0.5063656) < 0.002   // any angle, not only [-pi, pi]
 }
