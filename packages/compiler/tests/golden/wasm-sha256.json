@@ -63,7 +63,7 @@
   "examples/types/global-constants.ents": "8fb834842ff236155c3caafa866613dd1b978ecbc68d90aec0c984713c6be348",
   "examples/types/host.ents": "59eb2de43770e7a99f2cd71e229d6163611ae6cbfa18902bdad6362d583a4804",
   "examples/types/if-let-values.ents": "dd57eba130296e0febc8797a38e84e34ea096c0ed7848c4a55209e535791e8d5",
-  "examples/types/integers.ents": "9faa89893df3a444352ba5565786bf17e912a38509db08826406e1975f07005d",
+  "examples/types/integers.ents": "7be24f9e2e5851c570e09559a67065f1abe3466e5c9e5244ff786ed39a4a095f",
   "examples/types/language-features.ents": "0ea4228b80c524453f5f75c7b290fad1d8aaf94ada3680853178bc1dc754170b",
   "examples/types/linked-list.ents": "53c00213573ea2a112b718c1b2d3e730a13f2c6586e96bae00ba1fce0dae48ea",
   "examples/types/match-subject.ents": "29f60f47c328b4aff7f0dc6ffde89b8142a593ea29e77b076b4761017e2d82ff",
