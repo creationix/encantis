@@ -61,10 +61,12 @@ func bit(c: Cell) -> u32#(side * side) => ((c.y * side + c.x) as u32) % (side * 
 
 // How many cells a walk of `steps` steps sees, x going up by 7 and y by 3 at
 // each step and wrapping at the edge. The walk goes into a Vec, which grows
-// as long as the caller asks, and each cell it reaches is marked in visited.
+// as long as the caller asks, and each cell it reaches is marked in visited,
+// cleared first.
 export func walk(steps: u32) -> u32 {
   let scope = mark()
   defer reset(scope)
+  visited[..] = 0
   let path = vec(Cell, 4)
   for i in steps {
     let c = Cell(((i * 7) % side) as i32, ((i * 3) % side) as i32)
@@ -93,6 +95,8 @@ test "neighbours" {
 
 test "a walk, and the cells it saw" {
   assert walk(16) == 16
+  assert walk(1) == 1                      // this walk's cells only
+  assert walk(17) == 16                    // the 17th step is the 1st again
 }
 
 test "the last eight moves" {
