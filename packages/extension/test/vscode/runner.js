@@ -92,6 +92,10 @@ exports.run = async function run() {
   const target = definitions?.[0] && (definitions[0].targetUri ?? definitions[0].uri);
   check('Go to Definition from an import opens the file it imports', !!target && target.path.endsWith('/util.ents'), target?.toString());
 
+  const inlays = await vscode.commands.executeCommand('vscode.executeInlayHintProvider', main.uri, new vscode.Range(0, 0, main.lineCount, 0));
+  const inlayLabels = (inlays ?? []).map((h) => (typeof h.label === 'string' ? h.label : h.label.map((part) => part.value).join('')));
+  check('inlay hints name the parameters of literal arguments', inlayLabels.includes('a:') && inlayLabels.includes('b:'), inlayLabels.join(' '));
+
   const highlights = await vscode.commands.executeCommand('vscode.executeDocumentHighlights', main.uri, position('square_sum'));
   check('the uses of a name are highlighted', (highlights ?? []).length === 4, `${highlights?.length} highlights`);
 

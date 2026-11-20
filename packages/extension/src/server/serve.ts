@@ -22,6 +22,8 @@ import {
   type DocumentSymbol,
   type DocumentSymbolParams,
   type DocumentHighlight,
+  type InlayHint,
+  type InlayHintParams,
   type DocumentHighlightParams,
   DocumentHighlightKind,
   type PrepareRenameParams,
@@ -52,6 +54,7 @@ import { namesIn, recoverParse, untrusted } from './recover';
 import { leftOutSymbols, outline } from './outline';
 import { BUILTIN_DOCS, BUILTIN_SIGNATURES, TYPE_DOCS } from './words';
 import { complete, signatureHelp } from './complete';
+import { inlayHints } from './hints';
 import { applyRename, planRename, type RenamePlan, refusedName } from './rename';
 import { rename } from '@encantis/compiler/queries';
 import { literalAt, nameAfter } from './scan';
@@ -446,6 +449,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         documentLinkProvider: { resolveProvider: false },
         documentSymbolProvider: true,
         documentHighlightProvider: true,
+        inlayHintProvider: true,
         renameProvider: { prepareProvider: true },
         completionProvider: { triggerCharacters: ['.'] },
         signatureHelpProvider: { triggerCharacters: ['(', ','], retriggerCharacters: [','] },
@@ -999,6 +1003,20 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     const leftOut = leftOutSymbols(text, analysis?.recovered?.leftOut ?? recovered?.leftOut ?? [], positionAt);
     const line = (s: DocumentSymbol) => s.range.start.line;
     return [...symbols, ...leftOut].sort((a, b) => line(a) - line(b));
+  });
+
+  // What the compiler inferred, in the lines asked for: the types of names
+  // bound with none written, the parameters of literal arguments. Only from
+  // an analysis of the text as it is now, where it answers.
+  connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return [];
+    const text = document.getText();
+    const analysis = analysisOf(params.textDocument.uri, text);
+    if (!analysis) return [];
+    const from = document.offsetAt(params.range.start);
+    const to = document.offsetAt(params.range.end);
+    return inlayHints(analysis, from, to, (offset) => document.positionAt(offset), (offset) => answersAt(analysis, offset));
   });
 
   // The places of the symbol at a position, for the editor to highlight: where

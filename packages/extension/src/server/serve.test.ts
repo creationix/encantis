@@ -13,7 +13,7 @@ function hoverIn(text: string): (offset: number) => string | null {
   const handlers = new Map<string, Handler>()
   const connection = new Proxy({}, {
     get(_target, name: string) {
-      if (name === 'languages') return { semanticTokens: { on: () => {} } }
+      if (name === 'languages') return { semanticTokens: { on: () => {} }, inlayHint: { on: () => {} } }
       if (name === 'sendDiagnostics' || name === 'listen') return () => {}
       return (handler: Handler) => {
         handlers.set(name, handler)
@@ -174,7 +174,7 @@ function serverFor(text: string): (handler: string, offset: number, extra?: obje
   const handlers = new Map<string, Handler>()
   const connection = new Proxy({}, {
     get(_target, name: string) {
-      if (name === 'languages') return { semanticTokens: { on: () => {} } }
+      if (name === 'languages') return { semanticTokens: { on: () => {} }, inlayHint: { on: () => {} } }
       if (name === 'sendDiagnostics' || name === 'listen') return () => {}
       return (handler: Handler) => {
         handlers.set(name, handler)
@@ -286,7 +286,7 @@ describe('a document with source imports', () => {
     const sent: Sent[] = []
     const connection = new Proxy({}, {
       get(_target, name: string) {
-        if (name === 'languages') return { semanticTokens: { on: () => {} } }
+        if (name === 'languages') return { semanticTokens: { on: () => {} }, inlayHint: { on: () => {} } }
         if (name === 'listen') return () => {}
         if (name === 'sendDiagnostics') return (params: Sent) => sent.push(params)
         return (handler: Handler) => {
@@ -432,7 +432,7 @@ function editedServer(text: string) {
   const handlers = new Map<string, Handler>()
   const connection = new Proxy({}, {
     get(_target, name: string) {
-      if (name === 'languages') return { semanticTokens: { on: () => {} } }
+      if (name === 'languages') return { semanticTokens: { on: () => {} }, inlayHint: { on: () => {} } }
       if (name === 'sendDiagnostics' || name === 'listen') return () => {}
       return (handler: Handler) => {
         handlers.set(name, handler)

@@ -14,7 +14,7 @@ function server(options: ServerOptions = {}) {
   const sent = new Map<string, { message: string }[]>()
   const connection = new Proxy({}, {
     get(_target, name: string) {
-      if (name === 'languages') return { semanticTokens: { on: () => {} } }
+      if (name === 'languages') return { semanticTokens: { on: () => {} }, inlayHint: { on: (h: Handler) => handlers.set('onInlayHint', h) } }
       if (name === 'listen') return () => {}
       if (name === 'sendDiagnostics') return (p: { uri: string; diagnostics: { message: string }[] }) => sent.set(p.uri, p.diagnostics)
       return (handler: Handler) => {
@@ -212,6 +212,66 @@ describe('highlights', () => {
     const s = server()
     await s.open(uri, SHAPES)
     expect(s.at('onDocumentHighlight', uri, SHAPES, SHAPES.indexOf('p.x') + 2)).toBeNull()
+  })
+})
+
+describe('inlay hints', () => {
+  const text = `type Point = (x: i32, y: i32)
+def three = 3
+func scale(p: Point, by: i32) -> Point => Point(p.x * by, p.y * by)
+export func f(n: u32) -> i32 {
+  let p = scale(Point(1, 2), 2)
+  let q: Point = scale(p, three)
+  for i in n {
+    let j = i * 2
+  }
+  return p.x + q.y
+}
+`
+  type Hint = { position: { line: number; character: number }; label: string }
+  // The lines with their hints written in, as ⟨label⟩
+  async function hinted(source: string, edited = source, range?: { start: { line: number; character: number }; end: { line: number; character: number } }) {
+    const s = server()
+    await s.open(uri, source)
+    if (edited !== source) await s.change(uri, edited)
+    const lines = edited.split('\n')
+    const hints = s.ask<Hint[]>('onInlayHint', { textDocument: { uri }, range: range ?? { start: { line: 0, character: 0 }, end: { line: lines.length, character: 0 } } })
+    for (const h of [...hints].sort((a, b) => b.position.line - a.position.line || b.position.character - a.position.character)) {
+      const line = lines[h.position.line]
+      lines[h.position.line] = `${line.slice(0, h.position.character)}⟨${h.label}⟩${line.slice(h.position.character)}`
+    }
+    return lines.filter((l) => l.includes('⟨')).map((l) => l.trim())
+  }
+
+  test('the type of a name bound with none written, and the parameter of a literal argument', async () => {
+    expect(await hinted(text)).toEqual([
+      'let p⟨: Point⟩ = scale(Point(1, 2), ⟨by:⟩2)',
+      'for i⟨: u32⟩ in n {',
+      'let j⟨: u32⟩ = i * 2',
+    ])
+  })
+
+  test('only in the lines asked for', async () => {
+    expect(await hinted(text, text, { start: { line: 6, character: 0 }, end: { line: 7, character: 0 } })).toEqual(['for i⟨: u32⟩ in n {'])
+  })
+
+  // Written by its names, a type that refers to itself was expanded forever.
+  test('a type that refers to itself', async () => {
+    const recursive = `type Node = (next: ?*Node, v: u32)
+type Even = (odd: ?*Odd, v: u32)
+type Odd = (even: ?*Even, v: u32)
+export func f(n: *Node, e: *Even) -> u32 {
+  let m = n.next
+  let o = e.odd
+  return n.v
+}
+`
+    expect(await hinted(recursive)).toEqual(['let m⟨: ?*Node⟩ = n.next', 'let o⟨: ?*Odd⟩ = e.odd'])
+  })
+
+  test('none in a declaration that does not parse yet', async () => {
+    const edited = text.replace('  return p.x + q.y', '  return p.x + (q.y')
+    expect(await hinted(text, edited)).toEqual([])
   })
 })
 
