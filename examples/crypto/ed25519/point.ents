@@ -4,7 +4,8 @@
 // A point is held in extended coordinates (X, Y, Z, T), with x = X/Z,
 // y = Y/Z and x y = T/Z, in which points add and double without an inversion.
 // The operations work on a buffer of six points that the caller owns, and
-// name each point by its slot. They read their operands before they write the
+// name each point by its slot. They read only the fields they use. An
+// addition, a doubling or a negation reads its operands before it writes the
 // result, so the result may go to an operand's slot.
 
 import "./field" (
@@ -39,7 +40,11 @@ func identity() -> Point => (fe-zero(), fe-one(), fe-one(), fe-zero())
 // === Doubling and addition (Hisil, Wong, Carter and Dawson 2008, for a = -1) ===
 
 export func point-double(buf: *mut [slots]Point, out: u32#slots, p: u32#slots) {
-  let (x:, y:, z:) = buf[p]
+  // Field by field: `let (x:, y:, z:) = buf[p]` would load t as well, since a
+  // pattern takes the whole value apart (reference 6.5)
+  let x = buf[p].x
+  let y = buf[p].y
+  let z = buf[p].z
   let a = fe-sq(x)
   let b = fe-sq(y)
   let zz = fe-sq(z)
@@ -76,8 +81,12 @@ export func point-neg(buf: *mut [slots]Point, out: u32#slots, p: u32#slots) {
 
 // x1/z1 == x2/z2 and y1/z1 == y2/z2, multiplied out
 export func point-eq(buf: *[slots]Point, p: u32#slots, q: u32#slots) -> bool {
-  let (x: x1, y: y1, z: z1) = buf[p]
-  let (x: x2, y: y2, z: z2) = buf[q]
+  let x1 = buf[p].x
+  let y1 = buf[p].y
+  let z1 = buf[p].z
+  let x2 = buf[q].x
+  let y2 = buf[q].y
+  let z2 = buf[q].z
   let xeq = fe-eq(fe-carry(fe-mul(x1, z2)), fe-carry(fe-mul(x2, z1)))
   let yeq = fe-eq(fe-carry(fe-mul(y1, z2)), fe-carry(fe-mul(y2, z1)))
   return xeq && yeq
@@ -143,8 +152,9 @@ export func fe-frombytes(s: *[32]u8) -> Fe => (
 
 // A point is encoded as its y, with the low bit of x in bit 255
 export func point-encode(out: *mut [32]u8, buf: *[slots]Point, i: u32#slots) {
-  let (x:, y:, z:) = buf[i]
-  let zinv = fe-inv(z)
+  let x = buf[i].x
+  let y = buf[i].y
+  let zinv = fe-inv(buf[i].z)
   let ax = fe-reduce(fe-carry(fe-mul(x, zinv)))
   fe-tobytes(out, fe-reduce(fe-carry(fe-mul(y, zinv))))
   out[31] |= ((ax.0 & 1) as u8) << 7
