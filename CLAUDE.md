@@ -63,6 +63,7 @@ bun run build:ext-web    # Bundle the web extension only
 bun run watch:ext        # Watch extension (Node.js)
 bun run watch:ext-web    # Watch extension (WebWorker)
 bun run reinstall:ext    # Package the .vsix and install it in VS Code
+node packages/extension/test/run.mjs desktop|web <file.vsix>   # Run a .vsix in VS Code, as CI does
 bun test                 # Run tests
 ```
 
