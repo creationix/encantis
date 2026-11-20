@@ -279,7 +279,7 @@ export func far() -> Size => origin.first + origin.second + corners[1].second
 
 <!-- spec:end -->
 
-The type parameters of a generic function are type identifiers too: in `func max(comptime T: type, a: T, b: T)`, `T` is a type inside the function (see [8. Generics](#8-generics)).
+The type parameters of a generic function are type identifiers too: in `func larger(comptime T: type, a: T, b: T)`, `T` is a type inside the function (see [8. Generics](#8-generics)).
 
 ### 1.4 Reserved Keywords
 
@@ -4321,7 +4321,7 @@ cannot assign (u32, u32) to (y: u32, x: u32)
 
 **A function has a name.** A module-level `func(x: i32) -> i32 => x + 1` without one is accepted and left out of the module, and `export "inc" func(...)` gives a module that does not assemble: both are known bugs, so name every function. An import item can leave the name out ([7.1](#71-imports)).
 
-A function that takes a type as a parameter, `func max(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
+A function that takes a type as a parameter, `func larger(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
 
 #### Functions That Share a Name
 
@@ -7633,20 +7633,20 @@ Every example of this chapter is compiled and its tests run, as the reference's 
 A parameter marked `comptime` is given at compile time. The function is compiled once for each distinct set of compile-time arguments it is called with, and each copy is an ordinary function that has only the remaining parameters.
 
 ```ents
-func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func larger(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 
-export func widest(a: u32, b: u32) -> u32 => max(u32, a, b)
-export func longest(a: f64, b: f64) -> f64 => max(a, b)
+export func widest(a: u32, b: u32) -> u32 => larger(u32, a, b)
+export func longest(a: f64, b: f64) -> f64 => larger(a, b)
 ```
 
 compiles to exactly the module this does:
 
 ```ents same-wasm
-func max_f64(a: f64, b: f64) -> f64 => if a > b { a } else { b }
-func max_u32(a: u32, b: u32) -> u32 => if a > b { a } else { b }
+func larger_f64(a: f64, b: f64) -> f64 => if a > b { a } else { b }
+func larger_u32(a: u32, b: u32) -> u32 => if a > b { a } else { b }
 
-export func widest(a: u32, b: u32) -> u32 => max_u32(a, b)
-export func longest(a: f64, b: f64) -> f64 => max_f64(a, b)
+export func widest(a: u32, b: u32) -> u32 => larger_u32(a, b)
+export func longest(a: f64, b: f64) -> f64 => larger_f64(a, b)
 ```
 
 A **type parameter** is written `comptime T: type`. Its name starts with an upper-case letter, like every type name. Inside the function `T` is a type: it can be used wherever a type can be written (`x: T`, `[]T`, `*mut T`, `sizeof(T)`, `p as [*]mut T`) and passed on as a type argument (`fact(T, n - 1)`). A comptime parameter may also be a function ([8.6](#86-comptime-function-parameters)) or a number, `comptime n: u32` ([8.7](#87-comptime-value-parameters)). `type` is written in two places only: as the type of a comptime parameter, and as the result of a generic type ([8.5](#85-generic-types)). A type is not a value: `let t: type = u32` is a syntax error. A type parameter need not be used: `func tick(comptime T: type) -> u32` is called `tick(u32)`, each type given is an instance of its own ([8.4](#84-instances)), and with nothing to infer it from such a function has only the explicit form (`cannot infer T for 'tick'`).
@@ -7655,7 +7655,7 @@ Rules:
 
 1. Comptime parameters may appear anywhere in the parameter list; by convention they come first, in the order a type writes them: a value parameter `n` before a type parameter `T`, as in `[n]T`. A parameter's type may mention any comptime parameter of the same function.
 2. `comptime` is only written in the parameter list of a named function declared with `func` at module level, and in the signature a source import writes for such a function ([7.1](#71-imports)). Every parameter of such a function has a name.
-3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host (`generic function 'max' must be called`). It can only be called. Its name is unique in its module.
+3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host (`generic function 'larger' must be called`). It can only be called. Its name is unique in its module.
 4. A type parameter's name is its own: it is not the name of a type the module declares, before or after the function, and no two parameters of the function share a name.
 5. A generic function's parameter list is checked where it is declared, whether or not anything calls it: the rules above, what a comptime parameter may be (a type, an integer type or a function type, [8.9](#89-not-in-this-version)), the case of each comptime parameter's name ([8.6](#86-comptime-function-parameters), [8.7](#87-comptime-value-parameters)), and that a comptime parameter does not have a def's name. Everything else is checked when the function is instantiated, with its comptime arguments filled in, and not before: its body, and the types its signature names. One that is never called is checked for its parameter list only, and nothing is emitted for it; any other mistake in it, such as an unknown type in its signature (`x: Nope`) or an unknown name in its body, is reported once something calls it, in that instance ([8.3](#83-requirements)).
 
@@ -7714,7 +7714,7 @@ In that position a name is read as a type even if a variable of the same name is
 **Inferred.** All type parameters are left out, and the compiler finds them from the other arguments:
 
 ```ents
-func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func larger(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 func head(comptime T: type, xs: []T) -> T {
   assert xs.len > 0
   return xs.ptr[0]
@@ -7727,9 +7727,9 @@ func swap(comptime T: type, a: *mut T, b: *mut T) {
 
 data primes = [2:u16, 3, 5, 7]
 
-export func a(x: u32, y: u32) -> u32 => max(x, y)          // T = u32
-export func b(x: f64) -> f64 => max(x, 0.5)                 // T = f64; the literal is an f64
-export func c(x: u64) -> u64 => max(1, x)                   // T = u64, decided by x
+export func a(x: u32, y: u32) -> u32 => larger(x, y)       // T = u32
+export func b(x: f64) -> f64 => larger(x, 0.5)              // T = f64; the literal is an f64
+export func c(x: u64) -> u64 => larger(1, x)                // T = u64, decided by x
 export func d(xs: []u64) -> u64 => head(xs)                 // T = u64, from []T
 export func e() -> u16 => head(primes)                      // T = u16: a data array is a slice here
 export func f(p: *mut i64, q: *mut i64) { swap(p, q) }      // T = i64, from *mut T
@@ -7767,31 +7767,31 @@ test "inferred calls" {
    Type aliases are transparent, as everywhere.
 3. **Untyped literals never decide.** `7`, `0.5` and `[1, 2, 3]` have no type of their own; they take the type the parameter turns out to have. A literal with a type written on it (`7:u8`) is typed and can decide. A tuple decides by the parts of it that are typed, and its literals decide nothing: with `p: (T, T)`, `keep((i, 1))` for an `i: u32` gives `T = u32`, and the `1` is then a `u32`; `keep((1, 2))` decides nothing. So does a struct literal, `(x: i, y: 1)`, and `&` of either. An array literal is untyped as a whole, even where an element has a type.
 4. **Every other argument is an ordinary argument.** Once `T` is decided, the remaining arguments are checked against the now-concrete parameter types exactly as for a hand-written function: the same implicit conversions, the same errors.
-5. **Nothing is guessed.** If no argument decides a type parameter the call is an error and the type has to be written. That includes a call whose only candidates are literals (`max(1, 2)`) and a type parameter that appears only in the result (`zero()`): the expected type of the call is not used. An argument that has an error of its own decides nothing either, and the call adds no error to it.
+5. **Nothing is guessed.** If no argument decides a type parameter the call is an error and the type has to be written. That includes a call whose only candidates are literals (`larger(1, 2)`) and a type parameter that appears only in the result (`zero()`): the expected type of the call is not used. An argument that has an error of its own decides nothing either, and the call adds no error to it.
 6. **`()` is never a type argument.** It has no values, so there is nothing to pass for a parameter of that type. An argument without a value, such as a call of a function that returns nothing, is an error where it stands: `argument 1 of 'id' has no value`.
 
 ```ents
-func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func larger(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 
-func f(a: u8, b: u32) -> u32 => max(a, b)
+func f(a: u8, b: u32) -> u32 => larger(a, b)
 ```
 
 ```errors
 argument 2: cannot assign u32 to u8
 ```
 
-`max(b, a)` is accepted (`T = u32`, and `a` widens like any `u8` passed for a `u32`), and so is `max(u32, a, b)`.
+`larger(b, a)` is accepted (`T = u32`, and `a` widens like any `u8` passed for a `u32`), and so is `larger(u32, a, b)`.
 
 ```ents
-func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func larger(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 func zero(comptime T: type) -> T => 0
 
-func f() -> i32 => max(1, 2)
+func f() -> i32 => larger(1, 2)
 func g() -> u32 => zero()
 ```
 
 ```errors
-cannot infer T for 'max' from untyped literals: write max(i32, ...) or give a literal its type (1:i32)
+cannot infer T for 'larger' from untyped literals: write larger(i32, ...) or give a literal its type (1:i32)
 cannot infer T for 'zero': write the type argument, as in zero(u32)
 ```
 
@@ -7805,13 +7805,13 @@ Operators are requirements. The operands of an operator are single values: numbe
 
 ```ents
 type Pt = (q: i32, r: i32)
-func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func larger(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 
-export func f(a: Pt, b: Pt) -> Pt => max(a, b)
+export func f(a: Pt, b: Pt) -> Pt => larger(a, b)
 ```
 
 ```errors
-'>' cannot be applied to Pt and Pt, in max(T = Pt)
+'>' cannot be applied to Pt and Pt, in larger(T = Pt)
 ```
 
 This holds for every operator, whether it stands between two operands, before one (`-a`, `~a`, `!a`) or in a compound assignment:
@@ -7854,7 +7854,7 @@ export func g(p: Pt) -> bool => other(p, p)
 The command line also prints the call that first asked for the instance and, where that call is itself in an instance, the call that asked for that one, four of them at most. The editor shows them as the error's related locations.
 
 ```text
-shapes.ents:2:51: '>' cannot be applied to Pt and Pt, in max(T = Pt)
+shapes.ents:2:54: '>' cannot be applied to Pt and Pt, in larger(T = Pt)
   required from shapes.ents:4:38
 ```
 
@@ -7953,7 +7953,7 @@ An *instance* is one generic function with all its comptime arguments fixed.
 - **Statics.** A data literal in a generic body belongs to each instance separately, as it would in hand-written copies; a `mut` or `&` literal is one cell per instance, kept from one call of that instance to the next ([Literals in Memory](#literals-in-memory)). With `let c = &0:u32` and `c.* += 1` in the body of `tick(comptime T: type)`, `tick(u32)` gives 1 and then 2, and `tick(u64)` then gives 1.
 - **Recursion.** A generic may call itself or another generic. A generic that instantiates itself with a larger type each time never finishes; the compiler stops with one error after 64 nested instantiations (`too many nested instantiations (64) while instantiating 'f'`), or sooner when one call has led to 1000 instances (`too many instantiations (1000) from one call while instantiating 'f'`) or to type arguments many times the size of its own (`type arguments grow without end while instantiating 'f'`). A type argument written in ordinary code may be of any size.
 - **Limits.** A module has fewer than 2^24 (16777216) instances of its generics, and a generic is declared within the first 2^28 bytes (256 MiB) of its file. A call past either is `cannot instantiate 'f': the source is too large or has too many instances`.
-- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$max<u32>`, `$head<''u8>`, `$sort<i32|ascending>`, `$push<8|u32>` (a number in decimal); a type is spelled by its structure, as types are structural, so `insertion_sort` given `Rec = (key: u32, name: []u8)` and `by_key` is `$insertion_sort<<key:u32|name:''u8>|by_key>`; the exact spelling is not part of the language and names do not reach the `.wasm` file.
+- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$larger<u32>`, `$head<''u8>`, `$sort<i32|ascending>`, `$push<8|u32>` (a number in decimal); a type is spelled by its structure, as types are structural, so `insertion_sort` given `Rec = (key: u32, name: []u8)` and `by_key` is `$insertion_sort<<key:u32|name:''u8>|by_key>`; the exact spelling is not part of the language and names do not reach the `.wasm` file.
 
 ```ents
 func bytes(comptime T: type, n: u32) -> u32 => n * sizeof(T)
@@ -7990,14 +7990,14 @@ type arguments grow without end while instantiating 'nest'
 
 Instances that agree are listed together, and past twelve instances the rest are counted. The references of one of several functions that share a name include a call in a generic's body only where an instance calls that function, and a function no call calls is reported as never used. A generic nothing instantiates has no instance to go by: a call in its body counts as a use of every function of its name, only what is written there (a parameter's type) is shown, and its type parameters and comptime function parameters are found where they are used.
 
-What "zero cost" does not promise: no inlining (a user-declared generic `max` is a call where the builtin `max` is an inline `select`), and no merging of instances that happen to compile to the same bytes (`swap` for `u32` and for `i32` are two functions, as two hand-written functions would be).
+What "zero cost" does not promise: no inlining (a generic `larger` is a call where the builtin `max` is an inline `select`), and no merging of instances that happen to compile to the same bytes (`swap` for `u32` and for `i32` are two functions, as two hand-written functions would be).
 
-**Exporting.** `export func max(comptime T: type, ...)` is accepted and emits nothing: there is no single function to give the host. It makes the generic importable by other source modules ([8.8](#88-generics-across-modules)). To export an instance, export a function that calls it:
+**Exporting.** `export func larger(comptime T: type, ...)` is accepted and emits nothing: there is no single function to give the host. It makes the generic importable by other source modules ([8.8](#88-generics-across-modules)). To export an instance, export a function that calls it:
 
 ```ents
-func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func larger(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 
-export func max_u32(a: u32, b: u32) -> u32 => max(a, b)
+export func larger_u32(a: u32, b: u32) -> u32 => larger(a, b)
 ```
 
 ### 8.5 Generic Types
@@ -8694,7 +8694,7 @@ test "trace" {
 
 ### 8.8 Generics Across Modules
 
-`export func max(comptime T: type, ...)` and `export func Vec(comptime T: type) -> type` make a generic importable by other source modules; to the host they give nothing. A source import names what it uses with its signature, as for any function ([7.1](#71-imports)), comptime parameters included, and a generic type as the function it is. An export name works for a generic as for any function ([7.2](#72-exports)): `export "biggest" func max(comptime T: type, ...)` and `export "Two" func Pair(comptime T: type) -> type` are imported as `"biggest"` and `"Two"`, under any local name the import gives, and `"max"` is then `'max' is not exported from './glib'`. A module beside the library of [`lib/`](../lib/README.md):
+`export func larger(comptime T: type, ...)` and `export func Vec(comptime T: type) -> type` make a generic importable by other source modules; to the host they give nothing. A source import names what it uses with its signature, as for any function ([7.1](#71-imports)), comptime parameters included, and a generic type as the function it is. An export name works for a generic as for any function ([7.2](#72-exports)): `export "biggest" func larger(comptime T: type, ...)` and `export "Two" func Pair(comptime T: type) -> type` are imported as `"biggest"` and `"Two"`, under any local name the import gives, and `"larger"` is then `'larger' is not exported from './glib'`. A module beside the library of [`lib/`](../lib/README.md):
 
 ```ents
 // main.ents, next to lib/
@@ -8791,8 +8791,8 @@ The containers of [`lib/`](../lib/README.md) are written this way: `lib/vec.ents
 | Inference from the type the call's result is given, `let x: u64 = zero()` | `cannot infer T for 'zero': write the type argument, as in zero(u32)` |
 | Inferring a value parameter from a length in arithmetic (`*[n * 2]u8`), from a range (`u32#n`) or from an array literal's count | `cannot infer n for 'set_bit': [(n + 31) / 32] does not decide n, only a length that is n alone does; write the value argument, as in set_bit(8, ...)` |
 | A packed array whose dimensions are names, `*[n x m]T` | A syntax error at the `x` |
-| Generic functions that share a name, with each other or with a function, global, `def`, `data` or import | `'max' is already declared: a generic function's name is unique in its module` |
-| A generic function as a value: stored, or passed for a parameter | `generic function 'max' must be called` |
+| Generic functions that share a name, with each other or with a function, global, `def`, `data` or import | `'larger' is already declared: a generic function's name is unique in its module` |
+| A generic function as a value: stored, or passed for a parameter | `generic function 'larger' must be called` |
 | A generic function or a generic type declared inside a `test` block | `a generic function is declared at module level, not inside a test`; `a generic type is declared at module level, not inside a test` |
 | A generic type with a parameter that is neither `comptime X: type` nor an integer (a function, a `bool`), or with no parameter | `generic type 'Vec' takes comptime type and integer parameters only, as (comptime n: u32, comptime T: type)` |
 | A generic type with a block body or conditions | A syntax error: its body is one type |
@@ -8810,14 +8810,14 @@ Five of them, in one module:
 func pick(comptime ok: bool, a: u32, b: u32) -> u32 => a
 func count(comptime s: u32) -> u32 => s
 func zero(comptime T: type) -> T => 0
-func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func larger(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 func pow(comptime e: u32, x: u64) -> u64 => if e == 0 { 1 } else { x * pow(e - 1, x) }
 
 data name = "abc"
 
 func a() -> u32 => count(name)
 func b() -> u64 => zero()
-func c() -> u32 => max
+func c() -> u32 => larger
 func d(x: u64) -> u64 => pow(2, x)
 ```
 
@@ -8825,7 +8825,7 @@ func d(x: u64) -> u64 => pow(2, x)
 comptime parameter 'ok' is bool: a comptime parameter is a type (comptime T: type), an integer (comptime n: u32) or a function (comptime f: (T) -> T)
 argument 1 of 'count' must be a compile-time constant: s is a comptime value parameter
 cannot infer T for 'zero': write the type argument, as in zero(u32)
-generic function 'max' must be called
+generic function 'larger' must be called
 argument 1: cannot assign int(-1) to u32, in pow(e = 0)
 ```
 
@@ -9188,10 +9188,8 @@ data three = [1, 2, 3]
 data four = [4, 5, 6, 7]
 data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]
 
-func total(xs: []i32) -> i32 {
-  let t = 0
+func total(xs: []i32) -> (t: i32) {
   for x in xs { t += x }
-  return t
 }
 
 func lengths() -> u32 {
@@ -9345,12 +9343,10 @@ func spawn(x: i32, y: i32) -> ?*mut Entity {
 func x-of(i: u32) -> i32 => (pool.items[i] ?? Entity(-1, -1, false)).x
 func move(k: u32#64, dx: i32) { pool.items[k].x += dx }
 
-func alive() -> u32 {
-  let n: u32 = 0
+func alive() -> (n: u32) {
   for e in pool.items {
     if e.alive { n += 1 }
   }
-  return n
 }
 
 func all() -> *mut [64]Entity => &pool.items
