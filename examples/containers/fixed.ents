@@ -37,7 +37,7 @@ import "../../lib/bits" (
 
 type Cell = (x: i32, y: i32)
 
-// The board is side by side cells.
+// The board is `side` by `side` cells.
 def side = 16
 
 // The neighbours of a cell on the board: at most four, so a FixedVec(4, Cell)
@@ -56,7 +56,8 @@ export func neighbours(c: Cell) -> u32 {
 // One bit for each cell of the board.
 data visited = mut [0:u32; side * side / 32]
 
-// The bit of a cell of the board, row by row.
+// The bit of a cell of the board, row by row. The % changes nothing for a
+// cell of the board: it proves the index is below side * side.
 func bit(c: Cell) -> u32#(side * side) => ((c.y * side + c.x) as u32) % (side * side)
 
 // How many cells a walk of `steps` steps sees, x going up by 7 and y by 3 at

@@ -10,8 +10,10 @@
 // The symbol at depth d is the 6 bits of the key from bit (6 * d) % 64 up
 // (fewer where they pass the top bit).
 
-// The leaf the key leads to; -1 when the key is not in the trie, and -2 when
-// a node or an entry would lie past its end.
+// The leaf the key leads to, its word with the tag bit; -1 when the key is
+// not in the trie, and -2 when a node or an entry would lie past its end. A
+// leaf whose payload is all ones is the word -2 too, so no trie holds that
+// payload.
 export func walk-trie(trie: []u64, key: u64) -> i64 {
   let at: u32 = 0               // the node's word index
   let shift: u8 = 0             // where the symbol starts in the key

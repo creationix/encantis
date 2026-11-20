@@ -1,6 +1,6 @@
 // Static reservation: the program owns a buffer of a size fixed when it is
 // compiled, laid out as data, and hands out pieces of it by bumping a cursor.
-// No allocator is needed. Nothing is freed piece by piece: reset frees all.
+// It needs no heap, since nothing is freed piece by piece: reset frees all.
 
 export "mem" memory
 
