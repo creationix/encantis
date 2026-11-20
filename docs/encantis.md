@@ -8877,7 +8877,7 @@ The language allocates nothing at run time. There is no heap, no garbage collect
 
 Data is laid out from address 8 up. Address 0 is the none of an optional pointer or slice ([Optional Types](#optional-types)), so nothing real may live there, and the bytes 0 to 7 are never used. The compiler chooses the order so that bytes can be shared. First come the null-terminated and length-prefixed arrays (`*[!]T`, `*[?]T`) of every module. Then comes the rest: the data of a module that another imports before the one that imports it, and within a module its `data` declarations in the order they are written, then the literals its code lays out. A program does not depend on that order: it takes an address from the name of the data (`buf as u32`) and never writes one as a number.
 
-Entries follow one another with no padding and no alignment, so a `u32` or a `u64` may start at an odd address. A wasm load or store takes any address, so this is never an error, though some engines are slower at an unaligned one. Where alignment matters for speed, the program arranges it: it declares its widest data first, or allocates with an allocator that rounds addresses up (`alloc` of `lib/stack.ents` rounds to 8).
+Entries follow one another with no padding and no alignment, so a `u32` or a `u64` may start at an odd address. A wasm load or store takes any address, so this is never an error, though some engines are slower at an unaligned one. Where alignment matters for speed, the program arranges it: it declares its widest data first, or allocates with an allocator that rounds addresses up. `alloc` of `lib/stack.ents` is meant to round to 8, but it rounds its offset into its stack, so an address it gives is a multiple of 8 only when the stack starts at one, which the data laid out before the stack decides: a `*[!]T` anywhere in the program can move it (a known bug, [13.4](#134-stack-a-bump-allocator)).
 
 A literal laid out in memory takes one place in the data for each place it is written in the source:
 
@@ -10147,7 +10147,7 @@ A stack of 256 KiB in the module's memory. Allocating moves its top up; nothing 
 |---|---|
 | `mark() -> u32` | The top of the stack, as an address |
 | `reset(m: u32)` | Frees everything allocated since the mark `m` was taken |
-| `alloc(n: u32) -> u32` | The address of `n` bytes, aligned to 8. Traps when the stack is full, but an `n` near 2^32 wraps its check and is not caught (a known bug) |
+| `alloc(n: u32) -> u32` | The address of `n` bytes, aligned to 8. Traps when the stack is full, but an `n` near 2^32 wraps its check and is not caught (a known bug). The 8 is counted from the start of the stack, not from address 0, so the address is a multiple of 8 only when the stack starts at one, which data laid out before it, such as a `*[!]T` anywhere in the program, can prevent (a known bug) |
 | `zeroed(n: u32) -> u32` | The same, the bytes set to zero |
 | `extend(n: u32) -> u32` | `n` more bytes right after the top, not aligned: grows the topmost allocation in place |
 
