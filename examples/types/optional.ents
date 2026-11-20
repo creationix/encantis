@@ -1,5 +1,5 @@
 // Optional pointers and slices, ?*T and ?[]T: none is written 0, and held as
-// the address 0. An optional is read only once if let or ?? has resolved it,
+// the address 0. An optional is read only after if let or ?? has resolved it,
 // and an index checked at run time is resolved the same way.
 
 export memory
