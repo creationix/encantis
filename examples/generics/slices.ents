@@ -1,9 +1,9 @@
-// Generic functions over slices and pointers. T is found inside a type: []T,
-// [*]T, *mut T, and through the usual coercion of a `data` array to a slice.
+// Generic functions over slices. T is found inside the type of a parameter,
+// []T or []mut T, also where the argument is a `data` array, which converts
+// to a slice.
 
 data nums = [3:u32, 5, 8, 13]
 data text = "hello"
-data room = mut [0:u8; 64]
 
 // The index of the first x in xs, or xs.len when there is none.
 func find(comptime T: type, xs: []T, x: T) -> u32 {
@@ -16,17 +16,15 @@ func find(comptime T: type, xs: []T, x: T) -> u32 {
 func contains(comptime T: type, xs: []T, x: T) -> bool => find(xs, x) < xs.len
 
 func sum(comptime T: type, xs: []T) -> (total: T) {
-  total = 0
   for v in xs {
     total += v
   }
 }
 
+// Sets every element of xs to x: one memory.fill for bytes or zeros, a store
+// into each element otherwise (reference 4.8).
 func fill(comptime T: type, xs: []mut T, x: T) {
-  let p = xs.ptr
-  for i in xs.len {
-    p[i] = x
-  }
+  xs[..] = x
 }
 
 // Bytes taken by n values of T.
@@ -46,16 +44,16 @@ test "find gives the first index, or len" {
 }
 
 test "the same functions on bytes" {
-  assert find(text, 108) == 2
-  assert !contains(text[0..2], 108)
+  assert find(text, 'l') == 2
+  assert !contains(text[0..2], 'l')
   assert sum(nums) == 29
 }
 
 test "sum and fill for two element types" {
-  let a = (room as [*]mut u64)[0..4]
+  let a: []mut u64 = mut [0; 4]
   fill(a, 5)
   assert sum(a) == 20
-  let b = (room as [*]mut u16)[0..3]
+  let b: []mut u16 = mut [0; 3]
   fill(u16, b, 7)
   assert sum(b) == 21
 }
