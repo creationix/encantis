@@ -4,12 +4,12 @@
 func low_byte(x: i64) -> u8 => x as u8
 func low_word(x: u64) -> u16 => x as u16
 func signed_byte(x: i64) -> i8 => x as i8
-func signed_word(x: i64) -> i16 => i16(x)
+func signed_word(x: i64) -> i16 => i16(x)          // the call form of x as i16
 func float_byte(x: f64) -> u8 => x as u8
 func float_signed(x: f32) -> i8 => x as i8
 
 func is_ff(x: i64) -> bool => x as u8 == 255
-func byte_plus(x: i64, n: i32) -> i32 => (x as u8) + n
+func byte_plus(x: i64, n: i32) -> i32 => x as u8 + n   // the u8 widens to the i32 sum
 
 test "an i64 cast to u8 or u16 keeps the low bits" {
   assert low_byte(0x1ff) == 255
