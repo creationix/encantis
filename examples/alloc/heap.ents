@@ -18,7 +18,7 @@ def no_room = 0xFFFFFFFF:u32
 global ready = false
 
 // The header at an offset into heap.
-func header(at: u32) -> *mut Header => ((heap as u32) + at) as *mut Header
+func header(at: u32) -> *mut Header => ((heap as [*]mut u8) + at) as *mut Header
 
 // Makes the whole heap one free block, the first time it is used.
 func init() {
@@ -91,7 +91,7 @@ test "a byte written into a block of 1 stays in that block" {
   let p = malloc(1)
   let q = malloc(8)
   let used = heap_used()
-  if let b = &heap[p] { b.* = 0xFF }
+  if let b = &heap[p] { b.* = 0xFF } else { assert false }
   assert heap_used() == used
   assert q == p + 16
 }
