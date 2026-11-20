@@ -28,9 +28,10 @@ This reference describes the whole language: its syntax as it is written, what e
 
 ### Examples
 
-Source code is shown in `ents` code blocks. The examples that the compiler can process are run by the project's test suite (`bun test spec`): each is parsed and checked, a whole program is also compiled to WebAssembly and validated, and its `test` blocks are run. So an `assert` in an example states what the compiled program computes.
+Source code is shown in `ents` code blocks. The examples that the compiler can process are run by the project's test suite (`bun test spec`). Each is parsed and checked, and a whole program that imports no other source file is also compiled to WebAssembly and validated, and its `test` blocks are run. So an `assert` in such an example states what the compiled program computes. An example that imports a source file (`import "./stats"`, `import "./lib/vec"`) is checked by itself, its imports taken as they are written ([Source modules](#source-modules)), and is not compiled or run by the suite.
 
 - An example is a whole module, which the test suite checks as it stands. Only the example of a design that is not implemented can be a fragment: a few statements, or a declaration that uses names declared elsewhere.
+- A design example whose syntax the parser accepts is run by the suite too, parsed or checked only, so that its syntax stays what the design says; its comment says that it is not implemented. A design example the parser refuses is not run.
 - A `test "name" { ... }` block shows results with `assert` ([Tests](#12-tests)).
 - A code block marked `errors` after an example says that the example is refused. Each of its lines is the gist of one error the compiler reports, in the order reported; the full message can say more. The checker reports in passes, each in source order:
   1. generic types: what is wrong with their parameters, then any that applies itself to a growing argument ([8.5](#85-generic-types));
@@ -54,12 +55,16 @@ The compiler's command-line tool is `encantis`:
 | `encantis check <file>` | Parses and checks a program, its `test` blocks included; prints each error as `file:line:col: message` |
 | `encantis compile <file> [-o out.wat]` | Writes the program as WebAssembly text (WAT) |
 | `encantis wasm <file> [-o out.wasm]` | Writes the binary module; `-O` also optimizes it with binaryen, `--release` optimizes harder for size |
-| `encantis run <file> [args...]` | Compiles a WASI program and runs its `_start` export, with standard input and output |
+| `encantis run <file> [args...]` | Compiles a WASI program, or takes a `.wasm` file as it is, and runs its `_start` export with standard input and output, the arguments after the file as the program's arguments and the environment as its own |
 | `encantis test <file or directory>` | Runs the `test` blocks of each file ([Tests](#12-tests)) |
 | `encantis fmt <file...>` | Formats source files in place; `fmt --check` only reports the files that need it |
 | `encantis ast <file>` | Prints the syntax tree as JSON |
 
+`wasm --size` prints the module's size before and after optimizing, compressed too, `-O --strict-opt` fails rather than write an unoptimized module, and `encantis --version` prints the compiler's version. Known bugs: `run` does nothing for a module without `_start` and prints a stack trace for one that does not export `memory`; `fmt` prints `[]?[]T` as `[] ? []T` and drops the indentation of an arrow body continued on the next line; `fmt f.ents -o out` formats `f.ents` in place and then fails on `-o`.
+
 `<file>` is the program's entry module: the files it imports are found from it ([7.1](#71-imports)). The commands `hover`, `definition`, `references`, `symbols`, `signature` and `rename` answer an editor's questions, `meta` prints what the editor is told about a file (its symbols, types, hints and warnings) as JSON, and the VS Code extension in `packages/extension` uses the same compiler for its diagnostics and hovers.
+
+A syntax error stops the program at its file. The commands report the first one only, as `file: Line L, col C:` followed by the source line, a caret under the place, and what could have stood there (`Expected "}"`). Nothing of the program is then checked, the modules that import the file included. An `errors` block shows a syntax error by that position, `Line 2, col 44`, or by the start of what it expected, `Expected "}"`.
 
 Besides errors, the checker gives warnings, which never stop a build: `'f' is never used` ([3](#3-declarations)), `'max' replaces the builtin max in this module` ([10](#10-builtin-functions)), `memset length is not a compile-time constant — cannot verify bounds (buffer is 8 bytes)` ([10.3](#103-memory-builtins)), `exported function parameter 'p' uses [*] many-pointer — consider []u8 slice for a safe API` ([7.2](#what-the-host-sees)) and `imported generic types are resolved only when the program is checked` ([7.1](#source-modules)). The editor and `meta` show them; `check`, `compile`, `wasm` and `test` do not print them (a known bug).
 
@@ -2200,7 +2205,7 @@ A struct type can take type parameters: `func Vec(comptime T: type) -> type => (
 
 > **Not implemented.** Enums are a design. No program can use one: everything below the first example describes the design, not what the compiler does.
 
-What the compiler does with an `enum` declaration: it parses it and then ignores it. The declaration is `enum Name { Variant, Variant(fields), ... }` at module level, where the name and each variant start with a capital letter ([1.3](#13-type-identifiers)), the commas between variants are optional, and a payload is a field list as a struct's is, with or without names (`RGB(r: u8, g: u8, b: u8)` or `RGB(u8, u8, u8)`). Nothing in it is checked (an unknown type in a payload, two variants of one name, two enums of one name, an enum and a `type` of one name all pass), nothing of it is compiled, its name is no type, and its variants are no values: a capitalised name in an expression is a constructor call, so `let c = Red` is a syntax error (`Expected "("`). Nor can it be exported.
+What the compiler does with an `enum` declaration: it parses it and then ignores it. The declaration is `enum Name { Variant, Variant(fields), ... }` at module level, where the name and each variant start with a capital letter ([1.3](#13-type-identifiers)), the commas between variants are optional, and a payload is a field list as a struct's is, with or without names (`Rgb(r: u8, g: u8, b: u8)` or `Rgb(u8, u8, u8)`). Nothing in it is checked (an unknown type in a payload, two variants of one name, two enums of one name, an enum and a `type` of one name all pass), nothing of it is compiled, its name is no type, and its variants are no values: a capitalised name in an expression is a constructor call, so `let c = Red` is a syntax error (`Expected "("`). Nor can it be exported.
 
 <!-- spec:begin compile -->
 
@@ -2220,16 +2225,18 @@ unknown type 'Color'
 
 *Not implemented (design).* An enum is a tagged union: a value is one of several variants, and each variant can carry a payload:
 
+<!-- spec:begin compile -->
+
 ```ents
 // Not implemented (design)
 enum Color {
   Red,
   Blue,
   Green,
-  RGB(r:u8, g:u8, b:u8),
-  HSL(h:u8, s:u8, l:u8),
-  Grey(b:u8),
-  Darker(c:*Color)
+  Rgb(r: u8, g: u8, b: u8),
+  Hsl(h: u8, s: u8, l: u8),
+  Grey(b: u8),
+  Darker(c: *Color)
 }
 
 enum Json {
@@ -2242,22 +2249,28 @@ enum Json {
 }
 ```
 
+<!-- spec:end -->
+
 Variants without payloads (like `Red`, `Blue`, `Null`) are unit variants. Variants with payloads can have positional or named fields.
 
 **Recursive types:** An enum cannot contain itself directly: recursion goes through a pointer (`*T`) or a slice (`[]T`), as it does for a struct ([Types That Refer to Themselves](#types-that-refer-to-themselves)):
 
+<!-- spec:begin compile -->
+
 ```ents
 // Not implemented (design)
 enum Tree {
-  Leaf(value:i32),
-  Node(left:*Tree, right:*Tree)   // pointer indirection
+  Leaf(value: i32),
+  Node(left: *Tree, right: *Tree)   // pointer indirection
 }
 
 enum List {
   Nil,
-  Cons(head:i32, tail:*List)      // pointer indirection
+  Cons(head: i32, tail: *List)      // pointer indirection
 }
 ```
+
+<!-- spec:end -->
 
 A slice is already a pointer and a length, so `Array([]Json)` needs no `*`.
 
@@ -2299,8 +2312,8 @@ When a slot must hold both an integer and a float (e.g., `i32` and `f64`), it is
 | Variant | Slot 0 | Slot 1 | Slot 2 |
 |---------|--------|--------|--------|
 | `Red/Blue/Green` | — | — | — |
-| `RGB` | r (u8→i32) | g (i32) | b (i32) |
-| `HSL` | h (i32) | s (i32) | l (i32) |
+| `Rgb` | r (u8→i32) | g (i32) | b (i32) |
+| `Hsl` | h (i32) | s (i32) | l (i32) |
 | `Grey` | b (i32) | — | — |
 | `Darker` | ptr (i32) | — | — |
 | **Union** | i32 \| — | i32 \| — | i32 \| — |
@@ -2325,8 +2338,8 @@ When a slot must hold both an integer and a float (e.g., `i32` and `f64`), it is
 Red:    [0][__][__][__][__]
 Blue:   [1][__][__][__][__]
 Green:  [2][__][__][__][__]
-RGB:    [3][r][g][b][__]
-HSL:    [4][h][s][l][__]
+Rgb:    [3][r][g][b][__]
+Hsl:    [4][h][s][l][__]
 Grey:   [5][b][__][__][__]
 Darker: [6][ptr ptr ptr ptr]
 ```
@@ -7122,7 +7135,9 @@ In the design, the case of a name says what it is:
 
 In the design, `match` takes an enum value apart by its variant:
 
-```ents
+<!-- spec:begin compile -->
+
+```ents FuncDecl
 // Not implemented.
 func describe(c: Color) -> []u8 => match c {
   Red => "red"
@@ -7133,6 +7148,8 @@ func describe(c: Color) -> []u8 => match c {
   Darker(inner) => describe(inner.*)
 }
 ```
+
+<!-- spec:end -->
 
 In the design, a `match` on an enum is exhaustive: every variant is handled, or there is a `_` arm. As implemented, no `match` is checked for coverage: one that no arm matches traps ([5.4](#54-match-expressions)).
 
@@ -7200,7 +7217,9 @@ if let requires an optional expression or bounds-checked index
 
 > **Not implemented:** constructor patterns in `if let`, to test for an enum variant and take it apart. In the design:
 
-```ents
+<!-- spec:begin compile -->
+
+```ents Expr
 // Not implemented.
 if let Rgb(r, g, b) = color {
   draw_rgb(r, g, b)
@@ -7210,6 +7229,8 @@ if let Rgb(r, g, b) = color {
   draw_default()
 }
 ```
+
+<!-- spec:end -->
 
 ### 6.5 Let Destructuring
 
@@ -10478,12 +10499,12 @@ Features under consideration for later versions of Encantis. None of them is imp
 Access to WebAssembly's 128-bit vector operations:
 
 ```ents
-let a:v128 = v128_load(ptr)
-let b:v128 = v128_load(ptr + 16)
+let a: v128 = v128_load(ptr)
+let b: v128 = v128_load(ptr + 16)
 let sum = i32x4_add(a, b)
 
 // Potential syntax for vector literals
-let mask:v128 = (0xff:u8, 0xff:u8, 0:u8, 0:u8, ...)
+let mask: v128 = (0xff:u8, 0xff:u8, 0:u8, 0:u8, ...)
 ```
 
 **Why:** WebAssembly has SIMD over `v128` values. Crypto, hashing, image processing and numerical code can run several times faster with it: xxHash and Gimli both have vectorized variants that outperform their scalar forms.
@@ -10496,15 +10517,15 @@ Generic functions and generic types take types, functions and numbers at compile
 
 ```text
 // Compile-time function execution
-comptime func generate_table() -> *[256]u8 {
-  let table:*[256]u8
+comptime func crc_table() -> [256]u32 {
+  let table: [256]u32
   for i in 256 {
     table[i] = crc_byte(i)
   }
   return table
 }
 
-def crc_table = generate_table()
+data crc = crc_table()      // laid out in the data section: a *[256]u32
 ```
 
 Compile-time control flow (a comptime `if` that picks a type or a branch, a generic type with a block body, recursion on a value parameter that ends) would follow it.
@@ -10521,8 +10542,8 @@ Source modules ([7.1](#71-imports)) import the functions, globals and generics a
 // In math/vector.ents
 module math.vector
 
-export type Vec3 = (x:f32, y:f32, z:f32)
-export func dot(a:Vec3, b:Vec3) -> f32 => ...
+export type Vec3 = (x: f32, y: f32, z: f32)
+export func dot(a: Vec3, b: Vec3) -> f32 => ...
 
 // In main.ents
 use math.vector (Vec3, dot)
@@ -10539,12 +10560,12 @@ use math.vector as vec
 Operators could stand for function calls, so that a type of the program's own supports the standard operators through ordinary function declarations:
 
 ```ents
-type Vec2 = (x:f64, y:f64)
+type Vec2 = (x: f64, y: f64)
 
-func +(a:Vec2, b:Vec2) -> Vec2 =>
+func +(a: Vec2, b: Vec2) -> Vec2 =>
   Vec2(a.x + b.x, a.y + b.y)
 
-func *(v:Vec2, s:f64) -> Vec2 =>
+func *(v: Vec2, s: f64) -> Vec2 =>
   Vec2(v.x * s, v.y * s)
 
 // would then be
@@ -10559,7 +10580,7 @@ Functions share a name when their parameter types differ ([Functions That Share 
 
 **Not implemented:** there is no closure syntax, and function values, which closures would build on, are not implemented either ([Function Types and Pointers](#function-types-and-pointers)).
 
-Functions that capture variables from their enclosing scope. A plain function value is designed as an index into the function table; a closure would carry state as well:
+Functions that capture variables from their enclosing scope. A plain function value would be an index into the function table ([Function Types and Pointers](#function-types-and-pointers)); a closure would carry state as well:
 
 ```ents
 func make_counter(start: i32) -> () -> i32 {
