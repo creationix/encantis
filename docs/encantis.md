@@ -15,8 +15,8 @@ This reference describes the whole language: its syntax as it is written, what e
 - [5. Statements & Control Flow](#5-statements--control-flow): [5.1 Conditionals](#51-conditionals) · [5.2 Loops](#52-loops) · [5.3 Control Statements](#53-control-statements) · [5.4 Match Expressions](#54-match-expressions)
 - [6. Pattern Matching](#6-pattern-matching): [6.1 Pattern Forms](#61-pattern-forms) · [6.2 Patterns in Function Signatures](#62-patterns-in-function-signatures) · [6.3 Patterns in Match Arms](#63-patterns-in-match-arms) · [6.4 If-Let Bindings](#64-if-let-bindings) · [6.5 Let Destructuring](#65-let-destructuring)
 - [7. Modules](#7-modules): [7.1 Imports](#71-imports) · [7.2 Exports](#72-exports) · [7.3 Memory Declarations](#73-memory-declarations)
-- [8. Generics](#8-generics): [8.1 Compile-Time Parameters](#81-compile-time-parameters) · [8.2 Calling a Generic Function](#82-calling-a-generic-function) · [8.3 Requirements](#83-requirements) · [8.4 Instances](#84-instances) · [8.5 Generic Types](#85-generic-types) · [8.6 Comptime Function Parameters](#86-comptime-function-parameters) · [8.7 Comptime Value Parameters](#87-comptime-value-parameters) · [8.8 Generics Across Modules](#88-generics-across-modules) · [8.9 Not in This Version](#89-not-in-this-version) · [8.10 How This Is Compile-Time Evaluation](#810-how-this-is-compile-time-evaluation)
-- [9. Memory Model](#9-memory-model): [9.0 Data Layout](#90-data-layout) · [9.1 Stack vs Memory Allocation](#91-stack-vs-memory-allocation) · [9.2 By-Value vs By-Reference Passing](#92-by-value-vs-by-reference-passing) · [9.3 WASM Type Mapping](#93-wasm-type-mapping) · [9.4 Slice Construction](#94-slice-construction) · [9.5 Array Type Conversions](#95-array-type-conversions) · [9.6 Structs and Slices in Memory](#96-structs-and-slices-in-memory) · [9.7 Traps](#97-traps)
+- [8. Generics](#8-generics): [8.1 Compile-Time Parameters](#81-compile-time-parameters) · [8.2 Calling a Generic Function](#82-calling-a-generic-function) · [8.3 Requirements](#83-requirements) · [8.4 Instances](#84-instances) · [8.5 Generic Types](#85-generic-types) · [8.6 Comptime Function Parameters](#86-comptime-function-parameters) · [8.7 Comptime Value Parameters](#87-comptime-value-parameters) · [8.8 Generics Across Modules](#88-generics-across-modules) · [8.9 Not Implemented](#89-not-implemented) · [8.10 How This Is Compile-Time Evaluation](#810-how-this-is-compile-time-evaluation)
+- [9. Memory Model](#9-memory-model): [9.0 Data Layout](#90-data-layout) · [9.1 Registers and Memory](#91-registers-and-memory) · [9.2 By-Value vs By-Reference Passing](#92-by-value-vs-by-reference-passing) · [9.3 WASM Type Mapping](#93-wasm-type-mapping) · [9.4 Slice Construction](#94-slice-construction) · [9.5 Array Type Conversions](#95-array-type-conversions) · [9.6 Structs and Slices in Memory](#96-structs-and-slices-in-memory) · [9.7 Traps](#97-traps)
 - [10. Builtin Functions](#10-builtin-functions): [10.1 Numeric Builtins](#101-numeric-builtins) · [10.2 Integer Builtins](#102-integer-builtins) · [10.3 Memory Builtins](#103-memory-builtins) · [10.4 Sizes](#104-sizes)
 - [11. WebAssembly Reference](#11-webassembly-reference): [11.1 Widening Instructions (implicit)](#111-widening-instructions-implicit) · [11.2 Narrowing Instructions (explicit cast)](#112-narrowing-instructions-explicit-cast) · [11.3 Control Flow Instructions](#113-control-flow-instructions) · [11.4 Memory Access](#114-memory-access) · [11.5 Functions the Compiler Adds](#115-functions-the-compiler-adds)
 - [12. Tests](#12-tests): [12.1 Writing a Test](#121-writing-a-test) · [12.2 `assert`](#122-assert) · [12.3 Groups](#123-groups) · [12.4 Declarations in a Test](#124-declarations-in-a-test) · [12.5 Running Tests](#125-running-tests) · [12.6 The Test Host](#126-the-test-host)
@@ -118,7 +118,7 @@ The compiler implements everything this reference describes except what this tab
 | `elif let` | Accepted, and binds nothing: a use of the name is an error, or the module does not assemble | [4.7](#if-let-bindings) |
 | Reading a `*[?]T` (elements after a LEB128 length) | Lays one out, and refuses indexing it and its `.len` (`... is not supported yet: its length prefix is not read`) | [2.5](#25-pointer-types) |
 | Joining a template literal into one `[]u8` (formatting text into a buffer) | A template is the array literal of its fragments, so where a `[]u8` is wanted each `${e}` is one byte, and a `[]u8` there is a type error (`cannot assign *[2]u8 to u8`) | [1.5](#template-literals) |
-| Compile-time `if`, `for` and `assert`; comptime parameters other than types, integers and functions (`comptime ok: bool`); generic functions that share a name; writing some comptime arguments and inferring the others; generic types whose body is several statements | Each is refused with an error | [8.9](#89-not-in-this-version), [8.10](#810-how-this-is-compile-time-evaluation) |
+| Compile-time `if`, `for` and `assert`; comptime parameters other than types, integers and functions (`comptime ok: bool`); generic functions that share a name; writing some comptime arguments and inferring the others; generic types whose body is several statements | Each is refused with an error | [8.9](#89-not-implemented), [8.10](#810-how-this-is-compile-time-evaluation) |
 | `memory-size()` and `memory-grow(n)` | Not built in: `unknown identifier 'memory-size'` | [10.3](#103-memory-builtins) |
 | A host reference in memory | Refused wherever one would be in memory (`cannot point to Canvas: a host reference has no bytes, ...`) | [2.13](#213-host-references) |
 | SIMD (`v128`), compile-time execution (`comptime func`), a module system (`module`, `use`), operator overloading, closures | Not parsed: a syntax error | [15](#15-future-additions) |
@@ -193,7 +193,7 @@ An identifier (a name) starts with a lowercase ASCII letter `a`–`z` and goes o
 
 - A name never starts with `_`, a digit or an uppercase letter: `_count`, `2x` and `Count` are not names (`Count` is a type name, [1.3](#13-type-identifiers)). `_` alone is not a name either: it is the wildcard of a match arm ([6.3](#63-patterns-in-match-arms)) and the length left to the compiler in `[_]T`.
 - A hyphen after the first letter is part of the name, wherever the name stands: `n-1` is one name, not `n` minus 1, and after a dot `x.u32-count` is the member `u32-count`. So subtraction is written with spaces, `n - 1`, and the formatter prints every binary `-` that way.
-- Names are ASCII: write no other letter in a name.
+- Names are ASCII: write no other letter in a name. The compiler accepts one (`let größe = 1`) and writes a module that does not assemble (a known bug).
 - A keyword is reserved only as a whole word: `if-x`, `memory-size`, `true-ish` and `format` are names ([1.4](#14-reserved-keywords)). The names of the primitive types (`u8`, `i32`, `f64`, `bool`, …) and of the builtins (`max`, `memcpy`, …) are not reserved, though naming a variable `u8` only confuses its reader.
 
 Both `snake_case` and hyphens are written; hyphens are common in constants and in names that end in a number (`prime32-1`, `max-wisps`).
@@ -567,8 +567,8 @@ Any other character after a backslash is a syntax error, `\0` among them: a zero
 
 Two prefixes write bytes rather than text, both with double quotes only:
 
-- `x"…"` holds hex digits, two to a byte, either case, with whitespace allowed between bytes: `x"9d61 b19d"` is the four bytes 0x9D, 0x61, 0xB1, 0x9D. An odd number of digits is a mistake.
-- `b"…"` holds base64 (`A`–`Z`, `a`–`z`, `0`–`9`, `+`, `/`), its `=` padding optional, whitespace allowed: `b"SGVsbG8="` and `b"SGVsbG8"` are both the five bytes of `Hello`.
+- `x"…"` holds hex digits, two to a byte, either case, with whitespace allowed between bytes: `x"9d61 b19d"` is the four bytes 0x9D, 0x61, 0xB1, 0x9D. An odd number of digits, or a byte's two digits split by whitespace (`x"a bc"`), is no hex string. As a `data` value it is a syntax error, and in a function the `x` is read as a name and the rest as a string after it (`unknown identifier 'x'`, a known bug). A comment inside the quotes is read as hex digits (a known bug): write none there.
+- `b"…"` holds base64 (`A`–`Z`, `a`–`z`, `0`–`9`, `+`, `/`), its `=` padding optional, whitespace allowed: `b"SGVsbG8="` and `b"SGVsbG8"` are both the five bytes of `Hello`. A base64 string whose length or padding is wrong, `b"A"`, stops the compiler with `Internal parser error: The string contains invalid characters.` and no position (a known bug).
 
 A string is bytes in memory: the compiler lays them out in the data section ([9.0](#90-data-layout)) when it builds the module, and the string's value is their address. A string is constant: nothing writes it, and equal strings may share their bytes. With nothing to give it a type (`let s = "abc"`, the source of `buf[0..3] = "abc"`, a branch of an untyped `if`), a string is a `*[N]u8`, a pointer to its N bytes, whose `.len` is N. It converts to the pointer and slice types of bytes: a `[]u8` (its address and length), a `[*]u8`, and a `*[!]u8` or `[!]u8`, for which it is laid out with a zero byte after it ([2.5](#25-pointer-types)). `mut "abc"` is a `*mut [3]u8`, a writable copy of its own ([The `mut` Keyword on Literals](#the-mut-keyword-on-literals)).
 
@@ -615,6 +615,8 @@ Line 1, col 15
 <!-- spec:end -->
 
 A slice counts elements, so a string is only a slice of one-byte elements: `"abc"` for a `[]u32` is a compile error, as three bytes are not three `u32`s. Write the elements as an array literal (`[1, 2, 3]`).
+
+Laid out for a pointer to ranged bytes, `*[3]u8#16`, each byte is meant to be below the bound, as each element of an array literal must be (`[97]` there is `cannot assign int(97) to u8#4`). The compiler does not check a string's bytes there (a known bug), and an index the range proves can then read past its array: write such an array as an array literal.
 
 A string is never a character: next to a number, given for one or matched against one it is an error, which shows how the character is written (`'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')`).
 
@@ -770,7 +772,7 @@ An array literal lists its elements, `[a, b, c]` (a trailing comma is allowed), 
 
 - The elements take the element type wanted where the literal is used. Where none is wanted they widen to the widest of them ([Implicit Widening](#implicit-widening)): `[1, 2.5]` is a `[2]f64`. An untyped constant beside typed elements takes their type when that type holds it, and otherwise its own default, to which the typed elements widen: `[1:u8, 3]` is a `[2]u8`, `[1:u8, 300]` a `[2]i32` and `[1:u8, 5000000000]` a `[2]i64`; and `[1:u8, 2:i8]` is `elements have different types: i8 and u8 (cast one explicitly)`.
 - In `[v; n]` the count `n` is a compile-time integer: a literal, a `def`, a comptime value parameter, or arithmetic on these. A count known only at run time is `repeat count must be a compile-time integer`, and a negative one `repeat count cannot be negative`. `v` is evaluated once for each element: `[f(); 3]` calls `f` three times.
-- `[]` has no element to take a type from, so it needs one given: `let e: []u8 = []` is an empty slice of real memory, an address with the length 0, which is not none, also as a `?[]u8` ([Optional Types](#optional-types)), and `let x = []` is `cannot infer element type of empty array literal`. For a mutable slice it is written with `mut`, as any literal is there: `let e: []mut i32 = mut []` (without it, ``a literal is constant: write `mut []` for a []mut i32``). Given for a `[0]T`, it is meant to be the empty array; the compiler emits an address there and the module does not validate (a known bug), so write `[0:u8; 0]`.
+- `[]` has no element to take a type from, so it needs one given: `let e: []u8 = []` is an empty slice of real memory, an address with the length 0, which is not none, also as a `?[]u8` ([Optional Types](#optional-types)), and `let x = []` is `cannot infer element type of empty array literal`. For a mutable slice it is written with `mut`, as any literal is there: `let e: []mut i32 = mut []` (without it, ``a literal is constant: write `mut []` for a []mut i32``). Given for a `[0]T` value it is the empty array, which takes no register. In a typed `let` or an assignment it is, but as an argument or a returned value the compiler gives it an address and the module does not validate, and as a global's value the compiler stops with an internal error (a known bug). Write `[0:u8; 0]` there.
 - A string is an array literal of bytes, which is always in memory: `"hi"` is `[0x68, 0x69]` laid out as a `*[2]u8`.
 
 With nothing to give it a type, an array literal is a value: `[N]T` in N registers, copied when it is assigned or passed ([2.4](#24-fixed-arrays-value-type)). Where a pointer or a slice is wanted it is laid out in memory instead, as the next section tells, and its count has to be the one wanted: an array literal given for a `*[N]T` has N elements, and each row of a `*[N][M]T`, a `[][M]T` or a `*[NxM]T` has M, as does each literal an element of a `*[N]*[M]T` points at: `cannot assign 2 elements to *[3]i32`. Behind a pointer, a string is the bytes of all the elements: `"abcd"` is a `*[4]u8` or a `*[2]u16`, but not a `*[8]u8` (`cannot assign a string of 4 bytes to *[8]u8`) or the rows of a table.
@@ -874,7 +876,7 @@ A literal is constant unless it is written with `mut`, wherever it is: where a m
 
 `mut` makes the literal writable and its own, shared with no other literal: what it lays out apart too, the rows of a table (`data t: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros), the elements of a slice of slices (`mut [[1, 2], [1, 2]]` for a `[][]mut u8`) and the slice fields of its structs. `mut` goes before a literal: a number, a string, a template, an array or a tuple, a tuple given for a struct among them. Before anything else, a constructor call included, it is a syntax error: `mut Point(1, 2)` is `mut goes before a literal (an array, a string or a tuple), not before Point(1, 2)`, and `mut (1, 2)` is what to write where a `Point` is wanted.
 
-`mut` does not choose where a literal lives; the type it meets does, as for any literal. A string is always in memory, so `mut "hello"` is a `*mut [5]u8`. An array literal given for a `*mut [N]T` or a `[]mut T` is laid out in a writable cell. With nothing to give it a type, a number, a tuple or an array stays a value in registers, where it is a variable's own and writable anyway, and `mut` changes nothing: `let q = mut [1, 2, 3]` is the `[3]i32` that `[1, 2, 3]` is. To keep a writable buffer in a variable, give the variable the pointer or slice type, which lays the literal out, `let buf: []mut u8 = mut [0:u8; 3]`, or write `let buf = &[0:u8; 3]` for a `*mut [3]u8`. Either is one cell for its place in the source, kept from one evaluation to the next ([Literals in Memory](#literals-in-memory)). `let buf = mut [0:u8; 3]` is a `[3]u8` in registers, and passing it for a `[]mut u8` is `argument 1: cannot assign [3]u8 to []mut u8`. For a writable cell, write `&` before the literal: `&0:u32` is a `*mut u32`, `&[1, 2, 3]` a `*mut [3]i32`, `&(1.0, 2.0)` a `*mut (f64, f64)`, each a cell of its own, so `&[1, 2]` given for a `*mut [2]i32` needs no `mut`. A number or a tuple is laid out only by `&`: for a `*mut u32`, write `&5`, not `mut 5`. `&` before a string is not needed: a string is already its address.
+`mut` does not choose where a literal lives; the type it meets does, as for any literal. A string is always in memory, so `mut "hello"` is a `*mut [5]u8`. An array literal given for a `*mut [N]T` or a `[]mut T` is laid out in a writable cell. With nothing to give it a type, a number, a tuple or an array stays a value in registers, where it is a variable's own and writable anyway, and `mut` changes nothing: `let q = mut [1, 2, 3]` is the `[3]i32` that `[1, 2, 3]` is. To keep a writable buffer in a variable, give the variable the pointer or slice type, which lays the literal out, `let buf: []mut u8 = mut [0:u8; 3]`, or write `let buf = &[0:u8; 3]` for a `*mut [3]u8`. Either is one cell for its place in the source, kept from one evaluation to the next ([Literals in Memory](#literals-in-memory)). `let buf = mut [0:u8; 3]` is a `[3]u8` in registers, and passing it for a `[]mut u8` is `argument 1: cannot assign [3]u8 to []mut u8`. For a writable cell, write `&` before the literal: `&0:u32` is a `*mut u32`, `&[1, 2, 3]` a `*mut [3]i32`, `&(1.0, 2.0)` a `*mut (f64, f64)`, each a cell of its own, so `&[1, 2]` given for a `*mut [2]i32` needs no `mut`. A number or a tuple is laid out only by `&`: for a `*mut u32`, write `&5`. `mut 5` there is the number 5, and an integer constant where a pointer is wanted is an address ([An address as a constant](#25-pointer-types)). So `bump(mut 5)`, for `bump(p: *mut u32)`, passes the address 5 with no error, as `bump(5)` does. Where a `*mut P` is wanted, `mut (1, 2)` is refused (`cannot assign (int(1), int(2)) to *mut P`). `&` before a string is not needed: a string is already its address.
 
 | Written | With nothing to give it a type |
 |---------|--------------------------------|
@@ -1471,9 +1473,9 @@ test "a value is copied, a reference shares" {
 
 **A length from the literal.** `[_]` in the type given to a literal with `:` takes its length from the literal: `[95, 87, 42]:*[_]i32` is a `*[3]i32`, and `data scores = [95, 87, 42]:*[_]i32` names one. Not implemented: `[_]` as the declared type of a variable, a global or a `data` (`data d: *[_]u8 = [1, 2, 3]`), and a `[_]T` held by value; write the type on the literal instead.
 
-**Indexing.** The elements are registers, which wasm cannot index by a run-time value, so an array held in registers is indexed only by a compile-time constant, checked against N when the program is compiled. A run-time index, a ranged one too, is an error: an array that is indexed at run time belongs in memory, behind a pointer or a slice. An element of an array variable can be assigned, `v[1] = 9`. An array that lies in memory as a field of a struct a pointer points to (`p.items`) has an address, and there it is indexed by any index as the `*[N]T` it is: see [Fixed Arrays in Place](#fixed-arrays-in-place).
+**Indexing.** The elements are registers, which wasm cannot index by a run-time value, so an array held in registers is indexed only by a compile-time constant, checked against N when the program is compiled. A run-time index, a ranged one too, is an error: an array that is indexed at run time belongs in memory, behind a pointer or a slice. An element of an array variable can be assigned, `v[1] = 9`. An array that lies in memory as a field of a struct a pointer points to (`p.items`) has an address, and there it is indexed by any index as the `*[N]T` it is: see [Fixed Arrays in Place](#fixed-arrays-in-place). An array literal indexed where it is written is such an array: `[10:u32, 20, 30][i]` is `dynamic index on an array literal — its elements are held in registers and picked by a constant index: lay it out in memory with & to index it at run time`. Lay it out with `&`, `(&[10:u32, 20, 30])[i] ?? 0`, or name it with `data`.
 
-**Members.** `v.len` is N and `v.wid` is `sizeof(T)`. Both are constants with no type of their own, as a literal is ([Comptime Literal Promotion](#comptime-literal-promotion)): each takes the type of where it is used (`let b: u8 = v.len`), and where nothing gives one it is an `i32`. So `let n = v.len` makes an `i32`, and `i < n` with `i: u32` is `mismatched operands for '<': u32 and i32`: write `let n: u32 = v.len`, or compare with `v.len` itself. `v.ptr` is an error: an array held by value is its elements and has no address, also where it was read out of memory (`p.*`). One that lies in memory has the address of its place, `(&p.items).ptr`.
+**Members.** `v.len` is N and `v.wid` is `sizeof(T)`. Both are constants with no type of their own, as a literal is ([Comptime Literal Promotion](#comptime-literal-promotion)): each takes the type of where it is used (`let b: u8 = v.len`), and where nothing gives one it is an `i32`. So `let n = v.len` makes an `i32`, and `i < n` with `i: u32` is `mismatched operands for '<': u32 and i32`: write `let n: u32 = v.len`, or compare with `v.len` itself. `v.ptr` is an error: an array held by value is its elements and has no address, also where it was read out of memory (`p.*`). One that lies in memory has the address of its place, `(&p.items).ptr`. The `.len` of an array literal written in place, `[1, 2].len`, is refused (`no field 'len' on type [2]i32`, a known bug): name the array first.
 
 **No address.** Since it has none, an array held in registers is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is `cannot assign [3]i32 to *[3]i32`, and `v.sum()` is `the receiver is a [3]i32, which is held in registers and has no address`; for a slice parameter both are the plain message, `receiver: cannot assign [3]u32 to []u32` for `v.total()` with `total(xs: []u32)`. An element loop needs a slice or a pointer (`cannot iterate over [3]u32`), and `==` does not compare arrays. An array literal is laid out in memory where a pointer or a slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
 
@@ -1753,7 +1755,7 @@ A pointer is **read-only** unless it is written with `mut`, and so is a slice an
 
 Only a `mut` one is written through: with `p` read-only, an assignment to `p.*`, to an element `p[i]`, to a field `p.x`, or through the address `&p[i]` of an element is `cannot write through const pointer — use *mut for mutable access`. A mutable pointer passes where a read-only one of the same type is wanted (the same holds for a slice and a many-pointer, and a `*mut [N]T` becomes a `[]mut T` or a `[]T`), and never the other way round. So a function takes a read-only pointer or slice unless it writes, and then any caller can pass what it has.
 
-`mut` belongs to one pointer: in `*mut *u8` the pointer that is pointed at can be replaced (`p.* = q`), but the byte it points at cannot be written (`p.*.* = 1` is refused). The other way round, a read-only pointer reads a mutable pointer, and that one is written through: with `p: **mut u8`, `p.*.* = 1` writes the byte and `p.* = q` is refused; with `h: *Heap`, whose field `items` is a `[*]mut u32`, `h.items[i] = x` writes an element and `h.items = q` is refused. A `data` without `mut` is read-only, and so is a literal: where a mutable pointer or slice is wanted, a literal is written with `mut`, which gives it memory of its own ([The `mut` Keyword on Literals](#the-mut-keyword-on-literals)). A cast between pointer types converts the address, and the type it gives may be `mut` (`p as *mut u8`); a slice is not cast (`cannot cast []u8 to []mut u8`).
+`mut` belongs to one pointer: in `*mut *u8` the pointer that is pointed at can be replaced (`p.* = q`), but the byte it points at cannot be written (`p.*.* = 1` is refused). The other way round, a read-only pointer reads a mutable pointer, and that one is written through: with `p: **mut u8`, `p.*.* = 1` writes the byte and `p.* = q` is refused; with `h: *Heap`, whose field `items` is a `[*]mut u32`, `h.items[i] = x` writes an element and `h.items = q` is refused. A `data` without `mut` is read-only, and so is a literal: where a mutable pointer or slice is wanted, a literal is written with `mut`, which gives it memory of its own ([The `mut` Keyword on Literals](#the-mut-keyword-on-literals)). A cast between pointer types converts the address, and the type it gives may be `mut` (`p as *mut u8`); a slice is not cast (`cannot cast []u8 to []mut u8`). `mut` is written after `*`, `[]` and `[*]` only. After the brackets of a fixed array or a framing, as in `[3]mut u8` or `*[3]mut u8`, it is accepted and dropped (a known bug): `[3]mut u8` is a `[3]u8`, and `*[3]mut u8` a read-only `*[3]u8`. Write `*mut [3]u8`. `^T` is parsed as a type and stops the compiler with an internal error (`Missing semantic action for 'BaseType_boundaryPointer'`, a known bug): it is not a type of the language.
 
 <!-- spec:begin compile -->
 
@@ -1958,7 +1960,7 @@ test "data is viewed as slices" {
 
 A tuple is values of any types, by position: `(i32, i32)` is a pair of `i32`s, `(u8, f64, bool)` three values of three types.
 
-- `()` is void, the empty tuple: the type of a function with no result.
+- `()` is void, the empty tuple: the type of a function with no result. Written as an expression it is the one value of that type, which takes no register: `return ()` is a bare `return`, and `func f() => ()` is a function with no result.
 - `(x)` is grouping, not a tuple — the type is just `x`.
 - `(x, y, ...)` is a tuple, of two or more parts.
 
@@ -2694,6 +2696,8 @@ test "a step wraps in its type" {
 
 <!-- spec:end -->
 
+This makes whether a constant expression fits depend on how large its operands are, not only on its value. Where a `u32` is wanted, `2 - 3` is checked as 3 and accepted, and is 4294967295, while `0 - 1` is refused. Where a `u8` is wanted, `100 - 200` is accepted and is 156. Whether the number checked should be the expression's value alone is not decided, and [Optional Types](#optional-types) and [Counting](#counting) list effects of this rule among known bugs: write a constant expression whose operands and value all fit the type it meets.
+
 A step's exact value is computed on integers of unbounded size: `(0 - 1) >> 1` is -1 (a right shift of a negative number keeps its sign), `(0 - 1) << 4` is -16 and `3 << 31` is 6442450944, so all three are errors where a `u32` is wanted. A `~` makes a bit pattern ([4.2](#42-bitwise-operators)), and so does a bitwise operator or a shift with a bit-pattern operand (`~0 << 12`, `~3 | 1`, `~(~0 << 4)`). Where the number checked is a bit pattern, it fits an unsigned type when the number it is the complement of does, and is not refused for being negative: as a `u32`, `~0 << 12` is 0xFFFFF000, while `~0 << 40` is `cannot assign int(-1099511627776) to u32`. Arithmetic on a bit pattern gives a plain number again: as a `u32`, `~0 - 1` and `~0 * 2` are checked as -2 and are errors (write `~1` for 0xFFFFFFFE), while `~0 + 1` is accepted, the number furthest from zero in it being the bit pattern `~0`.
 
 <!-- spec:begin compile -->
@@ -2829,7 +2833,7 @@ A message about two types names them in this order. For an operator, the left op
 A cast is written two ways:
 
 - `x as T`, for any target type `T`.
-- `T(x)`, for a primitive type's own name only: `u32(x)`, `f64(n)`, `i8(b)`. It takes exactly one argument (`type cast 'u32' expects 1 argument, got 2`). It is a call in form, so it binds as one: `u32(x).double()` calls `double` on the cast. A name for a primitive type (`type Count = u32`) has no such call: `Count(x)` is an error, and `x as Count` is the cast (the compiler reports `Count(x)` as `cannot call non-function type: u32` and then types the call as an `i32`, so where another type is wanted a second, misleading error follows, `cannot assign i32 to Count`: a known bug). Nor has a ranged type or a type parameter (`T(x)` in a generic says to write `x as T`). A capitalised name with arguments is a struct constructor ([2.8](#struct-constructors)), which builds a value, not a cast.
+- `T(x)`, for a primitive type's own name only: `u32(x)`, `f64(n)`, `i8(b)`. A function the module declares with a primitive type's name, `func u32(x: u64) -> u32`, is accepted and never called this way: `u32(x)` stays the cast (a known bug), so do not name a function after a type. It takes exactly one argument (`type cast 'u32' expects 1 argument, got 2`). It is a call in form, so it binds as one: `u32(x).double()` calls `double` on the cast. A name for a primitive type (`type Count = u32`) has no such call: `Count(x)` is an error, and `x as Count` is the cast (the compiler reports `Count(x)` as `cannot call non-function type: u32` and then types the call as an `i32`, so where another type is wanted a second, misleading error follows, `cannot assign i32 to Count`: a known bug). Nor has a ranged type or a type parameter (`T(x)` in a generic says to write `x as T`). A capitalised name with arguments is a struct constructor ([2.8](#struct-constructors)), which builds a value, not a cast.
 
 `as` applies to a postfix expression: a name, a literal, a call, a field, an index, a dereference, or anything in parentheses. Its result takes no postfix operator, no second `as` and no `:T` without parentheses, and an annotated operand takes no `as`: `x as u32.double()`, `1 as u8 as u16` and `0.1:f32 as f64` are syntax errors, and `(x as u32).double()`, `(b as u16) as u32` and `(0.1:f32) as f64` are what is meant. A unary operator before it applies to the cast: `-x as i32` is `-(x as i32)`. Every binary operator binds looser, so `x as i32 + 1` is `(x as i32) + 1`, and `n as i32 < 0` is `(n as i32) < 0`.
 
@@ -2962,7 +2966,7 @@ Expected
 
 ### 2.11 Type Names
 
-`type Name = Type` gives a type a name. A `type` declaration stands at module level (in a function body it is a syntax error), and the name is a type identifier, which starts with a capital letter ([1.3](#13-type-identifiers)). The declarations of a module come in any order: a name can be used above the line that declares it, and names can refer to each other, also round to themselves through a pointer or a slice ([Types That Refer to Themselves](#types-that-refer-to-themselves)). A name is declared once in its module, and it is not exported or imported: a module that needs the type declares it again or writes it out ([7.1](#71-imports)).
+`type Name = Type` gives a type a name. A `type` declaration stands at module level (in a function body it is a syntax error), and the name is a type identifier, which starts with a capital letter ([1.3](#13-type-identifiers)). The declarations of a module come in any order: a name can be used above the line that declares it, and names can refer to each other, also round to themselves through a pointer or a slice ([Types That Refer to Themselves](#types-that-refer-to-themselves)). A name is declared once in its module (a second `type` of the same name is accepted and replaces the first everywhere, a known bug), and it is not exported or imported: a module that needs the type declares it again or writes it out ([7.1](#71-imports)).
 
 A name is not a new type. It is the type it names, wherever it is used: `type Meters = u32` and `type Feet = u32` are both `u32`, so a `Meters` passes where a `Feet` is wanted, and either is a `u32` in arithmetic. Messages say the name that was written (`cannot assign int(8) to Small`). Any type can be named: a number, a ranged integer (`type Small = u32#8`), a pointer, a slice, an array, an optional, a tuple or struct, a function type (`type Scale = (u32) -> u32`), a generic type applied (`type Bytes = Vec(u8)`, [8.5](#85-generic-types)), or a name (`type Pt = Point`). A name in parentheses is the name, as any type is ([2.7](#27-tuple-types)).
 
@@ -3110,7 +3114,7 @@ type '[65536]u8' is too large: written out in full it has more than 65536 parts
 
 <!-- spec:end -->
 
-A function is one wasm function, and every engine takes a wasm function of at most 1000 parameters, 1000 results and 50000 locals, its parameters among them, with a body of at most 7654321 bytes (the limits the WebAssembly JS API sets). What a function holds is counted in registers, the wasm values a value is laid out in: a number, a bool, a pointer or a host reference (2.13) is one, a slice two, a `u128` two `i64`s, and an array held by value or a struct one for each of its elements and fields, `[N]T` N times what `T` is. So:
+A function is one wasm function, and every engine takes a wasm function of at most 1000 parameters, 1000 results and 50000 locals, its parameters among them, with a body of at most 7654321 bytes (the limits the WebAssembly JS API sets). What a function holds is counted in registers, the wasm values a value is laid out in: a number, a bool, a pointer or a host reference ([2.13](#213-host-references)) is one, a slice two, a `u128` two `i64`s, and an array held by value or a struct one for each of its elements and fields, `[N]T` N times what `T` is. So:
 
 - The parameters of a function are at most 1000 registers, and so are its results; so are those of an imported function and of a function type wherever it is written. It is said at the parameter or the result that goes over.
 - The value an `if`, an `if let`, a `match` or a `??` gives is at most 1000 registers: it is the results of a wasm block.
@@ -3180,7 +3184,7 @@ type Context = host
 
 <!-- spec:end -->
 
-Each name declared with `host` is a type of its own: `Canvas` and `Context` are both host references, but neither is assignable to the other. Another name for one is that type (`type Screen = Canvas`). The name is the type program-wide, across source modules too: a module that shares `Canvas` with another declares `type Canvas = host` too, as it restates the signatures it shares, and two modules that each declare `type Handle = host` have one type between them. So a library should choose a name that is its own (`FileHandle`, not `Handle`). Types are otherwise structural (2.11, 7.1, 8.4, 8.5); a host type is the one kind that is its name, and a message that meets two types of one name that are not one type says what each stands for (`cannot assign Canvas (i32) to Canvas (a host type)`). `host` is not reserved, and written anywhere else as a type it is an error (`'host' declares a host reference type: write 'type Canvas = host' and use Canvas`).
+Each name declared with `host` is a type of its own: `Canvas` and `Context` are both host references, but neither is assignable to the other. Another name for one is that type (`type Screen = Canvas`). The name is the type program-wide, across source modules too: a module that shares `Canvas` with another declares `type Canvas = host` too, as it restates the signatures it shares, and two modules that each declare `type Handle = host` have one type between them. So a library should choose a name that is its own (`FileHandle`, not `Handle`). Types are otherwise structural ([2.11](#211-type-names), [7.1](#source-modules), [8.4](#84-instances), [8.5](#85-generic-types)); a host type is the one kind that is its name, and a message that meets two types of one name that are not one type says what each stands for (`cannot assign Canvas (i32) to Canvas (a host type)`). `host` is not reserved, and written anywhere else as a type it is an error (`'host' declares a host reference type: write 'type Canvas = host' and use Canvas`).
 
 A host reference is held where registers are, and nowhere else:
 
@@ -3197,10 +3201,10 @@ A plain host type is never null: a `Canvas` is always a value the host gave. So 
 - a `let` of one gets its value where it is declared, and so does one of a struct or a fixed array that holds one (`'c' needs a value where it is declared: a Canvas has no default (a ?Canvas starts as none)`);
 - a global's value is a constant, and no constant is a `Canvas`, so a global of one (or of a struct or array that holds one) is imported from the host, which gives its value; the module's own global holds a `?Canvas`, none until it is set (`global 'g' needs a value: ..., and no constant is a Canvas: import the global from the host, or make it hold a ?Canvas, which starts as none`);
 - a named result cannot hold one, since a named result starts with a default: return the value instead;
-- a `let` of one in a block that may not run (a branch, a loop's body, a match arm) is seen in that block alone, not after it as another variable is (3.3): after the block, it may never have been given its value (`'c' is seen only in the block it is declared in: that block may not have run here, ...`);
+- a `let` of one in a block that may not run (a branch, a loop's body, a match arm) is seen in that block alone, not after it as another variable is ([3.3](#33-variables)): after the block, it may never have been given its value (`'c' is seen only in the block it is declared in: that block may not have run here, ...`);
 - `0` is no `Canvas`, and neither is any other number: `c == 0` on a plain `Canvas` is an error that says to use `?Canvas`.
 
-A reference that may be null is a `?Canvas`, the optional form, written as `?*T` is for a pointer (2.5); `?Screen` is the same type through another name for it. It follows the rules of `?*T`:
+A reference that may be null is a `?Canvas`, the optional form, written as `?*T` is for a pointer ([Optional Types](#optional-types)); `?Screen` is the same type through another name for it. It follows the rules of `?*T`:
 
 - none is written `0`, the literal: also `-0` (the literal with its sign), in parentheses, as the value of a branch, or as a `def` of 0, but nothing computed (`0 + 0` and `-(0)` are not none). A comptime value parameter is the number its call gave, written in its place ([8.7](#87-comptime-value-parameters)): in an instance given 0 it is the literal 0, however the call wrote the 0;
 - it starts as none: a `let` or a global of one given no value is none;
@@ -3271,7 +3275,7 @@ test "nothing is drawn before there is a context" {
 }
 ```
 
-`?` makes a host type optional by any name for it, also one declared further down, and a type parameter given a host type. `host` in parentheses is `host`, as any type is (2.7):
+`?` makes a host type optional by any name for it, also one declared further down, and a type parameter given a host type. `host` in parentheses is `host`, as any type is ([2.7](#27-tuple-types)):
 
 ```ents
 type Holder = (c: ?Canvas, n: i32)
@@ -3533,7 +3537,7 @@ cannot take the width of Canvas: a host reference has no bytes
 cannot take .ptr of [2]Canvas: a fixed array held by value has no address
 ```
 
-Too many to hold at once is an error of the register limits (2.12), whose advice for a host reference is to hold fewer, not to put them behind a pointer; a value that is over the limit with the host references taken out still gets that advice:
+Too many to hold at once is an error of the register limits ([2.12](#212-limits)), whose advice for a host reference is to hold fewer, not to put them behind a pointer; a value that is over the limit with the host references taken out still gets that advice:
 
 ```ents
 type Canvas = host
@@ -3585,7 +3589,7 @@ cannot assign int(7) to ?Canvas: none of a ?Canvas is written 0, the literal
 cannot take the size of Canvas: a host reference has no bytes, so it is never in memory (hold it in a variable, a parameter or a global), in size(T = Canvas)
 ```
 
-A generic type that would put one in memory is refused in the application that does, once for each application however often it is named (8.3), also when the type is named before the host type is declared:
+A generic type that would put one in memory is refused in the application that does, once for each application however often it is named ([8.3](#83-requirements)), also when the type is named before the host type is declared:
 
 ```ents
 func Ptr(comptime T: type) -> type => *T
@@ -3647,7 +3651,7 @@ global initializer must be a compile-time constant
 
 <!-- spec:end -->
 
-**Names.** A name declared at the level of the module belongs to one declaration: a second one of the same name is an error (`'size' is already declared`). Functions are the exception: several can share a name when their parameters differ ([Functions That Share a Name](#functions-that-share-a-name)). A local variable cannot take the name of anything the module declares ([3.3](#33-variables)); a parameter and a named result can ([3.4](#34-functions)).
+**Names.** A name declared at the level of the module belongs to one declaration: a second one of the same name is an error (`'size' is already declared`). Functions are the exception: several can share a name when their parameters differ ([Functions That Share a Name](#functions-that-share-a-name)). A `let` cannot take the name of anything the module declares ([3.3](#33-variables)). The variable of a loop or an `if let` can take a function's name, which it hides in its body ([Loop Variables](#loop-variables)). A parameter or a named result can take the name of a global, a function, an import or a `data` block, which it hides in the body, but not a `def`'s ([3.4](#34-functions)).
 
 **Unused declarations.** The compiler warns `'x' is never used` for a function, `def`, `data` block, `global` or import of the module that nothing uses and that is not exported. An unused type, parameter or local variable gets no warning. A warning never stops a build, and the command line does not print it ([Tools](#tools)).
 
@@ -3894,7 +3898,7 @@ A `let` declares a variable of a function; a `global` declares a variable of the
 | `set a, b = v`, `set (x:, y:) = v` | assigns variables that exist, with the same patterns ([4.5](#45-assignment-and-compound-assignment)) |
 | `global x: T = v`, `global x = v`, `global x: T` | a variable of the module |
 
-A `let` needs a type or a value (`let needs type annotation or initializer`), and so does a `global` (`global needs type annotation or initializer`). A pattern by position may bind fewer elements than the value has, `let (a, b) = (1, 2, 3)` binds the first two, but not more (`tuple has 2 fields, but pattern has 3`). A named part binds a plain name, not a pattern. The list without parentheses takes no type (`let a, b: u32 = ...` is a syntax error): write `let (a, b): (u32, u32) = ...`. A global binds one name: `global (lo, hi) = ...` is `global destructuring is not supported yet`.
+A `let` needs a type or a value (`let needs type annotation or initializer`), and so does a `global` (`global needs type annotation or initializer`). A pattern by position may bind fewer elements than the value has, `let (a, b) = (1, 2, 3)` binds the first two, but not more (`tuple has 2 fields, but pattern has 3`). A named part binds a plain name, not a pattern. The list without parentheses takes no type (`let a, b: u32 = ...` is a syntax error): write `let (a, b): (u32, u32) = ...`. A global binds one name. **Not implemented:** destructuring a global, `global (lo, hi) = (1:u32, 2:u32)`: it is refused (`global destructuring is not supported yet`). Declare a global for each part.
 
 <!-- spec:begin compile -->
 
@@ -4187,7 +4191,7 @@ test "a value is copied, a pointer is shared" {
 
 A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. Neither a parameter nor a named result may have a def's name. The compiler accepts both (known bugs): an assignment to one (`limit = 3`, `limit += 1`) writes the variable, but every other read of the name gives the def's value. So beside `def limit = 10`, `func f() -> (limit: u32) { limit = 3  return limit * 2 }` returns 20, and `=> limit` returns 10.
 
-**Returning.** An expression body is the function's result, so a function with no result has a block body: `func f() => id(3)` is `cannot assign u32 to ()`, and `func f() => bump()`, where `bump` has no result either, is refused too (`cannot assign () to ()`, a known bug). A block body gives an unnamed result with `return value`, and every way out of the block must be one. The compiler decides this by the block's last statement, which must be:
+**Returning.** An expression body is the function's result, so a function with no result has a block body, or an expression body that gives nothing (`=> ()`, or an `if` with an `else` whose branches end in a statement, `=> if c { n += 1 } else { n = 0 }`): `func f() => id(3)` is `cannot assign u32 to ()`. `func f() => bump()`, where `bump` has no result either, is refused too, and so are an `if` whose branch ends in such a call and an `if` without an `else`, `func f(c: bool) => if c { n += 1 }` (`cannot assign () to ()`, known bugs). A block body gives an unnamed result with `return value`, and every way out of the block must be one. The compiler decides this by the block's last statement, which must be:
 
 - a `return` (not `return ... when ...`),
 - a `loop` with no `break` out of it (a `break` in a loop nested inside it leaves only that loop, [`break` and `continue`](#break-and-continue), and does not count),
@@ -4332,7 +4336,7 @@ cannot assign (u32, u32) to (y: u32, x: u32)
 
 <!-- spec:end -->
 
-**A function has a name.** A module-level `func(x: i32) -> i32 => x + 1` without one is accepted and left out of the module, and `export "inc" func(...)` gives a module that does not assemble: both are known bugs, so name every function. An import item can leave the name out ([7.1](#71-imports)).
+**A function has a name.** A module-level `func(x: i32) -> i32 => x + 1` without one is accepted and left out of the module, and `export "inc" func(...)` gives a module that does not assemble: both are known bugs, so name every function. An import item can leave the name out ([7.1](#71-imports)). A function's name starts with a lower-case letter. `func Area(w: u32) -> u32 => w * w` is read as a function without a name whose parameter is the type `Area(w: u32)`, and is reported as `unknown identifier 'w'` (a known bug: the message should say that a function's name is lower-case).
 
 A function that takes a type as a parameter, `func larger(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
 
@@ -4815,7 +4819,7 @@ An `i8` or `i16` is divided in 32 bits, so `-128:i8 / -1` does not trap: it is 1
 
 **Floats** follow IEEE 754, as wasm's `f64.div` does, and never trap: `1.0 / 0.0` is infinity and `0.0 / 0.0` is NaN. `%` takes integers only (`'%' needs integer operands, not f64`).
 
-**Wide integers** (`i128` and up) take `+`, `-` and `*`, which wrap as any integer does; `/` and `%` on them are not supported yet (`'/' on u128 is not supported yet`).
+**Wide integers** (`i128` and up) take `+`, `-` and `*`, which wrap as any integer does. **Not implemented** on them: `/` and `%` (`'/' on u128 is not supported yet`).
 
 <!-- spec:begin compile -->
 
@@ -5155,7 +5159,7 @@ The target's address is evaluated once, and before the value, also for a compoun
 
 #### Assigning Several Variables
 
-`set` assigns to variables that exist, through a pattern, as `let` declares new ones ([3.3](#33-variables)). The parts of the pattern are positional, `set (q, r) = divmod(17, 5)`, or by field name, `set (x: a, y: b) = p`, with `set (x:, y:) = p` short for `set (x: x, y: y) = p`; a part can be a pattern itself, `set (low, (high, wide)) = ...`. Each part is the name of a variable or a nested pattern of them: a field, an element or a pointer's target is no part (`set (p.x, xs[0]) = v` is a syntax error), so assign those one by one. Without parentheses, `set q, r = v` is the positional form. `set x = v` with a single name is `x = v`. A tuple, a struct and the several results of a call can be taken apart; a slice cannot (`cannot destructure non-tuple type in set: []u8`: read its `.ptr` and `.len`), and neither can a pointer (take apart `p.*`).
+`set` assigns to variables that exist, through a pattern, as `let` declares new ones ([3.3](#33-variables)). The parts of the pattern are positional, `set (q, r) = divmod(17, 5)`, or by field name, `set (x: a, y: b) = p`, with `set (x:, y:) = p` short for `set (x: x, y: y) = p`; a part can be a pattern itself, `set (low, (high, wide)) = ...`. Each part is the name of a variable or a nested pattern of them: a field, an element or a pointer's target is no part (`set (p.x, xs[0]) = v` is a syntax error), so assign those one by one. Without parentheses, `set q, r = v` is the positional form. `set x = v` with a single name is `x = v`. A tuple, a struct and the several results of a call can be taken apart; a slice cannot (`cannot destructure non-tuple type in set: []u8`: read its `.ptr` and `.len`), and neither can a pointer (take apart `p.*`). **Not implemented:** assigning several variables without `set`, `(q, r) = divmod(17, 5)`: it is a syntax error.
 
 The whole value is computed before any variable is set, so `set a, b = (b, a)` swaps two variables.
 
@@ -5616,7 +5620,7 @@ When the elements are optionals themselves (`[]?*T`), the element of an index th
 
 `a ?? b` is the value of `a`, an optional or an index or range that is checked at run time, when it has one, and `b` otherwise: a fallback for an optional pointer, slice or host reference that is none, or for an index or range out of bounds. `b` is evaluated only when it is needed. The result is the plain, non-optional type, and `b` has to be a value of it. For an optional pointer, `b` may be an integer constant, which is an address there as anywhere a pointer is wanted ([2.5](#25-pointer-types)): with `p: ?*u32`, `p ?? 64` is the address 64 when `p` is none.
 
-`??` binds more loosely than every other operator, and its left side is a postfix expression: a name, a call, an index, a range, a member, or anything in parentheses. So `xs[i] ?? 0 + 1` is `xs[i] ?? (0 + 1)`, and an operator on the left needs parentheses: `(xs[i] ?? 0) == 0`. It does not chain: `a ?? b ?? c` is a syntax error. To try one value after another, group to the right: in `a ?? (b ?? c)`, `b ?? c` is the fallback of `a`. Grouped to the left, `(a ?? b) ?? c` has nothing left to resolve, as `a ?? b` is not an optional.
+`??` binds more loosely than every other operator, and its left side is a postfix expression: a name, a call, an index, a range, a member, or anything in parentheses. So `xs[i] ?? 0 + 1` is `xs[i] ?? (0 + 1)`, and an operator on the left needs parentheses: `(xs[i] ?? 0) == 0`. So does a prefix operator or a cast on the left: `&cells[i] ?? &spare[0]` is a syntax error, and `(&cells[i]) ?? &spare[0]` is the address of the element, or of `spare[0]` where `i` is out of range. It does not chain: `a ?? b ?? c` is a syntax error. To try one value after another, group to the right: in `a ?? (b ?? c)`, `b ?? c` is the fallback of `a`. Grouped to the left, `(a ?? b) ?? c` has nothing left to resolve, as `a ?? b` is not an optional.
 
 <!-- spec:begin compile -->
 
@@ -5833,7 +5837,7 @@ func value(x: i32) -> i32 => get(&x)
 
 <!-- spec:end -->
 
-Write `&` only before a literal, an element, or a value that lies in memory. Before a value that is already a pointer it is accepted and gives that pointer, not the address of a cell holding it (`&p`, with `p` a pointer variable, is `p`): a known bug, and the rule for it is undecided, so do not write it. A string is already its address: `&"abc"` is the string's own constant `*[3]u8` ([String Literals](#string-literals)), not a writable copy; write `mut "abc"` for that. A cast binds tighter than `&` ([Precedence](#precedence)): `&p[1] as [*]u8` takes the address of `p[1] as [*]u8`; write `(&p[1]) as [*]u8`.
+Write `&` only before a literal, an element, or a value that lies in memory. Before a value that is already a pointer it is accepted and gives that pointer, not the address of a cell holding it (`&p`, with `p` a pointer variable, is `p`): a known bug, and the rule for it is undecided, so do not write it. A string is already its address, so `&` before one is not needed. `let p = &"abc"` is the string's own constant `*[3]u8` ([String Literals](#string-literals)), not a writable copy (write `mut "abc"` for that). Where a pointer is wanted, `&"abc"` is refused (`cannot assign *[3]u8 to [3]u8`, a known bug): write `"abc"`. A cast binds tighter than `&` ([Precedence](#precedence)): `&p[1] as [*]u8` takes the address of `p[1] as [*]u8`; write `(&p[1]) as [*]u8`.
 
 ### 4.8 Slice/Range Syntax
 
@@ -6274,7 +6278,7 @@ A `for` binds one variable, `for x in xs`, or two, `for i, x in xs`: the index f
 
 #### Counting
 
-`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`, or `... not f64` for a float), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that counts up from 0 while it is below the count, so a negative count runs the loop zero times. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A count that is a variable gives `i` no range, a ranged one too: with `n: u32#4`, `for i in n` makes `i` a plain `u32`. To index with it, count to the constant and stop at the variable, `for i in 4 { break when i >= n ... }`, where `i` is a `u32#4`. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`. A count computed from constants with operators should be its value; the compiler takes the number furthest from zero among its operands instead (a known bug, [Comptime Literal Promotion](#comptime-literal-promotion)). So `for k in n / 4` with `def n = 8` gives `k` the range `u32#8`, and `two[k]` on a `*[2]u32` is refused. A negative count whose largest operand is positive, such as `2 - 3`, runs as the `u32` 4294967295 with `i` taken as a `u32#3`, so an index that range claims to prove is read past the array with no check. Write a constant count as a literal, a `.len`, or a `def` whose value is a literal (`def half = 4`).
+`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`, or `... not f64` for a float), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that counts up from 0 while it is below the count, so a negative count runs the loop zero times. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A count that is a variable gives `i` no range, a ranged one too: with `n: u32#4`, `for i in n` makes `i` a plain `u32`. To index with it, count to the constant and stop at the variable, `for i in 4 { break when i >= n ... }`, where `i` is a `u32#4`. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`. A count computed from constants with operators should be its value; the compiler takes the number furthest from zero among its operands instead (the number [Comptime Literal Promotion](#comptime-literal-promotion) checks; for a count, a known bug). So `for k in n / 4` with `def n = 8` gives `k` the range `u32#8`, and `two[k]` on a `*[2]u32` is refused. A negative count whose largest operand is positive, such as `2 - 3`, runs as the `u32` 4294967295 with `i` taken as a `u32#3`, so an index that range claims to prove is read past the array with no check. Write a constant count as a literal, a `.len`, or a `def` whose value is a literal (`def half = 4`).
 
 There is no range form: `for i in 2..10` is a syntax error. Count from 0 and add the start, or loop over the elements of a range of an array or slice ([4.8](#48-slicerange-syntax)). A count loop has one variable; with two, `for i, j in n`, the first is never set (a known bug).
 
@@ -6653,13 +6657,7 @@ test "when" {
 
 #### Defer
 
-`defer expr` runs `expr` when the enclosing block exits, by any path: falling off
-its end, `break` or `continue` (which run the blocks they leave, up to the loop
-body), or `return` (which runs every open block). Deferred expressions run
-newest first, and only those reached before the exit run. The enclosing block is
-the innermost `{ ... }`: a function body, a branch, a loop body (so a `defer`
-there runs at the end of each pass) or a match arm. A body written with `=>` holds
-no statement, so no `defer`.
+`defer expr` runs `expr` when the enclosing block exits, by any path: falling off its end, `break` or `continue` (which run the blocks they leave, up to the loop body), or `return` (which runs every open block). Deferred expressions run newest first, and only those reached before the exit run. The enclosing block is the innermost `{ ... }`: a function body, a branch, a loop body (so a `defer` there runs at the end of each pass) or a match arm. A body written with `=>` holds no statement, so no `defer`.
 
 <!-- spec:begin compile -->
 
@@ -6720,30 +6718,13 @@ test "deferred expressions run at exit, newest first" {
 
 <!-- spec:end -->
 
-- The deferred expression is evaluated when the block exits, not when `defer`
-  runs: `defer note(d)` notes `d` as it is at exit.
-- A `return` computes its value first; deferred expressions run after, and the
-  value is returned unchanged. With named results, `return value` does not
-  assign them, so a deferred expression reads them as they were. A trailing
-  expression's value is stored in them before deferred expressions run.
-- A deferred expression that assigns a named result changes what the caller
-  gets at some exits and not at others (a known bug, until one rule is chosen).
-  At a bare `return` (`return when c` too) the named results are read before
-  the deferred expressions run; at the end of the body, after a trailing value
-  too, they are read after. So with `defer if n > 3 { n = 3 }`, a body that ends
-  with `n = k` returns 3 for a `k` of 5, and the same body with a last `return`
-  returns 5. Do not assign a named result in a deferred expression.
-- `defer` takes an expression, most often a call, and drops its value. An `if`
-  defers a choice made at exit, `defer if dirty { flush() }`, and its blocks may
-  hold statements. An assignment is a statement, so `defer x = 0` is a syntax
-  error.
-- A deferred expression can't `return`, or `break` or `continue` a loop outside
-  it (`cannot return from inside a deferred expression`, `cannot break out of a
-  deferred expression`). A loop inside it can use `break` and `continue` as usual.
-- A trap is not an exit of a block: it ends the whole call into wasm, and no
-  deferred expression runs ([9.7](#97-traps)).
-- Deferred code is emitted inline at each exit. There is no runtime cost and no
-  extra wasm features.
+- The deferred expression is evaluated when the block exits, not when `defer` runs: `defer note(d)` notes `d` as it is at exit.
+- A `return` computes its value first; deferred expressions run after, and the value is returned unchanged. With named results, `return value` does not assign them, so a deferred expression reads them as they were. A trailing expression's value is stored in them before deferred expressions run.
+- A deferred expression that assigns a named result changes what the caller gets at some exits and not at others (a known bug). At a bare `return` (`return when c` too) the named results are read before the deferred expressions run; at the end of the body, after a trailing value too, they are read after. So with `defer if n > 3 { n = 3 }`, a body that ends with `n = k` returns 3 for a `k` of 5, and the same body with a last `return` returns 5. Do not assign a named result in a deferred expression.
+- `defer` takes an expression, most often a call, and drops its value. An `if` defers a choice made at exit, `defer if dirty { flush() }`, and its blocks may hold statements. An assignment is a statement, so `defer x = 0` is a syntax error.
+- A deferred expression can't `return`, or `break` or `continue` a loop outside it (`cannot return from inside a deferred expression`, `cannot break out of a deferred expression`). A loop inside it can use `break` and `continue` as usual.
+- A trap is not an exit of a block: it ends the whole call into wasm, and no deferred expression runs ([9.7](#97-traps)).
+- Deferred code is emitted inline at each exit. There is no runtime cost and no extra wasm features.
 
 Its main use is freeing what a block allocates, on every way out of it. With a bump allocator that is a mark taken on the way in and reset on the way out, as the library's `stack` module (`lib/stack.ents`) is used:
 
@@ -7475,7 +7456,7 @@ When a file is checked without the files it imports (the editor's web worker, a 
 
 `export` before a declaration gives it a name outside the module. What can be exported is a function (`func`, also `inline func`), a global, the memory ([7.3](#73-memory-declarations)), and a generic function or generic type, which other source modules can then import. `data`, `def`, `type` and an import cannot be exported (a syntax error): a module shares data through a function or a global that holds its address.
 
-The export name is the declaration's own name, and `"memory"` for the memory. `export "name"` before the declaration gives another name, any string; the declaration keeps its own name in the module. Each export name is used once in a module. Any two exports of one name are refused at the second, whether two functions share the name or `export "f"` gives a function another one's name (``export name 'f' is used twice: give one an explicit name, as in export "f_u32" func k(...)``), so functions that share a name are exported under names of their own:
+The export name is the declaration's own name, and `"memory"` for the memory. `export "name"` before the declaration gives another name, any string (a name with a double quote, a backslash or a character outside ASCII is written into the module unescaped and does not assemble, a known bug that holds for the names an import writes too); the declaration keeps its own name in the module. Each export name is used once in a module. Any two exports of one name are refused at the second, whether two functions share the name or `export "f"` gives a function another one's name (``export name 'f' is used twice: give one an explicit name, as in export "f_u32" func k(...)``), so functions that share a name are exported under names of their own:
 
 <!-- spec:begin compile -->
 
@@ -7568,7 +7549,7 @@ test "nearest" {
 
 The host is trusted to pass values of the declared types. Nothing is checked or masked where a value comes in: a `u8` parameter given 300 is 300 in the function, and a `u32#6` parameter given 7 is 7, though the checker took it to be below 6 ([Ranged Integers](#ranged-integers)). A plain host type is the exception, checked for null ([2.13](#213-host-references)). An exported function that takes a many-pointer (`[*]T`) is warned of, `exported function parameter 'p' uses [*] many-pointer — consider []u8 slice for a safe API`: the host can pass any address and no length, where a slice carries its length.
 
-An exported global is a mutable wasm global, which the host can read and write; one of several values is one wasm global per value, named `name_part` as a parameter is (`size_w`, `order_ptr` and `order_len` for a slice, `pos_0` and `pos_1` for a tuple exported as `"pos"`). A global imported from the host is an immutable wasm global.
+An exported global is a mutable wasm global, which the host can read and write; one of several values is one wasm global per value, named `name_part` as a parameter is (`size_w`, `order_ptr` and `order_len` for a slice, `pos_0` and `pos_1` for a tuple exported as `"pos"`). A part's name is not checked against the module's other export names: `export global size: (w: u32, h: u32)` beside an `export func size_w()` passes the check, and the module does not validate (a known bug). A global imported from the host is an immutable wasm global.
 
 #### Starting and running
 
@@ -7678,7 +7659,7 @@ Rules:
 2. `comptime` is only written in the parameter list of a named function declared with `func` at module level, and in the signature a source import writes for such a function ([7.1](#71-imports)). Every parameter of such a function has a name.
 3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host (`generic function 'larger' must be called`). It can only be called. Its name is unique in its module.
 4. A type parameter's name is its own: it is not the name of a type the module declares, before or after the function, and no two parameters of the function share a name.
-5. A generic function's parameter list is checked where it is declared, whether or not anything calls it: the rules above, what a comptime parameter may be (a type, an integer type or a function type, [8.9](#89-not-in-this-version)), the case of each comptime parameter's name ([8.6](#86-comptime-function-parameters), [8.7](#87-comptime-value-parameters)), and that a comptime parameter does not have a def's name. Everything else is checked when the function is instantiated, with its comptime arguments filled in, and not before: its body, and the types its signature names. One that is never called is checked for its parameter list only, and nothing is emitted for it; any other mistake in it, such as an unknown type in its signature (`x: Nope`) or an unknown name in its body, is reported once something calls it, in that instance ([8.3](#83-requirements)).
+5. A generic function's parameter list is checked where it is declared, whether or not anything calls it: the rules above, what a comptime parameter may be (a type, an integer type or a function type, [8.9](#89-not-implemented)), the case of each comptime parameter's name ([8.6](#86-comptime-function-parameters), [8.7](#87-comptime-value-parameters)), and that a comptime parameter does not have a def's name. Everything else is checked when the function is instantiated, with its comptime arguments filled in, and not before: its body, and the types its signature names. One that is never called is checked for its parameter list only, and nothing is emitted for it; any other mistake in it, such as an unknown type in its signature (`x: Nope`) or an unknown name in its body, is reported once something calls it, in that instance ([8.3](#83-requirements)).
 
 `comptime` is a reserved word.
 
@@ -7787,7 +7768,7 @@ test "inferred calls" {
 
    Type aliases are transparent, as everywhere.
 3. **Untyped literals never decide.** `7`, `0.5` and `[1, 2, 3]` have no type of their own; they take the type the parameter turns out to have. A literal with a type written on it (`7:u8`) is typed and can decide. A tuple decides by the parts of it that are typed, and its literals decide nothing: with `p: (T, T)`, `keep((i, 1))` for an `i: u32` gives `T = u32`, and the `1` is then a `u32`; `keep((1, 2))` decides nothing. So does a struct literal, `(x: i, y: 1)`, and `&` of either. An array literal is untyped as a whole, even where an element has a type.
-4. **Every other argument is an ordinary argument.** Once `T` is decided, the remaining arguments are checked against the now-concrete parameter types exactly as for a hand-written function: the same implicit conversions, the same errors.
+4. **Every other argument is an ordinary argument.** Once `T` is decided, the remaining arguments are checked against the parameter types with `T` filled in, exactly as for a hand-written function: the same implicit conversions, the same errors.
 5. **Nothing is guessed.** If no argument decides a type parameter the call is an error and the type has to be written. That includes a call whose only candidates are literals (`larger(1, 2)`) and a type parameter that appears only in the result (`zero()`): the expected type of the call is not used. An argument that has an error of its own decides nothing either, and the call adds no error to it.
 6. **`()` is never a type argument.** It has no values, so there is nothing to pass for a parameter of that type. An argument without a value, such as a call of a function that returns nothing, is an error where it stands: `argument 1 of 'id' has no value`.
 
@@ -8138,7 +8119,7 @@ test "one vector for each element type" {
 
 **A fixed array for T.** With `T = [3]i32`, `[*]mut T` is `[*]mut [3]i32`, a table ([Nesting](#nesting)): each element is a pointer to its row, so code that uses an element as a `T`, as `get` above does, is refused in that instance, with a note that names the rule. For rows packed in place, make the element a struct with an array field, `Vec((cells: [3]i32))`: it lies in place, 12 bytes at a stride of 12, and `v.ptr[i].cells[2]` is one load (the array lies in place, and is indexed there as the `*[3]i32` it is, by any index: [Fixed Arrays in Place](#fixed-arrays-in-place)); for pointers to rows that lie elsewhere, say so, `Vec(*[3]i32)`.
 
-A generic type may refer to itself through a pointer or a slice, directly or through another generic type, as any type may (2.8): `List(u32)` inside the body of `List(u32)` is the type being made.
+A generic type may refer to itself through a pointer or a slice, directly or through another generic type, as any type may ([Types That Refer to Themselves](#types-that-refer-to-themselves)): `List(u32)` inside the body of `List(u32)` is the type being made.
 
 ```ents
 func List(comptime T: type) -> type => (head: T, next: ?*List(T))
@@ -8158,7 +8139,7 @@ generic type 'List' refers to itself with a type argument that grows, List(*T): 
 
 Generic types that hold one another in a chain are not that, however long the chain. The compiler stops at 1000 levels, with `generic types are nested more than 1000 deep in 'G0(u8)'` at the application that was written.
 
-**Errors in the body.** A generic type is checked as its applications, as a generic function is as its instances (8.3): an error its arguments make in its body is the application's, reported at its line in the body, once for each application, with the message naming it (`..., in Ring(0, u32)`, [8.7](#87-comptime-value-parameters)) and the use it was required from as a note. That application is then no type, and what is made of it says nothing more; a module that applied another module's generic type is told at its use, `Ring(0, u32) cannot be applied: ...`. A name the body uses that nothing declares is a mistake of the declaration, said once, where it is, when the type is first applied. Where one application inside another has an error, goes too deep or makes the type too large, the whole type is cut short there, with that one error.
+**Errors in the body.** A generic type is checked as its applications, as a generic function is as its instances ([8.3](#83-requirements)): an error its arguments make in its body is the application's, reported at its line in the body, once for each application, with the message naming it (`..., in Ring(0, u32)`, [8.7](#87-comptime-value-parameters)) and the use it was required from as a note. That application is then no type, and what is made of it says nothing more; a module that applied another module's generic type is told at its use, `Ring(0, u32) cannot be applied: ...`. A name the body uses that nothing declares is a mistake of the declaration, said once, where it is, when the type is first applied. Where one application inside another has an error, goes too deep or makes the type too large, the whole type is cut short there, with that one error.
 
 ### 8.6 Comptime Function Parameters
 
@@ -8504,7 +8485,9 @@ The two forms of [8.2](#82-calling-a-generic-function) hold, with value paramete
 | `*[n]T` | a `[4]u32` held in registers | nothing: it has no address ([2.4](#24-fixed-arrays-value-type)), so it matches no pointer, as for `T`; written out, `sum(4, v)` is `argument 2: cannot assign [4]u32 to *[4]u32` |
 | `*[n * 2]u8` | `*[8]u8` | nothing: only a length that is the name alone decides (`[n * 2] does not decide n`, or, for a length in a generic type's body, `'Grid(n, T)' has no length that is n alone`) |
 | `u32#n` | a `u32#8` | nothing: a range is dropped, as it is for `T` |
-| `*[n]u32` | an array literal `[1, 2, 3]` | nothing: literals never decide (8.2, rule 3) |
+| `*[n]u32` | an array literal `[1, 2, 3]` | nothing: literals never decide ([8.2](#how-type-parameters-are-inferred), rule 3) |
+
+A number found this way is checked against the parameter's type, as a written one is: with `first(comptime n: u8, p: *[n]u8)`, `first(big)` for a `big` of 300 bytes is `cannot infer n for 'first': the argument gives 300, which is not a u8`.
 
 Every other argument is then an ordinary argument of the instance, with the same conversions and the same errors: `join("hel", "lo", big)` below, with a `big` of 8 bytes, is `argument 3: cannot assign *mut [8]u8 to *mut [5]u8`. Nothing is guessed: a value parameter that no argument decides has to be written, and so do the other type and value parameters of that call, since there is no form that writes some of them.
 
@@ -8626,7 +8609,7 @@ test "the ring keeps the last eight" {
 
 `n` is at most 2^31, the values of a `u32#2147483649`: `r.head` is below `n` and `r.count` at most `n`, so `r.head + r.count` never wraps, and `% n` finds the right slot (`Ring(3000000000, u8)` is `argument 1 of 'Ring': cannot assign int(3000000000) to u32#2147483649`). `Ring(8, u32)` is the struct `(head: u32#8, count: u32, items: *mut [8]u32)`, as any generic type is its body. Its value arguments are computed before it is applied, so `Ring(8, u32)`, `Ring(4 + 4, u32)` and the struct written out are one type; `Ring(16, u32)` is another because its body is (`cannot assign *mut Ring(16, u32) to *mut Ring(8, u32)`). As for type parameters, a value the body does not use makes no difference: with `func Tagged(comptime n: u32) -> type => (id: u32)`, `Tagged(4)` and `Tagged(5)` are one type. `log.push(x)` finds `n` and `T` from `log` by the body of `Ring`, through `items: *mut [n]T`; `head: u32#n` decides nothing. A generic type none of whose fields has a length that is `n` alone, such as `(len: u32#n, ptr: [*]T)` or one with `items: *[n + 1]T`, decides nothing about `n`: the call is `cannot infer n for 'f': 'P(n, T)' has no length that is n alone; write the comptime arguments`, and is written with all of them, `f(4, u32, p)`. It builds a value like any generic type, `Ring(8, u32)(0, 0, cells)`, and a method call writes its comptime arguments after the receiver, `log.push(8, u32, x)`, which is `push(8, u32, log, x)`.
 
-Its value arguments are compile-time constants, as an explicit argument of a generic function is ([above](#calling-a-function-with-value-parameters)), checked against the parameter's type the same way: a `def` declared further down is a number there too, `Small(300)` is `argument 1 of 'Small': cannot assign int(300) to u8` for a `comptime n: u8`, and so are the typed `Small(4:u32)` and `Small(sizeof(u64))`, as `cannot assign u32 to u8`. An error that a number makes in the body is the application's (8.5): with `Ring(0, u32)`, `head: u32#0` is `range bound must be at least 1: u32#0 has no values, in Ring(0, u32)`, with the use as a note. A body that applies its type to numbers that grow is stopped: by the parameter's type, as in `func Grow(comptime n: u32) -> type => (a: u32, next: *Grow(n * 2))` (`argument 1 of 'Grow': cannot assign int(4294967296) to u32, in Grow(2147483648)`), or at 1000 levels, with `next: *Grow(n + 1)` (`generic types are nested more than 1000 deep in 'Grow(1)'`).
+Its value arguments are compile-time constants, as an explicit argument of a generic function is ([above](#calling-a-function-with-value-parameters)), checked against the parameter's type the same way: a `def` declared further down is a number there too, `Small(300)` is `argument 1 of 'Small': cannot assign int(300) to u8` for a `comptime n: u8`, and so are the typed `Small(4:u32)` and `Small(sizeof(u64))`, as `cannot assign u32 to u8`. An error that a number makes in the body is the application's ([8.5](#85-generic-types)): with `Ring(0, u32)`, `head: u32#0` is `range bound must be at least 1: u32#0 has no values, in Ring(0, u32)`, with the use as a note. A body that applies its type to numbers that grow is stopped: by the parameter's type, as in `func Grow(comptime n: u32) -> type => (a: u32, next: *Grow(n * 2))` (`argument 1 of 'Grow': cannot assign int(4294967296) to u32, in Grow(2147483648)`), or at 1000 levels, with `next: *Grow(n + 1)` (`generic types are nested more than 1000 deep in 'Grow(1)'`).
 
 A generic type may also hold its array in place, as a field: `Buf(n, T)` below is a length and the `n` elements themselves, not a pointer to them.
 
@@ -8798,7 +8781,7 @@ Such an error is found when the program is checked: also in a library that was c
 
 The containers of [`lib/`](../lib/README.md) are written this way: `lib/vec.ents`, `lib/set.ents`, `lib/map.ents` and `lib/sort.ents` on the bump stack of `lib/stack.ents`, and `lib/fixedvec.ents`, `lib/ring.ents` and `lib/bits.ents` with their capacity in the type. [`examples/containers/main.ents`](../examples/containers/main.ents) uses them for a type of its own.
 
-### 8.9 Not in This Version
+### 8.9 Not Implemented
 
 **Not implemented:** none of these is in the language. Each is refused with an error, which keeps its syntax free to be given a meaning.
 
@@ -8867,7 +8850,7 @@ The rules of this chapter refuse these too; they are not features to come:
 
 ### 8.10 How This Is Compile-Time Evaluation
 
-A name bound at compile time is declared at module level (`def n = 64` binds a number, `type Pt = (...)` a type, `func f` a function), or it is a comptime parameter, bound anew by each call of a generic. A compile-time value is a type, a function or a number. The table puts the two kinds of binding side by side; its last column is not in the language ([8.9](#89-not-in-this-version)):
+A name bound at compile time is declared at module level (`def n = 64` binds a number, `type Pt = (...)` a type, `func f` a function), or it is a comptime parameter, bound anew by each call of a generic. A compile-time value is a type, a function or a number. The table puts the two kinds of binding side by side; its last column is not in the language ([8.9](#89-not-implemented)):
 
 | Bound at compile time | Declared at module level | Given to a generic | Not implemented |
 |---|---|---|---|
@@ -8931,7 +8914,7 @@ test "data is laid out from address 8, one entry after another" {
 
 A pointer compares with a number as its address ([4.3](#43-comparison-operators)), so the test needs no cast.
 
-### 9.1 Stack vs Memory Allocation
+### 9.1 Registers and Memory
 
 Where a value lives follows from how it is declared:
 
@@ -9776,7 +9759,7 @@ cannot assign u32 to u8
 
 A program compiles to one wasm module, and the language promises how: what each type is held as ([9.3](#93-wasm-type-mapping)), how it lies in memory ([9.6](#96-structs-and-slices-in-memory)), and the instructions of this chapter. Nothing runs that the source does not show, but for the few functions of [11.5](#115-functions-the-compiler-adds) and the null check of a plain host reference where it enters the module ([2.13](#213-host-references)).
 
-The compiler targets WebAssembly 2.0 engines, and writes only what a program needs of them: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied or `memcpy`, `memset` or `memzero` is called, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with neither a range fill or copy nor a memory builtin no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of 11.1 and 11.2, and SIMD is a future addition ([15](#15-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`.
+The compiler targets WebAssembly 2.0 engines, and writes only what a program needs of them: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied or `memcpy`, `memset` or `memzero` is called, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with neither a range fill or copy nor a memory builtin no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of [11.1](#111-widening-instructions-implicit) and [11.2](#112-narrowing-instructions-explicit-cast), and SIMD is a future addition ([15](#15-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`.
 
 ### 11.1 Widening Instructions (implicit)
 
@@ -10217,6 +10200,7 @@ The functions of the first two take `comptime n: u32, comptime T: type` before t
 | `m.insert(k, v) -> bool` | Sets `k`'s value; true where `k` is new |
 | `m.lookup(k) -> ?*mut V` | A pointer to `k`'s value, to change in place, or none; valid until the next insert |
 | `m.get_or(k, fallback) -> V` | `k`'s value, or `fallback` where it has none |
+| `m.count` | How many keys it holds |
 
 A set or a map calls `hash(k) -> u32` and `eq(a, b) -> bool` for its key type. `set.ents` has them for `u32`, `u64`, `i32`, `i64`, `[]u8` and `[]u32`. A key is copied into the set by value: a slice key is the slice, not its bytes, which must stay where they are while the set is used. For a key type of its own, a program writes `hash` and `eq` in the module that makes the set, and the set's generic code calls them ([8.8](#88-generics-across-modules)):
 
