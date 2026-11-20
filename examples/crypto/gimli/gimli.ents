@@ -1,46 +1,38 @@
-// Gimli permutation and Gimli-Hash
-// Based on the Gimli specification by Bernstein, Kölbl, Lucks, et al.
-// State is 384 bits: 12 x 32-bit words arranged as a 3x4 matrix
+// Gimli, a 384-bit permutation, and Gimli-Hash, the hash built on it, after
+// the specification by Bernstein, Kölbl, Lucks, Massolino, Mendel, Nawaz,
+// Schneider, Schwabe, Standaert, Todo and Viguier (https://gimli.cr.yp.to).
+//
+// The state is 12 u32 words, a matrix of 3 rows and 4 columns: word
+// 4 * row + column. This module declares no memory, so that a program that
+// imports it declares its own (as pow.ents does).
 
-// Gimli permutation: state is permuted in place
-// `state` is a pointer to 12 u32 words (48 bytes)
-export "gimli" func gimli(state:*mut[12]u32) {
-  let round:u32 = 24
+def rounds = 24
+def round-constant = 0x9e377900
 
+// The Gimli permutation, in place
+export func gimli(state: *mut [12]u32) {
+  let round: u32 = rounds              // 24 down to 1, as the specification counts
   loop {
-    // Apply SP-box to each column
+    // The SP-box, on each column
     for col in 4 {
       let x = state[col] <<< 24
       let y = state[col + 4] <<< 9
       let z = state[col + 8]
-
-      // Non-linear mixing
       state[col + 8] = x ^ (z << 1) ^ ((y & z) << 2)
       state[col + 4] = y ^ x ^ ((x | z) << 1)
       state[col] = z ^ y ^ ((x & y) << 3)
     }
 
-    // Linear layer: swap words based on round number
+    // The linear layer, on the first row: a small swap with the round
+    // constant every fourth round, a big swap two rounds after each
     match round & 3 {
       0 => {
-        // Small swap: swap columns 0,1 and 2,3
-        let s = state[0]
-        state[0] = state[1]
-        state[1] = s
-        let s2 = state[2]
-        state[2] = state[3]
-        state[3] = s2
-        // Add round constant
-        state[0] ^= 0x9e377900 | round
+        let small: [4]u32 = [state[1] ^ (round-constant | round), state[0], state[3], state[2]]
+        state[0..4] = small
       }
       2 => {
-        // Big swap: swap columns 0,2 and 1,3
-        let t = state[0]
-        state[0] = state[2]
-        state[2] = t
-        let t2 = state[1]
-        state[1] = state[3]
-        state[3] = t2
+        let big: [4]u32 = [state[2], state[3], state[0], state[1]]
+        state[0..4] = big
       }
       _ => {}
     }
@@ -50,26 +42,80 @@ export "gimli" func gimli(state:*mut[12]u32) {
   }
 }
 
-test "gimli" {
-  data tv_state = mut [0:u32; 12]
+// Gimli-Hash takes in and gives out 16 bytes per permutation: the rate, the
+// first 16 bytes of the state
+def rate = 16
 
-  func zero_state() {
-    for i in 12 { tv_state[i] = 0:u32 }
+// The sponge state of gimli-hash
+data hash_state = mut [0:u32; 12]
+
+// Gimli-Hash of input, as many bytes of it as output holds: an extendable
+// output, so a longer output starts with the bytes of a shorter one
+export func gimli-hash(input: []u8, output: []mut u8) {
+  hash_state[..] = 0
+
+  // Absorb each full block, then the last bytes and the padding
+  let src = input.ptr
+  let len = input.len
+  while len >= rate {
+    hash_state.u128[0] ^= src.u128[0]
+    gimli(hash_state)
+    src += rate
+    len -= rate
   }
+  for i in len {
+    hash_state.u8[i] ^= src[i]
+  }
+  hash_state.u8[len] ^= 0x1f
+  hash_state.u8[rate - 1] ^= 0x80
+  gimli(hash_state)
 
-  test "spec vector" {
-    for i in 12 {
+  // Squeeze a block at a time, permuting between blocks
+  let out = output.ptr
+  let left = output.len
+  while left >= rate {
+    out.u128[0] = hash_state.u128[0]
+    out += rate
+    left -= rate
+    if left > 0 {
+      gimli(hash_state)
+    }
+  }
+  for i in left {
+    out[i] = hash_state.u8[i]
+  }
+}
+
+test "gimli" {
+  import "../../../lib/text" "starts_with" func starts_with(s: []u8, prefix: []u8) -> bool
+
+  data tv_state = mut [0:u32; 12]
+  data digest = mut [0:u8; 48]
+
+  // The specification's test input: word i is i * i * i + i * 0x9e3779b9
+  func spec_input() {
+    for i in tv_state.len {
       tv_state[i] = i * i * i + i * 0x9e3779b9
     }
+  }
+
+  // Whether digest starts with the bytes of want
+  func digest_is(want: []u8) -> bool => starts_with(digest, want)
+
+  test "spec vector" {
+    spec_input()
     gimli(tv_state)
     assert tv_state[0] == 0xba11c85a
     assert tv_state[1] == 0x91bad119
     assert tv_state[2] == 0x380ce880
     assert tv_state[3] == 0xd24c2c68
+    assert tv_state[4] == 0x3eceffea
+    assert tv_state[8] == 0x84b673f0
+    assert tv_state[11] == 0xf41bb8d6
   }
 
   test "all zero input" {
-    zero_state()
+    tv_state[..] = 0
     gimli(tv_state)
     assert tv_state[0] == 0x6467d8c4
     assert tv_state[1] == 0x07dcf83b
@@ -78,9 +124,7 @@ test "gimli" {
   }
 
   test "double permute" {
-    for i in 12 {
-      tv_state[i] = i * i * i + i * 0x9e3779b9
-    }
+    spec_input()
     gimli(tv_state)
     gimli(tv_state)
     assert tv_state[0] == 0xea223492
@@ -88,53 +132,22 @@ test "gimli" {
     assert tv_state[2] == 0x68314a61
     assert tv_state[3] == 0x9165986e
   }
-}
 
-// Global state for Gimli-Hash.
-// This is a reserved area of linear memory to hold the state.
-data hash_state = mut [0:u32; 12]
-
-// Gimli-Hash: absorb input and squeeze variable-length output (XOF)
-// Uses rate of 16 bytes (128 bits)
-export func gimli-hash(input:[]u8, output:[]mut u8) {
-  // Initialize state to zero
-  memzero(hash_state)
-  let len = input.len
-  let input_ptr = input.ptr
-
-  // Absorb phase: process 16-byte blocks
-  while len >= 16 {
-    hash_state.u128[0] ^= input_ptr.u128[0]
-    gimli(hash_state)
-    input_ptr += 16
-    len -= 16
+  test "hash vectors" {
+    gimli-hash("", digest[..32])
+    assert digest_is(x"b0634b2c0b082aedc5c0a2fe4ee3adcfc989ec05de6f00addb04b3aaac271f67")
+    gimli-hash("Speak words we can all understand!", digest[..32])
+    assert digest_is(x"8dd4d132059b72f8e8493f9afb86c6d86263e7439fc64cbb361fcbccf8b01267")
+    gimli-hash("There's plenty for the both of us, may the best Dwarf win.", digest[..32])
+    assert digest_is(x"4afb3ff784c7ad6943d49cf5da79facfa7c4434e1ce44f5dd4b28f91a84d22c8")
   }
 
-  // Absorb remaining bytes with padding
-  for i in len {
-    hash_state.u8[i] ^= input_ptr[i]
-  }
-  hash_state.u8[len] ^= 0x1f
-  hash_state.u8[15] ^= 0x80
-
-  gimli(hash_state)
-
-  // Squeeze phase: extract requested bytes
-  let out_ptr = output.ptr
-  let remaining = output.len
-
-  // Extract full 16-byte blocks
-  while remaining >= 16 {
-    out_ptr.u128[0] = hash_state.u128[0]
-    out_ptr += 16
-    remaining -= 16
-    if remaining > 0 {
-      gimli(hash_state)
-    }
-  }
-
-  // Extract final partial block
-  for i in remaining {
-    out_ptr[i] = hash_state.u8[i]
+  test "a longer output extends a shorter one" {
+    gimli-hash("Speak words we can all understand!", digest)
+    assert digest_is(x"8dd4d132059b72f8e8493f9afb86c6d86263e7439fc64cbb361fcbccf8b01267cb04b0abcdcc71546a44f889b2196524")
+    digest[..] = 0
+    gimli-hash("Speak words we can all understand!", digest[..20])
+    assert digest_is(x"8dd4d132059b72f8e8493f9afb86c6d86263e743")
+    assert digest[20] == 0
   }
 }
