@@ -1,4 +1,4 @@
-// Sequential Proof-of-Work using Gimli hash chains
+// Sequential proof-of-work using Gimli hash chains
 // Each iteration depends on the previous state, so the work
 // cannot be parallelized across SIMD lanes or GPU cores.
 //
@@ -7,7 +7,8 @@
 //   2. Server runs solve(challenge, iterations), caches the result
 //   3. Server sends challenge + iterations to client
 //   4. Client runs solve(challenge, iterations)
-//   5. Server reads hash_state from exported memory and compares
+//   5. Server reads the state from exported memory, at the address state()
+//      returns, and compares
 //
 // Tradeoffs vs nonce search (pow.ents):
 //   + Immune to SIMD/GPU parallelization (each step depends on the last)
@@ -20,38 +21,37 @@
 // The native-vs-wasm gap is inherent to any browser PoW scheme.
 // Sequential chaining eliminates the much larger GPU/SIMD multiplier.
 
-import "../gimli/gimli" "gimli" func gimli(state:*mut[12]u32)
+import "../gimli/gimli" "gimli" func gimli(state: *mut [12]u32)
 
 export "mem" memory
 
 data hash_state = mut [0:u32; 12]
 
-// Absorb 32-byte challenge and iterate Gimli sequentially.
-// Result is left in hash_state, readable via exported memory.
+// Absorbs the 32-byte challenge, two 16-byte blocks of the rate, then
+// permutes the state `iterations` more times, each permutation after the
+// last. The state is left in hash_state.
 export func solve(challenge: *[32]u8, iterations: u32) {
-  for i in 12 {
-    hash_state[i] = 0:u32
-  }
-
-  // Absorb challenge: two 16-byte rate blocks
+  hash_state[..] = 0
   hash_state.u128[0] = challenge.u128[0]
   gimli(hash_state)
   hash_state.u128[0] ^= challenge.u128[1]
   gimli(hash_state)
 
-  // Sequential work
-  let j: u32 = 0
-  while j < iterations {
+  for i in iterations {
     gimli(hash_state)
-    j += 1
   }
 }
 
+// Where solve leaves the state, 12 u32 words, for the host to read
+export func state() -> *[12]u32 => hash_state
+
 test "sequential pow" {
   data challenge = mut [0:u8; 32]
+  data chained = mut [0:u32; 12]
 
+  // A fixed challenge: byte i is i * 7 + 13
   func set_challenge() {
-    for i in 32 {
+    for i in challenge.len {
       challenge[i] = (i * 7 + 13) as u8
     }
   }
@@ -77,8 +77,32 @@ test "sequential pow" {
     set_challenge()
     solve(challenge, 100)
     let a = hash_state[0]
-    challenge[0] ^= 1 as u8
+    challenge[0] ^= 1
     solve(challenge, 100)
     assert hash_state[0] != a
+  }
+
+  test "each iteration is one more permutation" {
+    set_challenge()
+    solve(challenge, 0)
+    chained[..] = hash_state
+    for i in 3 {
+      gimli(chained)
+    }
+    solve(challenge, 3)
+    for i in hash_state.len {
+      assert hash_state[i] == chained[i]
+    }
+  }
+
+  test "the state after 100 iterations" {
+    set_challenge()
+    solve(challenge, 100)
+    assert state() == hash_state
+    assert hash_state[0] == 0x65d147fe
+    assert hash_state[1] == 0xbdbe9353
+    assert hash_state[2] == 0x18dfc1aa
+    assert hash_state[3] == 0x739d7468
+    assert hash_state[11] == 0x6e13830b
   }
 }
