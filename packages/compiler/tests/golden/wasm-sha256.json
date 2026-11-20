@@ -16,7 +16,7 @@
   "examples/crypto/ed25519/scalar.ents": "0d5516830d0d33b41fa1bdff43e0f5d345349c22b3970ec87f200aaa1139ae4e",
   "examples/crypto/gimli/gimli.ents": "fd94531986e3a7ebc88e395b65418e6140910747178a95dbe8c351bcd4069d13",
   "examples/crypto/pow/pow-sequential.ents": "6cc221dcc998629b668c8ded7b57ecc877156e47a5d29a5bd1184e883236f486",
-  "examples/crypto/pow/pow.ents": "2265531bb6ecbd53caf91ce0e3d238955d0aab725ebbad799877afba41146fdb",
+  "examples/crypto/pow/pow.ents": "30b5f0843c890d7d3f6134497de6bffa0342a00b2fb705c4aa6c78b0ec22dcac",
   "examples/crypto/sha1/sha1.ents": "4f19fd3041cb29f8e7518af6c28bfc55e89ea5451b401c4b2db3a88f558e8499",
   "examples/crypto/sha256/sha256.ents": "4a41e783e48486a023f4ae12bd8fa82ff86a0b78ee450bda5367029dc2f48148",
   "examples/crypto/sha512/sha512-256.ents": "709c58f7abc4108ab8e1354f3bd2364db4b9b7fdd4fa8875a422e6ac72cc619f",
