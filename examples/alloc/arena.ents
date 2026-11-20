@@ -1,5 +1,6 @@
-// Arena allocator built on top of the heap allocator
-// Bumps within a malloc'd chunk; reset drops back to start.
+// An arena on top of the heap allocator: it takes one chunk from malloc and
+// hands out pieces of it by bumping a cursor. arena_reset frees every piece at
+// once; arena_free gives the chunk back to the heap.
 
 import "./heap" (
   "malloc" func malloc(size: u32) -> u32
@@ -7,32 +8,38 @@ import "./heap" (
   "heap_used" func heap_used() -> u32
 )
 
-global chunk_ptr: u32 = 0
+// What malloc and arena_alloc give when the bytes asked for do not fit.
+def no_room = 0xFFFFFFFF:u32
+
+global chunk_ptr: u32 = 0         // the chunk's offset into the heap, 0 for none
 global chunk_size: u32 = 0
 global cursor: u32 = 0
 
-// Create the arena with a chunk of `size` bytes from the heap
+// Gives the arena a chunk of size bytes from the heap, in place of the one it
+// had. When the heap has no room for it, the arena has no chunk.
 export func arena_init(size: u32) {
-  // Free old chunk if any
-  if chunk_ptr != 0 { free(chunk_ptr) }
-  chunk_ptr = malloc(size)
+  arena_free()
+  let p = malloc(size)
+  return when p == no_room
+  chunk_ptr = p
   chunk_size = size
-  cursor = 0
 }
 
-// Allocate `size` bytes from the arena. Returns offset or 0xFFFFFFFF on overflow.
+// size bytes of the arena: their offset into the heap, or no_room when they do
+// not fit in what is left of the chunk. cursor is never past chunk_size, so
+// chunk_size - cursor does not wrap, where cursor + size can.
 export func arena_alloc(size: u32) -> (ptr: u32) {
-  return 0xFFFFFFFF when cursor + size > chunk_size
+  return no_room when size > chunk_size - cursor
   ptr = chunk_ptr + cursor
   cursor += size
 }
 
-// Reset the arena — all allocations become invalid, but chunk stays
+// Frees every allocation; the arena keeps its chunk.
 export func arena_reset() {
   cursor = 0
 }
 
-// Free the arena's backing chunk entirely
+// Gives the chunk back to the heap.
 export func arena_free() {
   if chunk_ptr != 0 { free(chunk_ptr) }
   chunk_ptr = 0
@@ -40,17 +47,17 @@ export func arena_free() {
   cursor = 0
 }
 
-// How many bytes used in the arena
+// How many bytes of the arena are allocated.
 export func arena_used() -> u32 => cursor
 
-// Re-export heap_used for testing
+// How many bytes of the heap are in use, for the host to check.
 export func heap_bytes_used() -> u32 => heap_used()
 
 test "init alloc and reset" {
   arena_init(1024)
   assert arena_used() == 0
   let p1 = arena_alloc(64)
-  assert p1 != 0xFFFFFFFF
+  assert p1 != no_room
   assert arena_used() == 64
   let p2 = arena_alloc(128)
   assert p2 == p1 + 64
@@ -62,12 +69,29 @@ test "init alloc and reset" {
 test "overflow" {
   arena_init(100)
   arena_alloc(90)
-  assert arena_alloc(20) == 0xFFFFFFFF
+  assert arena_alloc(20) == no_room
 }
 
 test "arena free releases heap" {
   arena_init(512)
-  assert heap_bytes_used() >= 512
+  let held = heap_bytes_used()
+  assert held >= 512
   arena_free()
   assert arena_used() == 0
+  assert heap_bytes_used() == held - 512
+}
+
+test "an allocation that would wrap the cursor does not fit" {
+  arena_init(1024)
+  arena_alloc(64)
+  assert arena_alloc(0xFFFFFFC0) == no_room
+  assert arena_used() == 64
+}
+
+test "with no room in the heap, the arena has no chunk" {
+  arena_init(70000)
+  assert arena_alloc(1) == no_room
+  assert arena_alloc(1) == no_room
+  arena_free()
+  assert heap_bytes_used() == 0
 }

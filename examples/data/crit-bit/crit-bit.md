@@ -102,7 +102,7 @@ XOR  = 0000 0110
 
 ## Example: Building a Tree
 
-Let's insert keys "a", "aa", "b" step by step.
+The keys "a", "aa" and "b", inserted in turn:
 
 ### Step 1: Insert "a"
 
@@ -120,14 +120,11 @@ Find critical bit between "a" and "aa":
 "a"  = 0x61 (then implicit null/end)
 "aa" = 0x61 0x61
 
-The difference is at byte 1 (second byte exists vs doesn't).
-Critical bit = 8 (first bit of byte 1)
+The keys differ in byte 1, which "aa" has and "a" does not (read as 0).
 
-For "a":  bit 8 is implicitly 0 (no byte there, treat as 0)
-For "aa": bit 8 is 0 (MSB of 0x61)
-
-Wait - both are 0! Let's look further:
-  bit 9:  "a"=0, "aa"=1  <- first difference!
+Bit 8, the first bit of byte 1, is 0 for both: "a" has no byte there,
+and 0x61 starts with a 0 bit.
+Bit 9 is the first that differs: "a" = 0, "aa" = 1.
 
 Critical bit = 9
 ```
@@ -412,9 +409,37 @@ Compare as:
      These differ at bit 9
 ```
 
+Reading a missing byte as 0x00 makes "a" and "a\x00" the same key. A tree that
+must tell them apart reads the length too, as `crit-bit.ents` does (below).
+
 ### Empty Keys
 
-The empty string "" can be handled specially, or treated as having all bits = 0.
+The empty string "" can be handled specially, or treated as having all bits = 0
+(which again makes it the same as "\x00").
+
+## In crit-bit.ents
+
+[`crit-bit.ents`](crit-bit.ents) follows Bernstein's code, which records the
+critical bit differently from the bit positions above, and adapts it so that a
+key may be a prefix of another that goes on with zero bytes:
+
+- **Symbols, not bytes.** Byte i of a key is read as a 9-bit symbol: 0x100 | the
+  byte where i is below the key's length, and 0 past its end. So "a" and
+  "a\x00" differ at symbol 1 (0 against 0x100), and the end of a key sorts
+  before every byte: "" < "\x00" < "a" < "aa".
+- **An internal node** holds the byte index where its two subtrees first differ,
+  and `otherbits`, a 9-bit mask with every bit set but the critical one. The
+  direction of a symbol c is (1 + (otherbits | c)) >> 9: 1 where c has the
+  critical bit, 0 where it does not, with no branch.
+- **Nodes** are 32-bit words of one data block, `pool`: an internal node takes
+  four (byte, otherbits, child 0, child 1), an external node two (the key's
+  address and length). A node reference is its word index shifted left one
+  bit, with the low bit set for an external node, the tagging above; 0 is the
+  empty tree.
+- **Insert** finds the first symbol where the key differs from its best match,
+  keeps the highest differing bit (`0x80000000:u32 >> clz(diff)`), and walks
+  down again from the root to the first node that tests a later byte, or a
+  lower bit of the same byte: Phase 3 above, in bytes and masks.
 
 ## References
 
