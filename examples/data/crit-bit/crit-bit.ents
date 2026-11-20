@@ -34,19 +34,22 @@
  *
  *   1. Traverse tree to find the best candidate leaf
  *   2. Compare new key with candidate to find first differing bit position
- *   3. Walk back up to find correct insertion point (where crit-bit fits in order)
+ *   3. Walk down again from the root to the insertion point: above the first
+ *      node that tests a later bit
  *   4. Insert new internal node at that position with new leaf as child
  *
- * Example tree storing {"a", "aa", "b"}:
+ * Example tree storing {"a", "aa", "b"}, with bits numbered from the high bit
+ * of the first byte and a missing byte read as zero bits:
  *
- *              [bit 0]           <- root: test bit 0
+ *              [bit 6]           <- root: test bit 6
  *              /     \
- *         [bit 7]     "b"        <- left subtree, right is leaf "b"
+ *         [bit 9]     "b"        <- left subtree, right is leaf "b"
  *         /     \
  *       "a"     "aa"             <- leaves
  *
- * Bit 0 distinguishes 'a' (0x61) from 'b' (0x62) in their high bits.
- * Bit 7 distinguishes "a" from "aa" (presence of second byte).
+ * Bit 6 is the first bit where 'a' (0x61 = 0110 0001) and 'b' (0x62 =
+ * 0110 0010) differ. Bit 9, the second bit of the second byte, separates "a"
+ * (no second byte) from "aa" (0x61). crit-bit.md works through this example.
  *
  * References:
  *   - D.J. Bernstein's crit-bit paper: https://cr.yp.to/critbit.html
@@ -64,9 +67,10 @@
 // bit set except the critical one. The direction for symbol c is then
 // (1 + (otherbits | c)) >> 9: 1 if c has the critical bit, 0 if not.
 //
-// Nodes live in `pool`, addressed in 32-bit words. A node reference is the
-// word index shifted left one bit, with the low bit set for an external node;
-// 0 is the empty tree.
+// Nodes live in `pool`, addressed in 32-bit words through its u32 view, which
+// checks no index: every index is that of a node, which alloc keeps inside the
+// pool. A node reference is the word index shifted left one bit, with the low
+// bit set for an external node; 0 is the empty tree.
 //
 //   internal node, 4 words: byte, otherbits, child 0, child 1
 //   external node, 2 words: key ptr, key len
@@ -75,54 +79,63 @@
 // reused; `clear` empties the tree and the pool.
 
 data pool = mut [0:u8; 65536]
-def pool_words = 16384:u32
 global used: u32 = 1  // word 0 stays unused, so no node has reference 0
 global root: u32 = 0
 global count: u32 = 0
 
 // A node of `words` words, or 0 when the pool is full.
 func alloc(words: u32) -> u32 {
-  return 0 when used + words > pool_words
+  return 0 when used + words > pool.len / sizeof(u32)
   let at = used
   used += words
   return at
 }
 
-func is_external(node: u32) -> bool => (node & 1) == 1
+func is_external(node: u32) -> bool => node & 1 == 1
 func index(node: u32) -> u32 => node >> 1
 
-// Symbol `i` of a key: 0x100 | key[i], or 0 past the end.
-func symbol(ptr: u32, len: u32, i: u32) -> u32 {
-  return 0 when i >= len
-  let bytes = ptr as [*]u8
-  return 0x100 | (bytes[i] as u32)
+// The key an external node holds.
+func key_of(leaf: u32) -> []u8 {
+  let q = index(leaf)
+  return (pool.u32[q] as [*]u8, pool.u32[q + 1])
 }
+
+// Symbol i of a key: 0x100 | key[i], or 0 past the end.
+func symbol(key: []u8, i: u32) -> u32 => if let b = key[i] { 0x100 | b:u32 } else { 0 }
 
 func direction(otherbits: u32, c: u32) -> u32 => (1 + (otherbits | c)) >> 9
 
-// The address (word index) of the child slot an internal node takes for a key.
-func child_slot(node: u32, ptr: u32, len: u32) -> u32 {
+// The first index at which the symbols of two keys differ: at most the longer
+// length, where only one of them, or for equal keys neither, has a byte.
+func first_difference(a: []u8, b: []u8) -> u32 {
+  let end = max(a.len, b.len)
+  for i in end {
+    return i when symbol(a, i) != symbol(b, i)
+  }
+  return end
+}
+
+// The word index of the child slot an internal node takes for a key.
+func child_slot(node: u32, key: []u8) -> u32 {
   let q = index(node)
-  let c = symbol(ptr, len, pool.u32[q])
+  let c = symbol(key, pool.u32[q])
   return q + 2 + direction(pool.u32[q + 1], c)
 }
 
 // The external node a search for this key ends at (the tree must be nonempty).
-func best_match(ptr: u32, len: u32) -> u32 {
+func best_match(key: []u8) -> u32 {
   let p = root
   while !is_external(p) {
-    p = pool.u32[child_slot(p, ptr, len)]
+    p = pool.u32[child_slot(p, key)]
   }
   return p
 }
 
-func leaf_equals(leaf: u32, ptr: u32, len: u32) -> bool {
-  let q = index(leaf)
-  return false when pool.u32[q + 1] != len
-  let a = pool.u32[q] as [*]u8
-  let b = ptr as [*]u8
-  for i in len {
-    return false when a[i] != b[i]
+// Whether two keys hold the same bytes.
+func same(a: []u8, b: []u8) -> bool {
+  return false when a.len != b.len
+  for i, c in a {
+    return false when c != b.ptr[i]        // b is as long as a
   }
   return true
 }
@@ -130,52 +143,37 @@ func leaf_equals(leaf: u32, ptr: u32, len: u32) -> bool {
 // Whether the tree holds this key.
 export func contains(key: []u8) -> bool {
   return false when root == 0
-  return leaf_equals(best_match(key.ptr as u32, key.len), key.ptr as u32, key.len)
+  return same(key_of(best_match(key)), key)
 }
 
 // Add a key. Returns false when it was already there or the pool is full.
 export func insert(key: []u8) -> bool {
-  let ptr = key.ptr as u32
-  let len = key.len
-
   if root == 0 {
     let only = alloc(2)
     return false when only == 0
-    pool.u32[only] = ptr
-    pool.u32[only + 1] = len
+    pool.u32[only] = key.ptr as u32
+    pool.u32[only + 1] = key.len
     root = (only << 1) | 1
     count = 1
     return true
   }
 
-  // Find the first symbol where the key differs from its best match.
-  let best = index(best_match(ptr, len))
-  let best_ptr = pool.u32[best]
-  let best_len = pool.u32[best + 1]
-  let newbyte: u32 = 0
-  let diff: u32 = 0
-  let end = if len > best_len { len } else { best_len }
-  while newbyte <= end {
-    diff = symbol(ptr, len, newbyte) ^ symbol(best_ptr, best_len, newbyte)
-    break when diff != 0
-    newbyte += 1
-  }
+  // The first symbol where the key differs from its best match.
+  let best = key_of(best_match(key))
+  let newbyte = first_difference(key, best)
+  let diff = symbol(key, newbyte) ^ symbol(best, newbyte)
   return false when diff == 0
 
-  // Keep only the highest differing bit, then invert to get otherbits.
-  diff |= diff >> 1
-  diff |= diff >> 2
-  diff |= diff >> 4
-  diff |= diff >> 8
-  let newotherbits = (diff & ~(diff >> 1)) ^ 0x1FF
-  let newdirection = direction(newotherbits, symbol(best_ptr, best_len, newbyte))
+  // Every bit but the highest that differs.
+  let newotherbits = (0x80000000:u32 >> clz(diff)) ^ 0x1FF
+  let newdirection = direction(newotherbits, symbol(best, newbyte))
 
   let leaf = alloc(2)
   return false when leaf == 0
   let node = alloc(4)
   return false when node == 0
-  pool.u32[leaf] = ptr
-  pool.u32[leaf + 1] = len
+  pool.u32[leaf] = key.ptr as u32
+  pool.u32[leaf + 1] = key.len
   pool.u32[node] = newbyte
   pool.u32[node + 1] = newotherbits
   pool.u32[node + 3 - newdirection] = (leaf << 1) | 1
@@ -189,7 +187,7 @@ export func insert(key: []u8) -> bool {
     let q = index(p)
     break when pool.u32[q] > newbyte
     break when pool.u32[q] == newbyte && pool.u32[q + 1] > newotherbits
-    slot = child_slot(p, ptr, len)
+    slot = child_slot(p, key)
     p = pool.u32[slot]
   }
   pool.u32[node + 2 + newdirection] = p
@@ -204,8 +202,6 @@ export func insert(key: []u8) -> bool {
 
 // Remove a key. Returns false when it wasn't there.
 export func delete(key: []u8) -> bool {
-  let ptr = key.ptr as u32
-  let len = key.len
   return false when root == 0
 
   // Track the slot holding p and the internal node above it.
@@ -216,10 +212,10 @@ export func delete(key: []u8) -> bool {
   while !is_external(p) {
     parent_slot = slot
     parent = p
-    slot = child_slot(p, ptr, len)
+    slot = child_slot(p, key)
     p = pool.u32[slot]
   }
-  return false when !leaf_equals(p, ptr, len)
+  return false when !same(key_of(p), key)
 
   count -= 1
   if parent == 0 {
@@ -240,14 +236,12 @@ export func delete(key: []u8) -> bool {
 export func size() -> u32 => count
 
 // The smallest key (the tree must be nonempty).
-export func first() -> (key: []u8) {
+export func first() -> []u8 {
   let p = root
   while !is_external(p) {
     p = pool.u32[index(p) + 2]
   }
-  let q = index(p)
-  key.ptr = pool.u32[q] as [*]u8
-  key.len = pool.u32[q + 1]
+  return key_of(p)
 }
 
 // Empty the tree and its node pool.
@@ -309,7 +303,7 @@ test "first is the smallest key" {
   assert insert("figs")
   let k = first()
   assert k.len == 3
-  assert (k[0] ?? 0) == 0x66
+  assert (k[0] ?? 0) == 'f'
 }
 
 test "many keys, half deleted" {
