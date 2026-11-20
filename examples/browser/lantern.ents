@@ -216,8 +216,8 @@ def dead-pause = 0.6     // after the dark takes you, before start counts
 def clear-pause = 1.6    // how long a lit room shows before the next
 def light-radius = 4.5   // the reach of the lantern's light
 
-// The lantern: where it is, how fast it goes, the way it faces, what is
-// left of a dash, and how long until the next.
+// The lantern: where it is, how fast it goes, the way it faces (a vector
+// 1 long), what is left of a dash, and how long until the next.
 type Player = (x: f32, y: f32, vx: f32, vy: f32, fx: f32, fy: f32, dash: f32, cool: f32)
 // A wisp younger than `forming` is harmless and drawn as a ring.
 type Wisp = (x: f32, y: f32, vx: f32, vy: f32, age: f32, alive: bool)
@@ -360,21 +360,19 @@ func update-player(dt: f32, buttons: u32, ix: f32, iy: f32) {
   if (buttons & btn-up) != 0 { iy -= 1.0 }
   if (buttons & btn-down) != 0 { iy += 1.0 }
   let len = sqrt(ix * ix + iy * iy)
+  // It faces the way it is steered, as a vector 1 long whatever the tilt,
+  // so that every dash goes at dash-speed. It walks at most at walk-speed.
+  if len > 0.2 {
+    p.fx = ix / len
+    p.fy = iy / len
+  }
   if len > 1.0 {
     ix /= len
     iy /= len
   }
-  // It faces the way it is steered; (ix, iy) is at most 1 long already.
-  if len > 0.2 {
-    p.fx = ix
-    p.fy = iy
-  }
   p.cool = max(p.cool - dt, 0.0)
   p.dash = max(p.dash - dt, 0.0)
   if pressed(buttons, btn-dash) && p.cool == 0.0 {
-    let f = sqrt(p.fx * p.fx + p.fy * p.fy)
-    p.fx /= max(f, 0.001)
-    p.fy /= max(f, 0.001)
     p.dash = dash-time
     p.cool = cooldown
     sound(520.0, 140.0, 0.16, 0.12, 1)
@@ -727,9 +725,11 @@ test "a time step or a stick that is out of range counts as none" {
   assert abs(world.clock - before - 0.05) < 0.0001
 }
 
-test "a dash is as fast on a diagonal as straight" {
+test "a dash is as fast on a diagonal, or with the stick part way, as straight" {
   func speed() -> f32 => sqrt(world.player.vx * world.player.vx + world.player.vy * world.player.vy)
 
+  // Each dash is checked on its second frame, after the input held has set
+  // the facing again.
   init(1)
   frame(16.0, 800.0, 600.0, btn-start, 0.0, 0.0)
   frame(16.0, 800.0, 600.0, btn-right | btn-dash, 0.0, 0.0)
@@ -739,6 +739,10 @@ test "a dash is as fast on a diagonal as straight" {
   frame(16.0, 800.0, 600.0, btn-left | btn-down | btn-dash, 0.0, 0.0)
   frame(16.0, 800.0, 600.0, btn-left | btn-down | btn-dash, 0.0, 0.0)
   assert abs(speed() - dash-speed) < 0.001
+  for i in 60 { frame(16.0, 800.0, 600.0, 0, 0.0, 0.0) }
+  frame(16.0, 800.0, 600.0, btn-dash, 0.5, 0.0)
+  frame(16.0, 800.0, 600.0, btn-dash, 0.5, 0.0)
+  assert speed() == dash-speed
 }
 
 test "walls, the space off the map and NaN are solid" {

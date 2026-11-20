@@ -31,11 +31,11 @@ Or play it at <https://creationix.github.io/encantis/lantern/>: the [Pages workf
 
 | File | Bytes | gzip | brotli |
 | --- | ---: | ---: | ---: |
-| `lantern.wasm` | 7069 | 3414 | 3229 |
+| `lantern.wasm` | 7008 | 3397 | 3165 |
 | `starter.wasm` | 966 | 586 | 551 |
 | `host.js` (minified) | 3819 | 1813 | 1623 |
 | `index.html` | 675 | 442 | 293 |
-| **Lantern, its three files** | **11563** | **5669** | **5145** |
+| **Lantern, its three files** | **11502** | **5652** | **5081** |
 | **starter, its three files** | **5460** | **2841** | **2467** |
 
 Memory: one 64 KiB page, fixed. Lantern's data (its pools, the command list, its levels and its strings) reaches byte 37173 of it, and after an hour of play (216,000 frames, starting over each time the game ends) the memory is still that one page: the module has no `memory.grow`. The busiest frame asks for 167 of its 1024 commands.
