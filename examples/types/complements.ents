@@ -53,7 +53,7 @@ test "~0 is all ones in the type it meets" {
   assert high_nibble() == 0xf0
 }
 
-test "in a signed type it is the negative number it always was" {
+test "in a signed type it is the negative number with those bits" {
   assert signed(-1) == -4
   assert signed(7) == 4
 }
