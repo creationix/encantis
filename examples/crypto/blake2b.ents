@@ -1,13 +1,14 @@
-// BLAKE2b-256 cryptographic hash function
-// RFC 7693 - https://tools.ietf.org/html/rfc7693
-// Implements both 256-bit and 512-bit variants
-// Returns hash value directly as scalar via type punning from internal state
+// BLAKE2b (RFC 7693), with digests of 32 bytes (BLAKE2b-256) and 64 bytes
+// (BLAKE2b-512). The state is eight u64 words in memory, and a digest comes
+// back as one wide integer read from it through a type view, h.u256[0] or
+// h.u512[0], whose little-endian bytes are the digest's bytes.
 
-memory 2
+def block-size = 128
 
-// BLAKE2b IV - from SHA-512 fractional parts of square roots of first 8 primes
+// SHA-512's initial hash value: the first 64 bits of the fractional parts of
+// the square roots of the first 8 primes
 data iv = [
-  0x6a09e667f3bcc908: u64,
+  0x6a09e667f3bcc908:u64,
   0xbb67ae8584caa73b,
   0x3c6ef372fe94f82b,
   0xa54ff53a5f1d36f1,
@@ -17,175 +18,183 @@ data iv = [
   0x5be0cd19137e2179
 ]
 
-// BLAKE2b-256 parameters packed into first IV word XOR
-// digest_length=32, key_length=0, fanout=1, depth=1, rest=0
-def param-256 = 0x0000000001010020: u64
-def param-512 = 0x0000000001010040: u64
+// The parameter block's first word but for the digest's length in bytes,
+// its low byte: no key, fanout 1, depth 1
+def params = 0x01010000:u64
 
-// Sigma permutation schedule (12 rounds × 16 indices, from RFC 7693)
+// The order in which each round takes the 16 words of a block. Rounds 10
+// and 11 take them as rounds 0 and 1 do.
 data sigma: *[12x16]u8#16 = [
-  x"00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f",
-  x"0e 0a 04 08 09 0f 0d 06 01 0c 00 02 0b 07 05 03",
-  x"0b 08 0c 00 05 02 0f 0d 0a 0e 03 06 07 01 09 04",
-  x"07 09 03 01 0d 0c 0b 0e 02 06 05 0a 04 00 0f 08",
-  x"09 00 05 07 02 04 0a 0f 0e 01 0b 0c 06 08 03 0d",
-  x"02 0c 06 0a 00 0b 08 03 04 0d 07 05 0f 0e 01 09",
-  x"0c 05 01 0f 0e 0d 04 0a 00 07 06 03 09 02 0b 08",
-  x"0d 0b 07 0e 0c 01 03 09 05 00 0f 04 08 06 02 0a",
-  x"06 0f 0e 09 0b 03 00 08 0c 02 0d 07 01 04 0a 05",
-  x"0a 02 08 04 07 06 01 05 0f 0b 09 0e 03 0c 0d 00",
-  x"00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f",
-  x"0e 0a 04 08 09 0f 0d 06 01 0c 00 02 0b 07 05 03"
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+  [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4],
+  [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
+  [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13],
+  [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
+  [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11],
+  [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
+  [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5],
+  [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3]
 ]
 
-// Global working state (8 x u64 = 64 bytes, first 32 bytes serve as u256 output)
-data h = mut [0: u64; 8]
+data h = mut [0:u64; 8]      // the state
+data cv = mut [0:u64; 16]    // compress's working vector
+data pad = mut [0:u64; 16]   // the last block, filled out with zeros
 
-// Global working vector for compress (16 x u64 = 128 bytes)
-data cv = mut [0: u64; 16]
-
-// Global padding buffer (16 x u64 = 128 bytes)
-data pad = mut [0: u64; 16]
-
-// G mixing function - the core of BLAKE2
-// Mixes four state words with two message words
+// G: mixes two message words, x and y, into four words of the working vector
 func g(v: *mut [16]u64, a: u32#16, b: u32#16, c: u32#16, d: u32#16, x: u64, y: u64) {
   v[a] += v[b] + x
-  v[d] = (v[d] ^ v[a]) <<< 32
+  v[d] = (v[d] ^ v[a]) >>> 32
   v[c] += v[d]
-  v[b] = (v[b] ^ v[c]) <<< 40
+  v[b] = (v[b] ^ v[c]) >>> 24
   v[a] += v[b] + y
-  v[d] = (v[d] ^ v[a]) <<< 48
+  v[d] = (v[d] ^ v[a]) >>> 16
   v[c] += v[d]
-  v[b] = (v[b] ^ v[c]) <<< 1
+  v[b] = (v[b] ^ v[c]) >>> 63
 }
 
-// Compress one 128-byte block into the state
-// t_lo/t_hi = 128-bit byte counter, last = finalization flag
-func compress(hs: *mut [8]u64, block: *[16]u64, t_lo: u64, t_hi: u64, last: u32) {
-  // Initialize working vector cv[0..15] from state and IV
-  cv.u512[0] = hs.u512[0] // cv[0..7] = hs[0..7]
-  cv.u512[1] = iv.u512[0] // cv[8..15] = iv[0..7]
-  cv[12] ^= t_lo // XOR with lower 64 bits of counter
-  cv[13] ^= t_hi // XOR with upper 64 bits of counter
-  if last != 0 {
-    cv[14] ^= 0xffffffffffffffff: u64
+// F: mixes one block into the state. count is the number of bytes hashed
+// with this block, and last marks the final block.
+func compress(block: *[16]u64, count: u64, last: bool) {
+  cv[0..8] = h
+  cv[8..16] = iv
+  // The count is 128 bits, in cv[12] and cv[13]. A slice holds fewer than
+  // 2^32 bytes, so its high 64 bits are 0 and cv[13] stays as it is.
+  cv[12] ^= count
+  if last {
+    cv[14] = ~cv[14]
   }
 
-  // 12 rounds of mixing
   for round in 12 {
     let s = sigma[round]
 
-    // Column step
+    // The columns
     g(cv, 0, 4, 8, 12, block[s[0]], block[s[1]])
     g(cv, 1, 5, 9, 13, block[s[2]], block[s[3]])
     g(cv, 2, 6, 10, 14, block[s[4]], block[s[5]])
     g(cv, 3, 7, 11, 15, block[s[6]], block[s[7]])
 
-    // Diagonal step
+    // The diagonals
     g(cv, 0, 5, 10, 15, block[s[8]], block[s[9]])
     g(cv, 1, 6, 11, 12, block[s[10]], block[s[11]])
     g(cv, 2, 7, 8, 13, block[s[12]], block[s[13]])
     g(cv, 3, 4, 9, 14, block[s[14]], block[s[15]])
   }
 
-  // XOR the two halves of cv into hs
-  hs.u512[0] ^= cv.u512[0] ^ cv.u512[1]
+  // h[i] ^= cv[i] ^ cv[i + 8] for each i, as one 512-bit xor
+  h.u512[0] ^= cv.u512[0] ^ cv.u512[1]
 }
 
-// BLAKE2b-256: Hash arbitrary data to 256 bits
+// Hashes input into h, for a digest of digest-len bytes
+func blake2b(input: []u8, digest-len: u64) {
+  h[..] = iv
+  h[0] ^= params | digest-len
+
+  // Every block but the last, which is compressed as the last even when it
+  // is whole
+  let ptr = input.ptr
+  let remaining = input.len
+  let count: u64 = 0
+  while remaining > block-size {
+    count += block-size
+    compress(ptr as *[16]u64, count, false)
+    ptr += block-size
+    remaining -= block-size
+  }
+
+  pad[..] = 0
+  memcpy(pad, ptr, remaining) // the loop leaves at most block-size bytes
+  compress(pad, count + remaining, true)
+}
+
+// BLAKE2b-256: the first 32 bytes of the state
+func blake2b-256(input: []u8) -> u256 {
+  blake2b(input, 32)
+  return h.u256[0]
+}
+
+// BLAKE2b-512: all 64 bytes of the state
+func blake2b-512(input: []u8) -> u512 {
+  blake2b(input, 64)
+  return h.u512[0]
+}
+
 test "blake2b" {
-  data tv_empty = ""
-  data tv_abc = "abc"
+  data result-buf = mut [0:u8; 32]
 
-  data result_buf = mut [0: u8; 32]
-
-  func get_hash_byte(input: []u8, idx: u32) -> u8 {
-    let hash = blake2b-256(input)
-    // Store u256 result to memory for byte access
-    result_buf.u256[0] = hash
-    return result_buf[idx] ?? 0
+  // Byte idx of the BLAKE2b-256 digest of input, through memory
+  func hash-byte(input: []u8, idx: u32#32) -> u8 {
+    result-buf.u256[0] = blake2b-256(input)
+    return result-buf[idx]
   }
 
   test "256 empty first bytes" {
     // BLAKE2b-256("") = 0e5751c026e543b2...
-    assert get_hash_byte(tv_empty, 0) == 0x0e
-    assert get_hash_byte(tv_empty, 1) == 0x57
-    assert get_hash_byte(tv_empty, 2) == 0x51
-    assert get_hash_byte(tv_empty, 3) == 0xc0
+    assert hash-byte("", 0) == 0x0e
+    assert hash-byte("", 1) == 0x57
+    assert hash-byte("", 2) == 0x51
+    assert hash-byte("", 3) == 0xc0
   }
 
   test "256 deterministic" {
-    let h1 = blake2b-256(tv_empty)
-    let h2 = blake2b-256(tv_empty)
+    let h1 = blake2b-256("")
+    let h2 = blake2b-256("")
     assert h1 == h2
   }
 
   test "256 abc differs from empty" {
-    let empty = blake2b-256(tv_empty)
-    let abc = blake2b-256(tv_abc)
+    let empty = blake2b-256("")
+    let abc = blake2b-256("abc")
     assert empty != abc
   }
-}
 
-func blake2b-256(input: []u8) -> (hash: u256) {
-  // Initialize state with IV XOR parameters
-  h.u512[0] = iv.u512[0] // h[0..7] = iv[0..7]
-  h[0] ^= param-256
+  // Each digest read as the integer the functions return
+  data empty-256 = x"0e5751c026e543b2 e8ab2eb06099daa1 d1e5df47778f7787 faab45cdf12fe3a8"
+  data abc-256 = x"bddd813c63423972 3171ef3fee98579b 94964e3bb1cb3e42 7262c8c068d52319"
+  data empty-512 = x"786a02f742015903 c6c6fd852552d272 912f4740e1584761 8a86e217f71f5419 d25e1031afee5853 13896444934eb04b 903a685b1448b755 d56f701afe9be2ce"
+  data abc-512 = x"ba80a53f981c4d0d 6a2797b69f12f6e9 4c212f14685ac4b7 4b12bb6fdbffa2d1 7d87c5392aab792d c252d5de4533cc95 18d38aa8dbf1925a b92386edd4009923"
 
-  let ptr = input.ptr
-  let remaining = input.len
-  let t_lo: u64 = 0 // Byte counter (lower 64 bits)
-  let t_hi: u64 = 0 // Byte counter (upper 64 bits)
-
-  // Process all complete 128-byte blocks (except last)
-  while remaining > 128 {
-    t_lo += 128
-    if t_lo < 128 { t_hi += 1 } // Handle overflow
-    compress(h, ptr as *[16]u64, t_lo, t_hi, 0)
-    ptr += 128
-    remaining -= 128
+  test "256 known answers" {
+    assert blake2b-256("") == empty-256.u256[0]
+    assert blake2b-256("abc") == abc-256.u256[0]
   }
 
-  // Final block - pad with zeros
-  memset(pad, 0, 128)
-  memcpy(pad, ptr, remaining)
-
-  t_lo += remaining
-  if t_lo < remaining { t_hi += 1 }
-  compress(h, pad, t_lo, t_hi, 1)
-
-  // Return first 256 bits directly from h via type punning
-  hash = h.u256[0]
-}
-
-// BLAKE2b-512: Full 512-bit output
-func blake2b-512(input: []u8) -> (hash: u512) {
-  // Initialize state with IV XOR parameters
-  h.u512[0] = iv.u512[0] // h[0..7] = iv[0..7]
-  h[0] ^= param-512
-
-  let ptr = input.ptr
-  let remaining = input.len
-  let t_lo: u64 = 0
-  let t_hi: u64 = 0
-
-  while remaining > 128 {
-    t_lo += 128
-    if t_lo < 128 { t_hi += 1 }
-    compress(h, ptr as *[16]u64, t_lo, t_hi, 0)
-    ptr += 128
-    remaining -= 128
+  // RFC 7693, Appendix A
+  test "512 known answers" {
+    assert blake2b-512("") == empty-512.u512[0]
+    assert blake2b-512("abc") == abc-512.u512[0]
   }
 
-  // Final block - pad with zeros
-  memset(pad, 0, 128)
-  memcpy(pad, ptr, remaining)
+  // 112 bytes whose words 0 to 13 all differ: a round that takes two of
+  // them in the wrong order changes the digest
+  data m896-256 = x"90a0bcf5e5a67ac1 578c2754617994cf c248109275a809a0 721feebd1e918738"
+  data m896-512 = x"ce741ac5930fe346 811175c5227bb7bf cd47f42612fae46c 0809514f9e0e3a11 ee1773287147cdea eedff50709aa7163 41fe65240f4ad677 7d6bfaf9726e5e52"
 
-  t_lo += remaining
-  if t_lo < remaining { t_hi += 1 }
-  compress(h, pad, t_lo, t_hi, 1)
+  test "896 bit message" {
+    let m = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+    assert blake2b-256(m) == m896-256.u256[0]
+    assert blake2b-512(m) == m896-512.u512[0]
+  }
 
-  // Copy all 8 words to output
-  hash = h.u512[0]
+  // 128 bytes: one whole block, which is compressed as the last
+  data m1024-256 = x"dc8b3f85e59c45a9 2c02e5a698886a6f fc373cd421839432 611db7a5eb49f65b"
+  data m1024-512 = x"eec14c7e99a04020 bd2993f49237fca1 51d8e94b65b9f94b 6f26f01dc41fe3ae 1db81b10ba15ffc0 6d80630763004cfa 6488a29e55384ad1 07aa0f2df84d0d05"
+
+  test "one whole block" {
+    let m = "abcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnop"
+    assert blake2b-256(m) == m1024-256.u256[0]
+    assert blake2b-512(m) == m1024-512.u512[0]
+  }
+
+  // 200 bytes: a whole block, then a last block of 72
+  data zeros = [0:u8; 200]
+  data zeros-256 = x"c978e85c0d32724e d4550cc0901a10e5 412f3dcf29fd20ff e35a419f097dd113"
+  data zeros-512 = x"ebf901427c25273f ae72776171b82d3b ae6fdd9a037b232d 32f4f9ab81f3ea6b 38fc8eb2f9be5b39 3cb3aef824a8087f 5b685752d397ab58 af969da8aae40f9b"
+
+  test "two blocks" {
+    assert blake2b-256(zeros) == zeros-256.u256[0]
+    assert blake2b-512(zeros) == zeros-512.u512[0]
+  }
 }
