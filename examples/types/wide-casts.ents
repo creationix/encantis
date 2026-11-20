@@ -1,14 +1,16 @@
-// Casts between wide integers (i128 and up) and narrower ones, and a
-// function whose match arms all return.
+// Conversions between wide integers (i128 and up) and narrower ones: a
+// narrower integer widens to a wide one by itself, sign-extended if it is
+// signed and zero-extended if not, and a cast keeps a wide one's low bits.
+// And a function whose match arms all return.
 
 export func to_u8(a: u128) -> u8 => a as u8
 export func to_i8(a: u128) -> i8 => a as i8
 export func to_i16(a: i128) -> i16 => a as i16
-export func sum_wide(x: i64) -> i128 => (x + x) as i128
+export func sum_wide(x: i64) -> i128 => x + x       // an i64 sum, widened to the result
 func neg1() -> i64 => -1
-export func call_wide() -> i128 => neg1() as i128
+export func call_wide() -> i128 => neg1()
 export func hi_of(x: i64) -> i64 {
-  let w = (x + 0) as i256
+  let w: i256 = x + 0                               // a sum, not only a variable, sign-extends
   return (w >> 192) as i64
 }
 export func pick(x: i32) -> i32 {
@@ -35,11 +37,11 @@ test "match arms that all return" {
   assert pick(9) == 2
 }
 
-export func widen_u(a: u64) -> u128 => a as u128
+export func widen_u(a: u64) -> u128 => a
 export func narrow(a: u128) -> u64 => a as u64
 export func narrow32(a: u128) -> u32 => a as u32
 export func hi_s(a: i64) -> u64 {
-  let w = a as i128
+  let w: i128 = a
   return (w >> 64) as u64
 }
 test "widening and narrowing round trips" {
@@ -47,4 +49,5 @@ test "widening and narrowing round trips" {
   assert narrow32(widen_u(0x100000003)) == 3
   assert hi_s(-1) == 0xFFFFFFFFFFFFFFFF
   assert hi_s(5) == 0
+  assert (widen_u(0xFFFFFFFFFFFFFFFF) >> 64) as u64 == 0     // zero-extended
 }
