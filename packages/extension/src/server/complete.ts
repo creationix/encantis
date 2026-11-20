@@ -442,7 +442,9 @@ function members(text: string, dot: number, current: Source | null, parsed: Sour
   if (!type) return [];
 
   const items: CompletionItem[] = [];
-  const field = (label: string, detail: string, sort = '0') => items.push({ label, kind: CompletionItemKind.Field, detail, sortText: `${sort}${label}` });
+  const field = (label: string, detail: string, sort = '0') => {
+    items.push({ label, kind: CompletionItemKind.Field, detail, sortText: `${sort}${label}` });
+  };
   const t = unwrap(type);
   const inner = t.kind === 'pointer' ? unwrap(t.pointee) : t;
   if (inner.kind === 'tuple') {
