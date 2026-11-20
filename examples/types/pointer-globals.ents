@@ -38,6 +38,7 @@ export func total(n: u32) -> u32 {
 test "a global pointer is set in one function and indexed in others" {
   // 3 * (0 + 1 + 2 + 3) + (0 + 1 + 4 + 9)
   assert total(4) == 32
+  assert total(341) == 13333100      // the most that fit in space
 }
 
 test "a global pointer to structs reads and writes fields" {
