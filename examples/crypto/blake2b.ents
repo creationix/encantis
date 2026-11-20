@@ -105,7 +105,7 @@ func blake2b(input: []u8, digest-len: u64) {
   }
 
   pad[..] = 0
-  memcpy(pad, ptr, remaining)
+  memcpy(pad, ptr, remaining) // the loop leaves at most block-size bytes
   compress(pad, count + remaining, true)
 }
 
@@ -122,35 +122,31 @@ func blake2b-512(input: []u8) -> u512 {
 }
 
 test "blake2b" {
-  data tv_empty = ""
-  data tv_abc = "abc"
+  data result-buf = mut [0:u8; 32]
 
-  data result_buf = mut [0:u8; 32]
-
-  func get_hash_byte(input: []u8, idx: u32) -> u8 {
-    let hash = blake2b-256(input)
-    // Store u256 result to memory for byte access
-    result_buf.u256[0] = hash
-    return result_buf[idx] ?? 0
+  // Byte idx of the BLAKE2b-256 digest of input, through memory
+  func hash-byte(input: []u8, idx: u32#32) -> u8 {
+    result-buf.u256[0] = blake2b-256(input)
+    return result-buf[idx]
   }
 
   test "256 empty first bytes" {
     // BLAKE2b-256("") = 0e5751c026e543b2...
-    assert get_hash_byte(tv_empty, 0) == 0x0e
-    assert get_hash_byte(tv_empty, 1) == 0x57
-    assert get_hash_byte(tv_empty, 2) == 0x51
-    assert get_hash_byte(tv_empty, 3) == 0xc0
+    assert hash-byte("", 0) == 0x0e
+    assert hash-byte("", 1) == 0x57
+    assert hash-byte("", 2) == 0x51
+    assert hash-byte("", 3) == 0xc0
   }
 
   test "256 deterministic" {
-    let h1 = blake2b-256(tv_empty)
-    let h2 = blake2b-256(tv_empty)
+    let h1 = blake2b-256("")
+    let h2 = blake2b-256("")
     assert h1 == h2
   }
 
   test "256 abc differs from empty" {
-    let empty = blake2b-256(tv_empty)
-    let abc = blake2b-256(tv_abc)
+    let empty = blake2b-256("")
+    let abc = blake2b-256("abc")
     assert empty != abc
   }
 
@@ -171,8 +167,8 @@ test "blake2b" {
     assert blake2b-512("abc") == abc-512.u512[0]
   }
 
-  // 112 bytes: one block whose words 8 to 15 are not all zero, as no
-  // shorter input's are
+  // 112 bytes whose words 0 to 13 all differ: a round that takes two of
+  // them in the wrong order changes the digest
   data m896-256 = x"90a0bcf5e5a67ac1 578c2754617994cf c248109275a809a0 721feebd1e918738"
   data m896-512 = x"ce741ac5930fe346 811175c5227bb7bf cd47f42612fae46c 0809514f9e0e3a11 ee1773287147cdea eedff50709aa7163 41fe65240f4ad677 7d6bfaf9726e5e52"
 
@@ -180,6 +176,16 @@ test "blake2b" {
     let m = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
     assert blake2b-256(m) == m896-256.u256[0]
     assert blake2b-512(m) == m896-512.u512[0]
+  }
+
+  // 128 bytes: one whole block, which is compressed as the last
+  data m1024-256 = x"dc8b3f85e59c45a9 2c02e5a698886a6f fc373cd421839432 611db7a5eb49f65b"
+  data m1024-512 = x"eec14c7e99a04020 bd2993f49237fca1 51d8e94b65b9f94b 6f26f01dc41fe3ae 1db81b10ba15ffc0 6d80630763004cfa 6488a29e55384ad1 07aa0f2df84d0d05"
+
+  test "one whole block" {
+    let m = "abcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnop"
+    assert blake2b-256(m) == m1024-256.u256[0]
+    assert blake2b-512(m) == m1024-512.u512[0]
   }
 
   // 200 bytes: a whole block, then a last block of 72
