@@ -1,4 +1,5 @@
-// Integer type kitchen sink — exercises every integer type and operation
+// Every integer type, from u8 to u512: wrapping arithmetic, widening and
+// narrowing, loads and stores in memory, type views and bitwise operators.
 
 export "mem" memory
 
@@ -20,7 +21,7 @@ func widen_u32_u64(x: u32) -> u64 => x
 func narrow_u64_u32(x: u64) -> u32 => x as u32
 func narrow_u32_u8(x: u32) -> u8 => x as u8
 
-// === Heap storage ===
+// === Loads and stores in memory ===
 
 data buf_u8 = mut [0:u8; 16]
 data buf_u16 = mut [0:u16; 8]
@@ -28,20 +29,26 @@ data buf_u32 = mut [0:u32; 4]
 data buf_u64 = mut [0:u64; 2]
 data buf_u128 = mut [0:u128; 1]
 
-func store_u8(i: u32, v: u8) { buf_u8.u8[i] = v }
-func load_u8(i: u32) -> u8 => buf_u8.u8[i]
+// Each index is ranged by its buffer's length, so it needs no bounds check.
+func store_u8(i: u32#(buf_u8.len), v: u8) { buf_u8[i] = v }
+func load_u8(i: u32#(buf_u8.len)) -> u8 => buf_u8[i]
 
-func store_u16(i: u32, v: u16) { buf_u16.u16[i] = v }
-func load_u16(i: u32) -> u16 => buf_u16.u16[i]
+func store_u16(i: u32#(buf_u16.len), v: u16) { buf_u16[i] = v }
+func load_u16(i: u32#(buf_u16.len)) -> u16 => buf_u16[i]
 
-func store_u32(i: u32, v: u32) { buf_u32.u32[i] = v }
-func load_u32(i: u32) -> u32 => buf_u32.u32[i]
+func store_u32(i: u32#(buf_u32.len), v: u32) { buf_u32[i] = v }
+func load_u32(i: u32#(buf_u32.len)) -> u32 => buf_u32[i]
 
-func store_u64(i: u32, v: u64) { buf_u64.u64[i] = v }
-func load_u64(i: u32) -> u64 => buf_u64.u64[i]
+func store_u64(i: u32#(buf_u64.len), v: u64) { buf_u64[i] = v }
+func load_u64(i: u32#(buf_u64.len)) -> u64 => buf_u64[i]
+
+func store_u128(i: u32#(buf_u128.len), v: u128) { buf_u128[i] = v }
+func load_u128(i: u32#(buf_u128.len)) -> u128 => buf_u128[i]
 
 // === Type punning ===
 
+// A type view reads the bytes of a buffer as another integer type. Its index
+// is never checked.
 func pun_u8_as_u32(i: u32) -> u32 => buf_u8.u32[i]
 func pun_u32_as_u8(i: u32) -> u8 => buf_u32.u8[i]
 
@@ -63,16 +70,17 @@ func chain_u32(x: u32) -> u32 => add_u32(add_u32(x, 1), 2)
 
 test "integers" {
   test "mixed sizes" {
-    // Cross-type equality (signed against unsigned needs a cast to a type
-    // that holds both)
-    assert i16(123:i8) == 123:u8
-    assert i64(123:i8) == 123:u32
+    // A signed and an unsigned value meet in a type that holds both: neither
+    // i8 nor u8 holds the other, so one of them is widened first.
+    let small: i8 = 123
+    assert small:i16 == 123:u8
+    assert small:i64 == 123:u32
     assert 12345:u32 == 12345:i64
     assert 0xdeadbeef == 0xdeadbeef:i64
     assert 42:u8 == 42
     assert 42 == 42:u64
 
-    // Cross-type arithmetic (widens to larger type)
+    // Cross-type arithmetic (the narrower operand widens)
     assert 1:u8 + 1:u16 == 2:u16
     assert 100:u8 + 200:u32 == 300:u32
     assert 1:u32 + 1:u64 == 2:u64
@@ -111,21 +119,20 @@ test "integers" {
     assert add_i8(127, 1) == -128  // signed overflow wraps
     assert 100:i8 + 27:i8 == 127:i8
     assert 127:i8 + 1:i8 == -128:i8
-    let expected:i8 = -128
-    let a:i8 = 127
-    let b:i8 = 1
+    let expected: i8 = -128
+    let a: i8 = 127
+    let b: i8 = 1
     assert a + b == expected
-    let expected2 = -128 as i8
   }
 
   test "u8 wrapping semantics" {
-    // Verify operations can't produce out-of-range values
+    // An operation can't leave a value outside its type's range
     let x: u8 = 200
     let y: u8 = 100
-    let sum = x + y  // 300 → should be 44 (wraps)
+    let sum = x + y  // 300 wraps to 44
     assert sum == 44
-    assert sum < 255  // must be in u8 range
-    // Division on wrapped value gives correct u8 result
+    assert sum:u32 < 256  // the i32 that holds the u8 holds 44, not 300
+    // Division on the wrapped value gives the u8 result
     assert sum / 2 == 22
   }
 
@@ -160,26 +167,34 @@ test "integers" {
     assert narrow_u32_u8(0x1FF) == 0xFF
   }
 
-  test "heap u8" {
+  test "memory u8" {
     store_u8(0, 42)
     store_u8(1, 99)
     assert load_u8(0) == 42
     assert load_u8(1) == 99
   }
 
-  test "heap u16" {
+  test "memory u16" {
     store_u16(0, 0x1234)
     assert load_u16(0) == 0x1234
   }
 
-  test "heap u32" {
+  test "memory u32" {
     store_u32(0, 0xDEADBEEF)
     assert load_u32(0) == 0xDEADBEEF
   }
 
-  test "heap u64" {
+  test "memory u64" {
     store_u64(0, 0xCAFEBABE12345678)
     assert load_u64(0) == 0xCAFEBABE12345678
+  }
+
+  test "memory u128" {
+    store_u128(0, 0x0123456789ABCDEFFEDCBA9876543210)
+    assert load_u128(0) == 0x0123456789ABCDEFFEDCBA9876543210
+    // In memory a u128 is two u64 limbs, the low one first
+    assert buf_u128.u64[0] == 0xFEDCBA9876543210
+    assert buf_u128.u64[1] == 0x0123456789ABCDEF
   }
 
   test "type punning" {
@@ -200,6 +215,7 @@ test "integers" {
     assert or_u32(0xF0F0F0F0, 0x0F0F0F0F) == 0xFFFFFFFF
     assert not_u32(0) == 0xFFFFFFFF
     assert rotl_u32(1, 8) == 256
+    assert rotl_u32(0x80000001, 4) == 0x18  // the top bit comes round to bit 3
     assert shr_u64(0x100, 4) == 0x10
   }
 
@@ -225,7 +241,7 @@ test "integers" {
     assert add_i64(0x7FFFFFFFFFFFFFFF, 0:i64) == 0x7FFFFFFFFFFFFFFF
   }
 
-  // === Wide integer types (i64-pair backed) ===
+  // === Wide integer types (two, four or eight i64s) ===
 
   test "u128 add" {
     let a: u128 = 100
@@ -246,26 +262,27 @@ test "integers" {
   }
 
   test "u256 xor" {
-    let a: u256 = 0xFF:u256
-    let b: u256 = 0x0F:u256
+    let a: u256 = 0xFF
+    let b: u256 = 0x0F
     assert (a ^ b) == 0xF0:u256
   }
 
   test "i256 add" {
-    let a: i256 = 1000:i256
-    let b: i256 = 2000:i256
+    let a: i256 = 1000
+    let b: i256 = 2000
     assert a + b == 3000:i256
   }
 
   test "u512 not" {
-    let zero: u512 = 0:u512
+    let zero: u512 = 0
     let all_ones = ~zero
     assert all_ones != zero
+    assert all_ones + 1 == zero  // wraps at 512 bits
   }
 
   test "i512 xor" {
-    let a: i512 = 0xAB:i512
-    let b: i512 = 0xCD:i512
+    let a: i512 = 0xAB
+    let b: i512 = 0xCD
     assert (a ^ b) == 0x66:i512
     assert (0xAB:i512 ^ 0xCD:i512) == 0x66:i512
   }

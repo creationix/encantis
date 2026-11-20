@@ -19,8 +19,8 @@ func next() -> u32 {
 }
 
 func spots() -> [*]mut Spot => space as [*]mut Spot
-func words() -> [*]mut i32 => ((space as u32) + 512) as [*]mut i32
-func options() -> [*]mut Option => ((space as u32) + 256) as [*]mut Option
+func words() -> [*]mut i32 => (&space[512]) as [*]mut i32
+func options() -> [*]mut Option => (&space[256]) as [*]mut Option
 
 func sum(s: Spot) -> i32 => s.c + s.di * 10 + s.room * 100
 func make(n: i32) -> Spot => Spot(n, n + 1, n + 2)
@@ -59,7 +59,7 @@ test "an element is passed by value and returned" {
   let list = spots()
   list[1] = Spot(1, 2, 3)
   assert sum(list[1]) == 321
-  let fixed = space as *mut [4]Spot
+  let fixed = space as *[4]Spot
   assert sum(at(fixed, 1)) == 321
 }
 func at(list: *[4]Spot, i: u32#4) -> Spot => list[i]
@@ -72,7 +72,7 @@ test "a call's result is stored directly" {
 
 test "elements of a pointer to a fixed array" {
   let fixed = space as *mut [4]Spot
-  for i in 4 {
+  for i in fixed.len {
     fixed[i] = Spot(i as i32, 0, 1)
   }
   let last = fixed[3]
@@ -81,8 +81,9 @@ test "elements of a pointer to a fixed array" {
 }
 
 test "elements of a slice are bounds-checked" {
-  let list: []mut Spot = (spots(), 2:u32)
-  list.ptr[1] = Spot(4, 5, 6)
+  let all = spots()
+  all[1] = Spot(4, 5, 6)
+  let list = all[..2]
   let found = list[1] ?? Spot(0, 0, 0)
   let missing = list[2] ?? Spot(-1, -1, -1)
   assert sum(found) == 654
@@ -103,7 +104,7 @@ func turn(p: *mut Spot) -> i32 {
 test "fields through a pointer" {
   let list = spots()
   list[1] = Spot(1, 40, 3)
-  let p = ((space as u32) + sizeof(Spot)) as *mut Spot
+  let p = &list[1]
   assert turn(p) == 42
   assert list[1].c == 5
   assert list[1].di == 42
@@ -112,7 +113,7 @@ test "fields through a pointer" {
 
 test "a whole struct through a pointer" {
   let list = spots()
-  let p = ((space as u32) + 4 * sizeof(Spot)) as *mut Spot
+  let p = &list[4]
   p.* = Spot(1, 2, 3)
   assert sum(list[4]) == 321
   let s = p.*
@@ -137,7 +138,7 @@ test "a copy over a place that overlaps its source arrives whole" {
   list[0] = Spot(1, 2, 3)
   list[1] = Spot(4, 5, 6)
   // q starts one field into list[0], so it shares two fields with it.
-  let q = ((space as u32) + 4) as *mut Spot
+  let q = (&space[4]) as *mut Spot
   q.* = list[0]
   assert list[0].c == 1
   assert sum(q.*) == 321
@@ -146,8 +147,8 @@ test "a copy over a place that overlaps its source arrives whole" {
   w[0] = 10
   w[1] = 20
   w[2] = 30
-  let a = ((space as u32) + 512) as *mut []u8
-  let b = ((space as u32) + 516) as *mut []u8
+  let a = (&space[512]) as *[]u8
+  let b = (&space[516]) as *mut []u8
   b.* = a.*
   assert w[1] == 10
   assert w[2] == 20
@@ -172,7 +173,7 @@ test "an element is destructured" {
   assert c + di * 10 + room * 100 == 321
   set (c, di, room) = list[2]
   assert c + di * 10 + room * 100 == 654
-  let p = ((space as u32) + sizeof(Spot)) as *Spot
+  let p: *Spot = &list[1]
   set (room:, c:) = p.*
   assert c + di * 10 + room * 100 == 351
 }
@@ -193,7 +194,7 @@ test "a struct inside a struct" {
   assert lane.free == 10
   assert lane.cells.len == 2
   opts[2].lane = lane
-  assert opts[2].lane.cells.ptr[1] == 4
+  assert (opts[2].lane.cells[1] ?? 0) == 4
 }
 
 test "a slice field of a nested struct" {
@@ -214,7 +215,7 @@ test "a returned slice is stored directly" {
   let lists = spots() as [*]mut []i32
   lists[1] = pair()
   assert lists[1].len == 2
-  assert lists[1].ptr[1] == 22
+  assert (lists[1][1] ?? 0) == 22
   let opts = options()
   opts[3].lane.cells = pair()
   assert opts[3].lane.cells.len == 2
@@ -223,7 +224,7 @@ test "a returned slice is stored directly" {
 test "a slice rebuilt from its own fields" {
   let lists = spots() as [*]mut []i32
   let base = words()
-  lists[1] = (base + 8, 5:u32)
+  lists[1] = (base + 8, 5)
   lists[1] = (base, (lists[1].ptr as u32) - (base as u32))
   assert lists[1].len == 8
 }
@@ -235,7 +236,7 @@ test "a fixed array inside a struct" {
   assert rows[1].v[1] == 21
   let v = rows[1].v
   assert v[0] + v[2] == 40
-  let p = ((space as u32) + sizeof(Row)) as *mut Row
+  let p = &rows[1]
   p.v[2] = 5
   assert rows[1].v[2] == 5
   assert rows[1].tag == 2
@@ -301,7 +302,7 @@ test "a loop over the structs of a slice" {
   list[0] = Spot(1, 0, 0)
   list[1] = Spot(0, 2, 0)
   list[2] = Spot(0, 0, 3)
-  let all: []Spot = (list, 3:u32)
+  let all: []Spot = list[..3]
   let t = 0
   for s in all {
     t += s.c + s.di + s.room
@@ -350,12 +351,10 @@ test "an index with effects is evaluated once" {
 test "an address that reads memory is evaluated before its own stores" {
   let lists = options() as [*]mut []i32
   let w = options() as [*]mut u32
-  w[0] = 0
-  w[1] = 0
-  w[2] = 0
+  w[..3] = 0
   // lists[0].ptr is 0, so the target is lists[0]: storing its pointer must
   // not move where its length goes.
-  lists[(lists[0].ptr as u32)] = (words(), 9:u32)
+  lists[(lists[0].ptr as u32)] = (words(), 9)
   assert w[1] == 9
   assert w[2] == 0
 }
@@ -366,7 +365,7 @@ test "an array of pointers" {
   let list = spots()
   list[5] = Spot(7, 8, 9)
   let ptrs = options() as [*]mut *mut Spot
-  ptrs[1] = ((space as u32) + 5 * sizeof(Spot)) as *mut Spot
+  ptrs[1] = &list[5]
   let p = ptrs[1]
   assert p.room == 9
   assert ptrs[1].c == 7
