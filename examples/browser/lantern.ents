@@ -71,8 +71,8 @@ func sound(from: f32, to: f32, secs: f32, volume: f32, wave: u32) {
   emit(op-sound, from, to, secs, volume, 0, wave, 0)
 }
 
-// The decimal digits of n, in the frame's text arena, or none where they
-// don't fit.
+// The decimal digits of n, in the frame's text arena, or an empty slice
+// where they don't fit.
 func digits(n: u32) -> []u8 {
   let at = scratch.used
   let len: u32 = 1
@@ -83,17 +83,26 @@ func digits(n: u32) -> []u8 {
   }
   if let room = scratch.bytes[at..at + len] {
     let i = len
-    let v = n
     while i > 0 {
       i -= 1
-      if let d = &room[i] { d.* = (v % 10) as u8 + '0' }
-      v /= 10
+      if let d = &room[i] { d.* = (n % 10) as u8 + '0' }
+      n /= 10
     }
     scratch.used = at + len
     return room
   }
   return ""
 }
+
+// The colours of what it draws, as 0xRRGGBBAA.
+def ink = 0x07080fff
+def wall-lit = 0x3a3f66ff
+def amber = 0xffcf6bff
+def pale = 0xfff4d6ff
+def straw = 0xfff1a8ff     // sparks
+def violet = 0xb9a6ffff    // a wisp forming, and one scattered
+def dusk = 0x6f5bd6ff      // a wisp's halo, and the dash bar refilling
+def mist = 0x9aa0d0ff      // the title's hints
 
 // ---- Levels ------------------------------------------------------------------
 
@@ -207,7 +216,7 @@ def mode-dead = 2
 def mode-clear = 3
 
 // Times are in seconds, distances in tiles.
-def walk-speed = 5.0     // the lantern's top speed
+def walk-speed = 5.0     // at full tilt, outside a dash
 def dash-speed = 15.0
 def dash-time = 0.18
 def cooldown = 0.9       // from one dash to the next
@@ -418,7 +427,7 @@ func update-wisps(dt: f32) {
         w.alive = false
         world.score += 2
         world.shake = 0.15
-        burst(w.x, w.y, 14, 4.0, 0xb9a6ffff)
+        burst(w.x, w.y, 14, 4.0, violet)
         sound(900.0, 200.0, 0.2, 0.18, 2)
         continue
       }
@@ -426,7 +435,7 @@ func update-wisps(dt: f32) {
       world.clock = 0.0
       world.shake = 0.4
       world.best = max(world.best, world.score)
-      burst(p.x, p.y, 40, 5.0, 0xffcf6bff)
+      burst(p.x, p.y, 40, 5.0, amber)
       sound(220.0, 40.0, 0.7, 0.25, 3)
       return
     }
@@ -465,7 +474,7 @@ func update-sparks(dt: f32) {
       s.alive = false
       world.score += 1
       world.goal -= 1
-      burst(s.x, s.y, 10, 2.5, 0xfff1a8ff)
+      burst(s.x, s.y, 10, 2.5, straw)
       sound(660.0 + world.goal as f32 * 40.0, 1320.0, 0.12, 0.15, 0)
       if world.goal == 0 {
         world.mode = mode-clear
@@ -533,11 +542,6 @@ export func mode() -> u32 => world.mode
 
 // ---- Drawing -------------------------------------------------------------------
 
-def ink = 0x07080fff
-def wall-lit = 0x3a3f66ff
-def amber = 0xffcf6bff
-def pale = 0xfff4d6ff
-
 def hud = 40.0           // the height of the strip along the top, in CSS pixels
 
 // An RGBA colour with its alpha scaled by a in [0, 1].
@@ -584,7 +588,7 @@ func draw(width: f32, height: f32) {
     if s.alive {
       let pulse = 0.18 + 0.05 * sin(s.age * 7.0)
       circle(ox + s.x * ts, oy + s.y * ts, ts * (pulse + 0.18), 0xfff1a840)
-      circle(ox + s.x * ts, oy + s.y * ts, ts * pulse, 0xfff1a8ff)
+      circle(ox + s.x * ts, oy + s.y * ts, ts * pulse, straw)
     }
   }
 
@@ -593,10 +597,10 @@ func draw(width: f32, height: f32) {
       let wx = ox + wsp.x * ts
       let wy = oy + wsp.y * ts
       if wsp.age < forming {
-        ring(wx, wy, ts * (0.6 - wsp.age * 0.5), 2.0, fade(0xb9a6ffff, wsp.age))
+        ring(wx, wy, ts * (0.6 - wsp.age * 0.5), 2.0, fade(violet, wsp.age))
       } else {
         let flicker = 0.85 + 0.15 * sin(wsp.age * 13.0 + wsp.x)
-        circle(wx, wy, ts * 0.42, fade(0x6f5bd6ff, 0.35 * flicker))
+        circle(wx, wy, ts * 0.42, fade(dusk, 0.35 * flicker))
         circle(wx, wy, ts * 0.27, fade(0xd8ceffff, flicker))
       }
     }
@@ -624,7 +628,7 @@ func draw(width: f32, height: f32) {
     text(width - 160.0, 26.0, 18.0, false, pale, "sparks ")
     text(width - 90.0, 26.0, 18.0, false, amber, digits(world.goal))
     let ready = 1.0 - p.cool / cooldown
-    rect(width - 160.0, 32.0, 120.0 * ready, 3.0, if ready >= 1.0 { amber } else { 0x6f5bd6ff })
+    rect(width - 160.0, 32.0, 120.0 * ready, 3.0, if ready >= 1.0 { amber } else { dusk })
   }
 
   // The words across the middle shrink with a narrow canvas (a phone held
@@ -635,8 +639,8 @@ func draw(width: f32, height: f32) {
   if world.mode == mode-title {
     text(cx, cy - 30.0 * k, 56.0 * k, true, amber, "LANTERN")
     text(cx, cy + 10.0 * k, 18.0 * k, true, pale, "collect the sparks, dash through the wisps")
-    text(cx, cy + 40.0 * k, 16.0 * k, true, 0x9aa0d0ff, "move: arrows, WASD, a stick, or drag")
-    text(cx, cy + 62.0 * k, 16.0 * k, true, 0x9aa0d0ff, "dash: space, A, or a second finger")
+    text(cx, cy + 40.0 * k, 16.0 * k, true, mist, "move: arrows, WASD, a stick, or drag")
+    text(cx, cy + 62.0 * k, 16.0 * k, true, mist, "dash: space, A, or a second finger")
     let blink = fade(pale, 0.6 + 0.4 * sin(world.clock * 4.0))
     text(cx, cy + 100.0 * k, 20.0 * k, true, blink, "press enter, start, or tap")
   } elif world.mode == mode-dead && world.clock > dead-pause {
@@ -708,7 +712,7 @@ test "nothing goes wrong on a hostile frame" {
   assert cmds.count <= max-cmds
 }
 
-test "a time step or a stick that is out of range counts as none" {
+test "a bad time step counts as none, a long one as 50 ms, and a stick out of range as 0" {
   init(1)
   frame(16.0, 800.0, 600.0, btn-start, 0.0, 0.0)
   let clock = world.clock
