@@ -62,8 +62,10 @@ export func order(x: u32) -> u32 {
   defer note(100)
   return 7 when x == 0
   defer note(200)
+  let k: u32 = 10
   for i in 4 {
-    defer note(11 + i)
+    defer note(k)                  // k as it is when the pass ends: 11, 12, 13
+    k += 1
     continue when i == 0
     break when i == 2
     note(21 + i)
