@@ -3665,7 +3665,7 @@ global initializer must be a compile-time constant
 
 The value is one scalar: an integer, a float, `true` or `false`, a codepoint (`'a'`), or an expression of these and of other defs with `+ - * / %`, `& | ^`, the shifts `<<` and `>>`, unary `-` and `~`, `sizeof(T)`, and the `.len` or `.wid` of a `data` array. A rotate, a comparison, `&&`, `||`, `!`, an `if`, a call (of a builtin too), an integer division by zero, a global and a variable are not constants (`def value must be a compile-time constant`). A float division by zero is a constant, infinity or NaN, as when it runs: `def inf = 1.0 / 0.0`. A `def` always has a value: `def buf: [4096]u8` is a syntax error.
 
-With no type written, a `def` is an untyped constant: each use takes the type that use wants, as the literal itself would, and where nothing says, the literal's default type ([Integer Literals](#integer-literals)). Each use is checked on its own, so a `def page = 64 * 1024` is a `u64` in one place and an `f64` in another, and used as a `u16` it is `cannot assign int(65536) to u16`. With a type, `def mask: u32 = 0xff` (or `def mask = 0xff:u32`), it is of that type at every use, and widens from there as any `u32` does.
+With no type written, a `def` is the constant its value is. It is untyped when its value is (literals, the `.len` of a `data` array, operators on these): each use takes the type that use wants, as the literal itself would, and where nothing says, the literal's default type ([Integer Literals](#integer-literals)). Each use is checked on its own, so a `def page = 64 * 1024` is a `u64` in one place and an `f64` in another, and used as a `u16` it is `cannot assign int(65536) to u16`. With a type written, `def mask: u32 = 0xff`, or a typed value, `def mask = 0xff:u32` or `def s = sizeof(Pt)` (a `u32`, [10.4](#104-sizes)), it is of that type at every use, and widens from there as any `u32` does: `s` used as a `u8` is `cannot assign u32 to u8`.
 
 <!-- spec:begin compile -->
 
@@ -3717,11 +3717,11 @@ cannot assign int(300) to u8
 
 <!-- spec:end -->
 
-The compiler refuses two values these rules allow (known bugs): a value written whole in parentheses, `def k = (1 + 2)`, gets the first line of the tuple's error alone, `def cannot contain array/string literals` (write `def k = 1 + 2`), and a cast, `def big = 122 as u32`, gets `def value must be a compile-time constant` (write the type with `:`, `def big = 122:u32`). A typed `def` whose value does not fit its type, `def small: u8 = 300`, is reported where it is used, not where it is declared.
+The compiler refuses two values these rules allow (known bugs): a value written whole in parentheses, `def k = (1 + 2)`, gets the first line of the tuple's error alone, `def cannot contain array/string literals` (write `def k = 1 + 2`), and a cast, `def big = 122 as u32`, gets `def value must be a compile-time constant` (write the type with `:`, `def big = 122:u32`). A typed `def` whose value does not fit its type, `def small: u8 = 300`, should be refused where it is declared. The compiler reports it at each use instead, as `cannot assign int(300) to u8` whatever the use wants, among the errors of that use's pass (a global's initializer with the declarations, a function body with the bodies), and not at all when the def is never used (a known bug).
 
 A `def` can stand wherever a constant can: in an expression, as the length in a type (`[n]u8`), the bound of a ranged integer (`u32#n`), the count of a repeat literal (`[0; n]`) or of a loop (`for i in n`), a comptime value argument ([8.7](#87-comptime-value-parameters)), a global's initializer and the values of `data`.
 
-A `def` is no variable: assigning it is an error (`cannot assign to 'k': it is not a variable`, [4.5](#45-assignment-and-compound-assignment)). A `let`, a loop variable and a match binding cannot take a def's name (`'k' is already declared in this scope`, `'k' is already declared: a loop variable cannot reuse the name of a def`). A parameter must not take one either: the compiler accepts such a parameter, and every read of it gives the def's value instead of the argument (a known bug).
+A `def` is no variable: assigning it is an error (`cannot assign to 'k': it is not a variable`, [4.5](#45-assignment-and-compound-assignment)). A `let`, a loop variable and a match binding cannot take a def's name (`'k' is already declared in this scope`, `'k' is already declared: a loop variable cannot reuse the name of a def`). A parameter or a named result must not take one either. The compiler accepts both (known bugs): an assignment to one writes the variable, but every other read of the name gives the def's value, so a parameter's argument is never read ([3.4](#34-functions)).
 
 A `def` declared in a `test` block is that test's: it replaces the name inside that test only, and the rest of the module reads the name as if the test were not there.
 
@@ -3979,7 +3979,7 @@ test "a let without a value starts at zero and is never reset" {
 
 `counts` shows the rule; it is no way to write a loop. A value carried from one pass to the next is declared before the loop (`let seen: u32 = 0` above the `for`), where a reader sees that it lives across passes.
 
-A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The first branch of an `if let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in an `elif` or `else` branch of an `if let`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing, and is read after the branch as zero. A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
+A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The first branch of an `if let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in an `elif` or `else` branch of an `if let`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
 
 <!-- spec:begin compile -->
 
@@ -3996,6 +3996,8 @@ test "a let is a variable of its function" {
   assert maybe(false) == 0
 }
 ```
+
+`maybe` shows the rule. Written for a reader, the variable takes the `if` as its value, `let t: u32 = if c { 1 } else { 0 }`, or is declared before the `if` with the value it has when the branch does not run.
 
 ```ents
 func pick(c: bool) -> u32 {
@@ -4063,7 +4065,7 @@ test "a global keeps its value between calls" {
 
 A constant with no type, alone or as an element of a tuple, takes its default type ([Integer Literals](#integer-literals)), the same for a `let` and a `global`: `global big = 2147483648` is an `i64` and `let t = (3000000000, 1)` an `(i64, i32)`. The variable is of that type from then on, so `global count = 0` holds any `i32` it is assigned.
 
-A global's initializer is a compile-time constant: a literal, an expression of literals and defs (as for a `def`, [3.1](#31-definitions-def)), the address of a `data` block, or a cast of one of these. For a global of several values it's a constructor, tuple or array of those, or a string or `data` array for a slice. It sees only the defs and data declared above it, and never another global (`global initializer must be a compile-time constant`). The compiler works out each value, so it can be written as it's meant:
+A global's initializer is a compile-time constant: a literal, an expression of literals, defs, `sizeof(T)` and the `.len` and `.wid` of `data` arrays (as for a `def`, [3.1](#31-definitions-def): `global n: u32 = table.len`), the address of a `data` block, or a cast of one of these. For a global of several values it's a constructor, tuple or array of those, or a string or `data` array for a slice. It sees only the defs and data declared above it, and never another global (`global initializer must be a compile-time constant`). The compiler works out each value, so it can be written as it's meant:
 
 <!-- spec:begin compile -->
 
@@ -4080,6 +4082,7 @@ global low: u8 = 300 as u8       // 44, as the cast gives at run time
 global bytes: [*]u8 = table as [*]u8
 global halves: f64 = 7 / 2       // 3.5: the division is an f64 one
 global pairs: i32 = 7 / 2        // 3
+global size: u32 = table.len * table.wid   // 6
 
 test "an initializer is worked out as the program would" {
   assert limit == 262144
@@ -4090,6 +4093,7 @@ test "an initializer is worked out as the program would" {
   assert bytes[2] == 2
   assert halves == 3.5
   assert pairs == 3
+  assert size == 6
 }
 ```
 
@@ -4187,7 +4191,7 @@ test "a value is copied, a pointer is shared" {
 
 <!-- spec:end -->
 
-A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result, and a named result can also have a def's name: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. A parameter must not have a def's name: such a parameter is accepted, and reading it gives the def's value (a known bug).
+A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. Neither a parameter nor a named result may have a def's name. The compiler accepts both (known bugs): an assignment to one (`limit = 3`, `limit += 1`) writes the variable, but every other read of the name gives the def's value. So beside `def limit = 10`, `func f() -> (limit: u32) { limit = 3  return limit * 2 }` returns 20, and `=> limit` returns 10.
 
 **Returning.** An expression body is the function's result, so a function with no result has a block body: `func f() => id(3)` is `cannot assign u32 to ()`, and `func f() => bump()`, where `bump` has no result either, is refused too (`cannot assign () to ()`, a known bug). A block body gives an unnamed result with `return value`, and every way out of the block must be one. The compiler decides this by the block's last statement, which must be:
 
@@ -4196,7 +4200,7 @@ A parameter's name, and a named result's, is written once in a signature (two pa
 - an `if` with an `else`, whose every branch ends in one of these, or
 - a `match` with a `_` arm, whose every arm ends in one of these.
 
-Anything else is `function 'f' can reach its end without returning a value`: any `while` loop, `while true` too, a statement after the last `return`, and a trailing value. Only that last statement is looked at: code after a statement that always returns, anywhere but at the end of the body, is accepted and never runs (`if c { return 1 } else { return 2 }` followed by `return 3` checks). With an unnamed result the last expression of a block body is not returned: write `return`, or an expression body (`=> if c { 1 } else { 2 }`).
+Anything else is `function 'f' can reach its end without returning a value`: any `while` loop, `while true` too, a statement after the last `return`, and a trailing value. Only that last statement is looked at: code after a statement that always returns, anywhere but at the end of the body, is accepted and never runs (`if c { return 1 } else { return 2 }` followed by `return 3` checks). With an unnamed result the last expression of a block body is not returned: write `return`, or an expression body (`=> if c { 1 } else { 2 }`). With named results the same last expression is the result (**Named results**, below): they are variables the body fills, and a trailing value fills them, while an unnamed result has no variable, and only `return` gives it.
 
 A bare `return` is for a function with no result, or with named results; with an unnamed result it is `return needs a value: the function returns u32`, and a value returned from a function with no result is `cannot assign int(1) to ()`. An expression written as a statement is evaluated and its value dropped: `bump()` alone calls `bump` and drops its result. The one exception is the last statement of a block body with named results, whose value is the result (below).
 
@@ -4253,7 +4257,12 @@ return needs a value: the function returns u32
 
 <!-- spec:end -->
 
-**Named results.** Named results are variables of the function, declared in the signature, `-> (name: Type)`. Each starts at zero, as every variable of a function does ([3.3](#33-variables)). The function returns them as they are when it ends: when control reaches the end of the body, or at a bare `return`. `return value` returns its value instead and does not assign them, so a deferred expression that reads them sees them as they were; whether a deferred expression that assigns one changes the result depends on the exit (a known bug, [Defer](#defer)). If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. Only the last statement counts, and only when it has a value: a call with a result, a literal, a variable, or an `if` with an `else` or a `match` whose every branch ends in a value or exits. That value replaces what the body assigned: `n = 10` followed by `bump()` returns what `bump()` gives. Any other last statement leaves the results as the body set them, and drops a value inside it: an `if` without an `else` is `()`, and an `if` or a `match` with a branch that ends in a statement is a statement, so `n = 1` followed by `if c { 5 } else { n = 3 }` returns 1 or 3, never 5. With several results, the value that ends the body fills them in order, whatever its own fields are called, as `let a, b = f()` binds by position: in `func flip(p: (u32, u32)) -> (y: u32, x: u32) => p`, `y` gets `p.0`, and a `(y: u32, x: u32)` value that ends a body with the results `(x: u32, y: u32)` puts its `y` in `x`. A tuple literal with names fills the results of those names instead ([2.8](#struct-constructors)), also as the value of a branch of an `if` or a `match` (each branch is a value of its own, as in `picked` below). An expression body gives the results the same way. `return value` does not fill them in order: its value meets the results as one struct meets another ([Structural Coercion](#structural-coercion)), so a literal fills them by position or by name, and a value that already exists must have the results' names. In `flip` written with a block, `return p` is `cannot assign (u32, u32) to (y: u32, x: u32)`: end the block with `p`, or return a literal, `return (p.0, p.1)`.
+**Named results.** Named results are variables of the function, declared in the signature, `-> (name: Type)`. Each starts at zero, as every variable of a function does ([3.3](#33-variables)). How the result is made:
+
+- **The body ends, or a bare `return`:** the results are returned as they are.
+- **The body ends in an expression with a value:** that value replaces what the body assigned, and widens to the results' types as a `return` value does. Only the last statement counts, and only when it is an expression with a value, which any expression is: arithmetic (`acc * 2`), a field (`p.x`), a comparison, a cast, an index, a call with a result, a literal, a variable, or an `if` with an `else` or a `match` whose every branch ends in a value or exits. So `n = 10` followed by `bump()` returns what `bump()` gives. A statement leaves the results as the body set them, and drops a value inside it: an assignment, a `let`, a loop, a call with no result, an `if` without an `else` (it is `()`), and an `if` or a `match` with a branch that ends in a statement, so `n = 1` followed by `if c { 5 } else { n = 3 }` returns 1 or 3, never 5. A last line that starts with `(` or an operator continues the line before it ([1.6](#16-statements-and-line-breaks)): `n = 1` followed by a line `-v` is `n = 1 - v`. With several results, the value fills them *by position*, whatever its own fields are called, as `let a, b = f()` binds: in `func flip(p: (u32, u32)) -> (y: u32, x: u32) => p`, `y` gets `p.0`, and a `(y: u32, x: u32)` value that ends a body with the results `(x: u32, y: u32)` puts its `y` in `x`. Only a tuple literal written with names fills them *by name* ([2.8](#struct-constructors)), also as the value of a branch of an `if` or a `match` (each branch is a value of its own, as in `picked` below). An expression body is such a value.
+- **`return value`:** returns its value and does not assign the results, so a deferred expression that reads them sees them as they were; whether a deferred expression that assigns one changes the result depends on the exit (a known bug, [Defer](#defer)). The value meets the results *as one struct meets another* ([Structural Coercion](#structural-coercion)): a literal fills them by position or by name, and a value that already exists must have the results' names. In `flip` written with a block, `return p` is `cannot assign (u32, u32) to (y: u32, x: u32)`: end the block with `p`, or return a literal, `return (p.0, p.1)`.
+- **A result named like a parameter** is that parameter (below).
 
 <!-- spec:begin compile -->
 
@@ -4378,7 +4387,7 @@ no function 'hash' accepts (f64)
 'hash' is ambiguous for (u8)
 ```
 
-These are the messages of a name that several functions share. A name that only one function has leaves no choice, and its call is checked argument by argument: with only `func min(a: u32, b: u32)` declared (it takes the builtin's place, [10](#10-builtin-functions)), `min(x, y)` for two `f64`s is `argument 1: cannot assign f64 to u32` and the same for argument 2.
+These are the messages of a name that several functions share. A name that only one function has leaves no choice, and its call is checked argument by argument (in an instance of a generic, arguments it refuses give the one error of [8.3](#83-requirements) instead): with only `func min(a: u32, b: u32)` declared (it takes the builtin's place, [10](#10-builtin-functions)), `min(x, y)` for two `f64`s is `argument 1: cannot assign f64 to u32` and the same for argument 2.
 
 `hash(5:u64)` says which. A typed argument that is no parameter's exact type is ambiguous in the same way when more than one function could take it: a `u8` widens to the `u32` and to the `u64`. A cast says which: `hash(b as u32)`. A literal has no type of its own and never decides by itself. Beside arguments that have a type it decides nothing either: a function whose typed arguments are exactly its parameter types, and whose literals fit their parameters, is the one called, before any function that would convert an argument. `gt(x, 10)` with `x: u32` is `gt(a: u32, b: u32)`: `x` is a `u32` and `10` fits one, while `gt(a: f64, b: f64)` would convert `x`.
 
@@ -4468,13 +4477,21 @@ func g() -> u32 => at4([1, 2, 3, 4])
 What a call's value is used for takes no part in the choice, and neither do results: two functions with the same name and the same parameter types are an error, whatever their parameters are called and whatever they return.
 
 ```ents
+type A = (x: i32, y: i32)
+type B = (x: i32, y: i32)
+
 func hash(k: u32) -> u32 => k
 func hash(n: u32) -> u64 => 1
+func tag(a: A) -> i32 => 1
+func tag(b: B) -> i32 => 2
 ```
 
 ```errors
 'hash' is already declared with parameters (u32)
+'tag' is already declared with parameters (A)
 ```
+
+Parameter types are compared as types, not as written: two names for one type, or a name and what it names, are the same, and so are two struct types written alike ([2.8](#28-struct-types)). The error is reported at the second function and names the parameter types as the first one wrote them, `(A)` for `tag` above.
 
 A name that several functions share says which one only in a call. Anywhere else, as in `let g = hash`, it is an error (`'hash' is the name of several functions: it can only be called, where the arguments say which one`).
 
@@ -4636,7 +4653,7 @@ cannot cast func(x: i32) -> i32 to u32: 'inc' is a function, which has no run-ti
 
 > **Not implemented:** `inline` is accepted and has no effect on the code. An `inline func` is an ordinary function, each instance of an inline generic too, and each call of it is a wasm `call`.
 
-What the compiler does check is where `inline` stands: right before `func`, after `export` and the export's name when it has one: `export inline func`, `export "tri" inline func`; `inline export func`, `export inline "tri" func` and `inline` before anything but `func` are syntax errors. Any named function can be inline: one with named results, a generic, and functions that share a name. The design, not implemented, is that an inline function has its body put in at each call site, with each argument evaluated once into a local of the caller. A program behaves the same either way: inlining changes only its speed and size.
+What the compiler does check is where `inline` stands: right before `func`, after `export` and the export's name when it has one: `export inline func`, `export "tri" inline func`; `inline export func`, `export inline "tri" func` and `inline` before anything but `func` are syntax errors. Any named function can be inline: one with named results, a generic, and functions that share a name. An import cannot be: `import "env" "f" inline func f()` is a syntax error. A function that another source module declares `inline` is imported and called as any function. The design, not implemented, is that an inline function has its body put in at each call site, with each argument evaluated once into a local of the caller. A program behaves the same either way: inlining changes only its speed and size.
 
 <!-- spec:begin compile -->
 
@@ -4800,7 +4817,7 @@ The two operands have one type, after [implicit widening](#implicit-widening), a
 - an integer `/` or `%` by zero;
 - an `i32` or `i64` `/` of its most negative value by -1, whose quotient does not fit (`%` of the same is 0).
 
-An `i8` or `i16` is divided in 32 bits, so `-128:i8 / -1` does not trap: it is 128, wrapped back to -128. A divisor that is the constant 0 is not caught in a function: `x / 0`, and `1 / 0` too, compile to a division that traps when it runs. Where the value has to be a constant (a `def`, a global's initializer, a length or a bound), a division by zero is an error: `def value must be a compile-time constant`, `array length divides by zero`, `range bound divides by zero` (`u32#(4 / 0)`), and for the count of a repeat literal (`[0:u8; 4 / 0]`), `repeat count must be a compile-time integer`.
+An `i8` or `i16` is divided in 32 bits, so `-128:i8 / -1` does not trap: it is 128, wrapped back to -128. A divisor that is the constant 0 is not caught in a function: `x / 0`, and `1 / 0` too, compile to a division that traps when it runs. A quotient of two constants is otherwise checked as any constant is: where an `i32` is wanted, `-2147483648 / -1` is `cannot assign int(2147483648) to i32`, not a trap (as an `i64` it is 2147483648), and `-2147483648 % -1` is 0. Where the value has to be a constant (a `def`, a global's initializer, a length or a bound), a division by zero is an error: `def value must be a compile-time constant`, `array length divides by zero`, `range bound divides by zero` (`u32#(4 / 0)`), and for the count of a repeat literal (`[0:u8; 4 / 0]`), `repeat count must be a compile-time integer`.
 
 **Floats** follow IEEE 754, as wasm's `f64.div` does, and never trap: `1.0 / 0.0` is infinity and `0.0 / 0.0` is NaN. `%` takes integers only (`'%' needs integer operands, not f64`).
 
@@ -4937,14 +4954,14 @@ cannot assign int(-8) to u32
 
 A comparison gives a `bool`. What it compares:
 
-- **Numbers**, of one type after widening, as for arithmetic: an `i32` and a `u32` need a cast. Signed types compare signed (`i32.lt_s`) and unsigned ones unsigned (`i32.lt_u`). A constant takes the value's type and has to be one of its values: with `c: u8`, `c < 256` is `cannot assign int(256) to u8`, and with `x: u32`, `x != -1` is `cannot assign int(-1) to u32` (write `x != ~0`). Floats compare as IEEE 754 says: NaN is unequal to everything, itself included, so `x != x` is true only for a NaN. Wide integers compare with all six.
+- **Numbers**, of one type after widening, as for arithmetic: an `i32` and a `u32` need a cast. Signed types compare signed (`i32.lt_s`) and unsigned ones unsigned (`i32.lt_u`). A constant takes the value's plain type and has to be one of its values: with `c: u8`, `c < 256` is `cannot assign int(256) to u8`, and with `x: u32`, `x != -1` is `cannot assign int(-1) to u32` (write `x != ~0`). A range does not count: with `k: u32#8`, `k == 9` and `x & 7 == 9` are accepted and always false, as a `match` arm `9 =>` is, and with `k: u8#8`, `k == 300` is `cannot assign int(300) to u8`. Floats compare as IEEE 754 says: NaN is unequal to everything, itself included, so `x != x` is true only for a NaN. Wide integers compare with all six.
 - **Bools**, with `==` and `!=` only (`'<' cannot be applied to bool: cast it to an integer first`).
-- **Pointers**, with all six, as unsigned addresses. A pointer compares with any other pointer and with an integer of at most 32 bits. An optional pointer compares too, and `p == 0` asks whether it is none ([Optional Types](#optional-types)).
+- **Pointers**, with all six, as unsigned addresses. A pointer compares with any other pointer and with an integer of at most 32 bits (with a wider one, `p == x` with `x: u64` is `'==' cannot be applied to *u8 and u64`). An optional pointer compares too, and `p == 0` asks whether it is none ([Optional Types](#optional-types)).
 - **Optional slices and optional host references**, only with a written `0` (the literal or a `def` of 0), by `==` and `!=` ([Optional Types](#optional-types), [2.13](#213-host-references)).
 
 Nothing else compares: a struct, a tuple, a slice or an array is no operand (`'==' cannot be applied to Point and Point`). Compare them part by part: the fields, or the lengths and then the elements.
 
-Comparisons group left to right but do not chain: `a < b < c` compares the bool `a < b` with `c`, which is an error, and `a == b == c` compares `a == b` with a bool `c`, so with numbers it is `mismatched operands for '==': bool and i32`. Write `a < b && b < c` and `a == b && b == c`.
+Comparisons group left to right but do not chain: `a < b < c` compares the bool `a < b` with `c`, which is an error, and `a == b == c` compares the bool `a == b` with `c`. With three bools that is allowed and means `(a == b) == c` (`false == false == true` is true); with numbers it is `mismatched operands for '==': bool and i32`. Write `a < b && b < c` and `a == b && b == c`.
 
 `&&` and `||` take two bools and evaluate the right side only when it decides the result. `!` takes a bool (`operand of '!' must be bool, not u32`); it binds looser than a comparison, so `!x == y` is `!(x == y)`.
 
@@ -5264,7 +5281,7 @@ Compound assignment combines an operation with assignment, on any target:
 
 The target is evaluated once, so `xs[next()] += 1` calls `next` one time. The result goes back into `x`, so `n` widens to the type of `x`, never the other way: with `total: u32` and `small: u8`, `total += small` is fine and `small += total` is an error (`cannot assign u32 to u8`): write `small += total as u8`. A shift count (`x <<= n`) can be any integer type, and the shift keeps `x`'s type: with `s: u8` and `n: u32`, `s <<= n` shifts and keeps the low 8 bits, while `s = s << n` is `cannot assign u32 to u8`, since `s << n` is a `u32` ([4.2](#42-bitwise-operators)). A pointer takes `+=` and `-=` of a byte count ([4.6](#46-pointer-operations)). `+|=`, `-|=` and `*|=` are the saturating operators, which are not implemented ([4.1](#41-arithmetic-operators)).
 
-The result has to fit a range `x`'s type carries ([Ranged Integers](#ranged-integers)), as in the plain `x = x op n`: with `let i = k & 15` (a `u32#16`), `i &= 7`, `i >>= 1` and `i %= 9` keep it, while `i += 1`, `i -= 1`, `i <<= 1` and `i *= 3` are errors (`cannot assign u32#17 to u32#16 (the result of '+=')`), since `buf[i]` on a `*[16]u8` is proven by the range. Either way `i` keeps the range it is declared with: after `i &= 7` it is still a `u32#16` ([Ranged Integers](#ranged-integers)). Only a constant `n` gives the result a range; to step a ranged index, bring it back into range (`i = (i + 1) & 15`) or keep it in a plain `u32`.
+The result has to fit a range `x`'s type carries ([Ranged Integers](#ranged-integers)), as in the plain `x = x op n`: with `let i = k & 15` (a `u32#16`), `i &= 7`, `i >>= 1` and `i %= 9` keep it, while `i += 1` and `i *= 3` give a range past it (`cannot assign u32#17 to u32#16 (the result of '+=')`, `cannot assign u32#46 to u32#16 (the result of '*=')`), and `i -= 1`, `i <<= 1`, `i /= 2`, `i |= 1` and `i ^= 1` give a plain `u32` (`cannot assign u32 to u32#16 (the result of '-=')`): all are errors, since `buf[i]` on a `*[16]u8` is proven by the range. With a variable `n`, `i += n` is refused at `n` (`cannot assign u32 to u32#16`). Either way `i` keeps the range it is declared with: after `i &= 7` it is still a `u32#16` ([Ranged Integers](#ranged-integers)). Only a constant `n` gives the result a range; to step a ranged index, bring it back into range (`i = (i + 1) & 15`) or keep it in a plain `u32`.
 
 <!-- spec:begin compile -->
 
@@ -5302,12 +5319,14 @@ func f(small: u8, total: u32, k: u32) {
   small += total
   let i = k & 15
   i += 1
+  i <<= 1
 }
 ```
 
 ```errors
 cannot assign u32 to u8
 cannot assign u32#17 to u32#16 (the result of '+=')
+cannot assign u32 to u32#16 (the result of '<<=')
 ```
 
 <!-- spec:end -->
@@ -5497,7 +5516,7 @@ index type u32#5 may exceed *[4]i32 bounds
 
 <!-- spec:end -->
 
-A proven index can still be given to `??` or `if let`, which take any index into a slice or a `*[N]T`. It is then checked when the program runs like any other, so `table[2] ?? 0` compiles to a comparison that always holds, and its fallback is never used: where an index is proven, read the element directly. A range is different: one proven when the program is compiled (constant bounds within a `*[N]T`, `buf[1..3]`, [4.8](#48-slicerange-syntax)) is a plain slice with nothing to resolve, so `buf[1..3] ?? ""` is `?? requires an optional expression or bounds-checked index`, and `if let` refuses it alike. Use it directly.
+A proven index can still be given to `??` or `if let`, which take any index into a slice or a `*[N]T`. It is then checked when the program runs like any other, so `table[2] ?? 0` compiles to a comparison that always holds, and its fallback is never used: where an index is proven, read the element directly. A range is different: one proven when the program is compiled (constant bounds within a `*[N]T`, `buf[1..3]`, [4.8](#48-slicerange-syntax)) is a plain slice with nothing to resolve, so `buf[1..3] ?? ""` is `?? requires an optional expression or bounds-checked index`, and `if let` refuses it alike. Use it directly. The two differ because a range has a type of its own, `[]T` when it is proven and `?[]T` when it is not, and `??` and `if let` take an optional. An element has no optional type (there is no `?u32`), so they take the index expression itself, proven or not.
 
 A slice's length is only known at run time, so a constant index into a slice is checked like any run-time one: `s[0] ?? 0`, or `if let`. A ranged index whose range may pass `N` proves nothing, and is checked like any run-time index: its element is an optional where it can be one, and `if let` or `??` resolves it; anywhere else it is an error.
 
@@ -5603,7 +5622,7 @@ When the elements are optionals themselves (`[]?*T`), the element of an index th
 
 #### The `??` Operator
 
-`a ?? b` is the value of `a`, an optional or an index or range that is checked at run time, when it has one, and `b` otherwise: a fallback for an optional pointer, slice or host reference that is none, or for an index or range out of bounds. `b` is evaluated only when it is needed. The result is the plain, non-optional type, and `b` has to be a value of it.
+`a ?? b` is the value of `a`, an optional or an index or range that is checked at run time, when it has one, and `b` otherwise: a fallback for an optional pointer, slice or host reference that is none, or for an index or range out of bounds. `b` is evaluated only when it is needed. The result is the plain, non-optional type, and `b` has to be a value of it. For an optional pointer, `b` may be an integer constant, which is an address there as anywhere a pointer is wanted ([2.5](#25-pointer-types)): with `p: ?*u32`, `p ?? 64` is the address 64 when `p` is none.
 
 `??` binds more loosely than every other operator, and its left side is a postfix expression: a name, a call, an index, a range, a member, or anything in parentheses. So `xs[i] ?? 0 + 1` is `xs[i] ?? (0 + 1)`, and an operator on the left needs parentheses: `(xs[i] ?? 0) == 0`. It does not chain: `a ?? b ?? c` is a syntax error. To try one value after another, group to the right: in `a ?? (b ?? c)`, `b ?? c` is the fallback of `a`. Grouped to the left, `(a ?? b) ?? c` has nothing left to resolve, as `a ?? b` is not an optional.
 
@@ -5768,7 +5787,7 @@ test "if let gives a value" {
 
 #### Element Addresses and Writes
 
-Writing `items[i] = v` follows the same rules as reading: the index must be proven in range (a constant or a ranged index into a `*[N]T`), or the write is an error, whatever the element is: `ps[i] = q` with a `*mut [4]*u8` and `i: u32` is refused (`writing to an element needs an index known to be in range`) although `ps[i]` reads as an optional. On a slice no index is proven. For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T` (`?*mut T` on a `[]mut T` or a `*mut [N]T`), none when `i` is out of range, so the check is visible in the code. A ranged index whose bound may pass the length is such an index too: with `i: u32#8`, `&slots[i + 1]` into a `*mut [8]Slot` is a `?*mut Slot`, none for `i = 7`:
+Writing `items[i] = v` into a `*[N]T` or a slice follows the same rules as reading: the index must be proven in range (a constant or a ranged index into a `*[N]T`), or the write is an error, whatever the element is. A plain run-time index is `writing to an element needs an index known to be in range` (on a slice, where no index is proven, `writing to an element of a slice needs its index checked`), also where a read of the element would be an optional, as `ps[i] = q` with a `*mut [4]*u8` and `i: u32` is; a ranged index whose range may pass `N` gets the message a read gets, `index type u32#5 may exceed *[4]u32 bounds`. A write through a many-pointer, `p[i] = v` with `p: [*]mut T`, is never checked (below). For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T` (`?*mut T` on a `[]mut T` or a `*mut [N]T`), none when `i` is out of range, so the check is visible in the code. A ranged index whose bound may pass the length is such an index too: with `i: u32#8`, `&slots[i + 1]` into a `*mut [8]Slot` is a `?*mut Slot`, none for `i = 7`:
 
 <!-- spec:begin compile -->
 
@@ -5837,10 +5856,10 @@ A range makes a slice over part of an array or slice, with no copying. It is wri
 
 A range is taken of a slice, a pointer to an array `*[N]T` (a table too, whose elements are its row pointers), and a many-pointer `[*]T`. A `*[!]T` and a packed `*[NxM]T` take none (`cannot take a range of *[!]u8: use a slice or a pointer to an array`): range the slice made from one instead, `let s: []u8 = (z.ptr, z.len)` and then `s[1..]`, or the `[]T` a packed array converts to, or one of its rows, `p[1][1..]`.
 
-Ranges follow the same bounds rules as indexing. A bound is an integer as an index is, of at most 32 bits, signed or not, and a negative one is out of range as a negative index is: `xs[a..b]` with `a = -1` is none, and on a `*[N]T` a negative constant bound is an error (`range -1..2 is out of bounds for *[4]i32`).
+Ranges follow the same bounds rules as indexing. A bound is an integer as an index is, of at most 32 bits, signed or not (`a range bound must be an integer of at most 32 bits, not i64`), and a negative one is out of range as a negative index is: `xs[a..b]` with `a = -1` is none, and on a `*[N]T` a negative constant bound is an error (`range -1..2 is out of bounds for *[4]i32`).
 
-- On a `*[N]T`, constant bounds are checked at compile time, `start <= end <= N` (`four[3..1]` is `range 3..1 is out of bounds for *[4]i32`), and so are ranged bounds whose types prove `start <= end <= N` (for example `arr[..i]` with `i: u32#8` on a `*[16]u8`). The result is a `[]T`. A ranged bound that does not prove it is no error, as it is for an index: the range is then an optional, as below (`four[..i]` with `i: u32#6` on a `*[4]i32` is a `?[]i32`).
-- Anything else is an optional `?[]T`, none unless `start <= end <= len`, checked at runtime: `s[i..] ?? ""` or `if let rest = s[i..] { ... }`. On a slice, only the whole slice (`s[..]`) is known to fit.
+- On a `*[N]T`, constant bounds are checked at compile time, `start <= end <= N` (`four[3..1]` is `range 3..1 is out of bounds for *[4]i32`), and so are ranged bounds whose types prove `start <= end <= N`: the start's largest value is at most the end's smallest (0 for a ranged end), and the end's largest is at most `N`. On a `*[16]u8`, `arr[..i]` and `arr[i..]` with `i: u32#17`, and `arr[i..4]` with `i: u32#5`, are `[]u8`s (empty where `i` is the end); `arr[1..i]` and `arr[i..j]`, whose end may be below the start, are optionals. The result is a `[]T`. A ranged bound that does not prove it is no error, as it is for an index: the range is then an optional, as below (`four[..i]` with `i: u32#6` on a `*[4]i32` is a `?[]i32`).
+- Anything else is an optional `?[]T`, none unless `start <= end <= len`, checked at runtime: `s[i..] ?? ""` or `if let rest = s[i..] { ... }`. On a slice, only the whole slice (`s[..]`) is known to fit, and constant bounds are not checked when the program is compiled: `s[3..1]` is accepted and is none when it runs.
 - A many-pointer (`[*]T`) has no length, so its ranges are unchecked and need an end: `p[0..n]` or `p[..n]` (`a range on a many-pointer needs an end: it has no length`).
 
 A range of a `*mut [N]T` or `[]mut T` is a `[]mut T`.
@@ -5852,6 +5871,8 @@ data bytes = [1:u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
 func sizes() -> u32 => bytes[2..8].len * 1000 + bytes[8..].len * 100 + bytes[..4].len * 10 + bytes[..].len
 func head(n: u32#9) -> []u8 => bytes[..n]                  // n <= 8 < 16: proven
+func tail(i: u32#17) -> []u8 => bytes[i..]                 // i <= 16: proven
+func span4(i: u32#4, j: u32#4) -> u32 => (bytes[i..j] ?? "").len   // j may be below i
 func rest(s: []u8, i: u32) -> []u8 => s[i..] ?? ""
 func span(p: [*]u8, n: u32) -> []u8 => p[0..n]             // unchecked
 
@@ -5861,6 +5882,8 @@ test "ranges" {
   assert rest("hello", 2).len == 3
   assert rest("hello", 9).len == 0
   assert span(bytes, 5).len == 5
+  assert tail(16).len == 0
+  assert span4(1, 3) == 2 && span4(3, 1) == 0
 }
 ```
 
@@ -5951,7 +5974,7 @@ test "method calls" {
 ```
 
 1. **Members win.** If the type of `x` has a field `f`, directly or through one pointer, `x.f` is that field, whether or not it is called. What a slice, an array and a pointer have built in (`.ptr`, `.len`, `.wid`, `.*`, `.0`, the type views such as `.u32`) are members in this sense. A many-pointer has no `.len`, so `s.len()` for `s: [*]u8` calls a function `len`. Through two pointers there is no field: with `pp: **Point`, `pp.x` is `no field 'x' on type **Point`; write `pp.*.x`.
-2. **The receiver is the first argument.** `x.f(a, b)` is `f(x, a, b)`. For a generic `f` ([8. Generics](#8-generics)), the receiver is the argument of the first parameter that is not comptime (a comptime function parameter counts as comptime), and the arguments written after it fill the other parameters in order. Leaving out the type and value parameters is the inferred form, so the receiver usually decides the type parameters: with `func twice(comptime T: type, comptime f: (T) -> T, x: T)`, `(5:u16).twice(inc)` is `twice(inc, 5:u16)`. Writing them, each in its own place, is the explicit form: `v.push(u32, 7)` is `push(u32, v, 7)`, and with `func scale(x: T, comptime T: type, k: T)`, `(3:u64).scale(u64, 5)` is `scale(3:u64, u64, 5)`. A wrong count is given after the receiver: `'scale' expects 1 argument after the receiver, or 2 with its type argument written; got 3`.
+2. **The receiver is the first argument.** `x.f(a, b)` is `f(x, a, b)`. For a generic `f` ([8. Generics](#8-generics)), the receiver is the argument of the first parameter that is not comptime (a comptime function parameter counts as comptime), and the arguments written after it fill the other parameters in the order they are declared, comptime function parameters among them, wherever they stand: a comptime function parameter is skipped when the receiver is chosen, but its argument is written in both forms. Leaving out the type and value parameters is the inferred form, so the receiver usually decides the type parameters: with `func twice(comptime T: type, comptime f: (T) -> T, x: T)`, `(5:u16).twice(inc)` is `twice(inc, 5:u16)`, and with `func apply(comptime T: type, x: T, comptime f: (T) -> T)`, `(3:u32).apply(inc)` is `apply(3:u32, inc)` (explicitly, `(3:u32).apply(u32, inc)`). Writing them, each in its own place, is the explicit form: `v.push(u32, 7)` is `push(u32, v, 7)`, and with `func scale(x: T, comptime T: type, k: T)`, `(3:u64).scale(u64, 5)` is `scale(3:u64, u64, 5)`. A wrong count is given after the receiver: `'scale' expects 1 argument after the receiver, or 2 with its type argument written; got 3`.
 3. **The receiver is passed as written.** It gets the conversions any argument gets (`*mut` to `*`, an array pointer to a slice, a narrower number widened) and nothing more: no address is taken of it, and no pointer is followed for it. With `p: *Point`, `p.norm2()` for `norm2(p: Point)` is `receiver: cannot assign *Point to Point`: write `p.*.norm2()`.
 4. **Calls chain left to right.** `v.last().double()` is `double(last(v))`.
 5. **It is only syntax.** `x.f(a)` and `f(x, a)` are the same call and compile to the same code. Which function `f` is, among functions that share the name, is decided as for any call ([3.4](#functions-that-share-a-name)). A builtin is called the same way: `x.sqrt()`, `a.min(b)`. A parameter or loop variable that has a function's name hides the function in this form too: with a parameter `double: u32`, `double.double()` is `double(double)`, a call of a `u32`, and is refused; its message, `no field 'double' on type u32, and no function 'double' accepts (u32)`, should name the parameter (a known bug). A variable with a builtin's name hides nothing ([10](#10-builtin-functions)), so with a parameter `max: u32`, `max.max(4)` should be `max(max, 4)`, the builtin; it is refused with the same message (a known bug): write `max(max, 4)`.
