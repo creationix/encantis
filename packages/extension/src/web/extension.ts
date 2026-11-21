@@ -34,6 +34,11 @@ export function activate(context: vscode.ExtensionContext): void {
       return null;
     }
   });
+  // The workspace's .ents files, for the server's Go to Symbol in Workspace
+  client.onRequest('encantis/findFiles', async (): Promise<string[]> => {
+    const files = await vscode.workspace.findFiles('**/*.ents', '**/node_modules/**');
+    return files.map((uri) => uri.toString());
+  });
   client.start();
 
   // -------------------------------------------------------------------------

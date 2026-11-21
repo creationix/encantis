@@ -21,7 +21,13 @@ import {
   type DocumentLinkParams,
   type DocumentSymbol,
   type DocumentSymbolParams,
+  type SymbolInformation,
+  type WorkspaceSymbolParams,
+  type Position,
+  SymbolKind,
   type DocumentHighlight,
+  type InlayHint,
+  type InlayHintParams,
   type DocumentHighlightParams,
   DocumentHighlightKind,
   type PrepareRenameParams,
@@ -52,6 +58,7 @@ import { namesIn, recoverParse, untrusted } from './recover';
 import { leftOutSymbols, outline } from './outline';
 import { BUILTIN_DOCS, BUILTIN_SIGNATURES, TYPE_DOCS } from './words';
 import { complete, signatureHelp } from './complete';
+import { inlayHints } from './hints';
 import { applyRename, planRename, type RenamePlan, refusedName } from './rename';
 import { rename } from '@encantis/compiler/queries';
 import { literalAt, nameAfter } from './scan';
@@ -274,6 +281,11 @@ export interface ServerOptions {
   // Reads a file of another file system by its URI (a web editor's,
   // vscode-vfs:), where readFile reads none: the web server asks the editor.
   readUri?: (uri: string) => Promise<string | null>;
+  // The URIs of the workspace's .ents files, for Go to Symbol in Workspace,
+  // in the folders the client named when it started (their URIs): VS Code
+  // finds them (the extensions answer encantis/findFiles), `encantis lsp`
+  // reads the folders.
+  findFiles?: (folders: string[]) => Promise<string[]>;
 }
 
 // The path the loader names a document's file by: a file's path (pathOf),
@@ -437,7 +449,13 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // Initialization
   // -----------------------------------------------------------------------------
 
-  connection.onInitialize((_params: InitializeParams): InitializeResult => {
+  // The workspace's folders, as the client names them when it starts
+  let folders: string[] = [];
+
+  connection.onInitialize((params: InitializeParams): InitializeResult => {
+    if (params.workspaceFolders?.length) folders = params.workspaceFolders.map((folder) => folder.uri);
+    else if (params.rootUri) folders = [params.rootUri];
+    else if (params.rootPath) folders = [uriOf(params.rootPath)];
     return {
       capabilities: {
         textDocumentSync: TextDocumentSyncKind.Incremental,
@@ -445,7 +463,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         definitionProvider: true,
         documentLinkProvider: { resolveProvider: false },
         documentSymbolProvider: true,
+        workspaceSymbolProvider: true,
         documentHighlightProvider: true,
+        inlayHintProvider: true,
         renameProvider: { prepareProvider: true },
         completionProvider: { triggerCharacters: ['.'] },
         signatureHelpProvider: { triggerCharacters: ['(', ','], retriggerCharacters: [','] },
@@ -977,17 +997,13 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // The declarations of the document, for the outline, the breadcrumbs and
   // Go to Symbol. While a declaration does not parse, it is listed by its
   // name, which is read from the words it starts with.
-  connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {
-    const document = documents.get(params.textDocument.uri);
-    if (!document) return [];
-    const text = document.getText();
-    const analysis = analysisOf(params.textDocument.uri, text);
+  // The declarations of a text, with the types an analysis of it gives
+  function declarationsOf(text: string, analysis: Analysis | null, positionAt: (offset: number) => Position): DocumentSymbol[] {
     // With no analysis of the text as it is, what of it parses
     const parsed = analysis ? null : parse(text);
     const recovered = parsed && !parsed.module ? recoverParse(text, parse, parsed) : null;
     const module = analysis?.module ?? parsed?.module ?? recovered?.module;
     if (!module) return [];
-    const positionAt = (offset: number) => document.positionAt(offset);
     const detailOf = (offset: number) => {
       if (!analysis || !answersAt(analysis, offset)) return undefined;
       const at = offsetToPosition(text, offset);
@@ -999,6 +1015,94 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     const leftOut = leftOutSymbols(text, analysis?.recovered?.leftOut ?? recovered?.leftOut ?? [], positionAt);
     const line = (s: DocumentSymbol) => s.range.start.line;
     return [...symbols, ...leftOut].sort((a, b) => line(a) - line(b));
+  }
+
+  connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return [];
+    const text = document.getText();
+    return declarationsOf(text, analysisOf(params.textDocument.uri, text), (offset) => document.positionAt(offset));
+  });
+
+  // Go to Symbol in Workspace: the declarations of the workspace's .ents
+  // files (as the editor finds them) and of the open documents, with what
+  // each is declared in. A file's are kept while its text is the same.
+  const declaredIn = new Map<string, { text: string; symbols: SymbolInformation[] }>();
+  // The files found last, kept for a few seconds: the editor asks again as
+  // each letter of a query is written.
+  let listed: { at: number; uris: string[] } | null = null;
+
+  async function workspaceFiles(): Promise<string[]> {
+    if (!options.findFiles) return [];
+    if (!listed || Date.now() - listed.at > 5000) {
+      listed = { at: Date.now(), uris: await options.findFiles(folders).catch(() => []) };
+    }
+    return listed.uris;
+  }
+
+  async function textOf(uri: string): Promise<string | null> {
+    const open = documents.get(uri);
+    if (open) return open.getText();
+    if (uri.startsWith('file:')) {
+      const path = pathOf(uri);
+      return path && options.readFile ? options.readFile(path) : null;
+    }
+    return options.readUri ? options.readUri(uri).catch(() => null) : null;
+  }
+
+  function symbolsOfFile(uri: string, text: string): SymbolInformation[] {
+    const known = declaredIn.get(uri);
+    if (known && known.text === text) return known.symbols;
+    const document = TextDocument.create(uri, 'encantis', 0, text);
+    const symbols: SymbolInformation[] = [];
+    const flatten = (list: DocumentSymbol[], container?: string) => {
+      for (const symbol of list) {
+        // An import's items are the other file's declarations.
+        if (symbol.kind === SymbolKind.Module) continue;
+        symbols.push({ name: symbol.name, kind: symbol.kind, location: { uri, range: symbol.selectionRange }, ...(container ? { containerName: container } : {}) });
+        if (symbol.children) flatten(symbol.children, symbol.name);
+      }
+    };
+    flatten(declarationsOf(text, analysisOf(uri, text), (offset) => document.positionAt(offset)));
+    declaredIn.set(uri, { text, symbols });
+    return symbols;
+  }
+
+  connection.onWorkspaceSymbol(async (params: WorkspaceSymbolParams): Promise<SymbolInformation[]> => {
+    // An open document is read as it is open, also where the files found
+    // write its URI another way
+    const open = documents.all().map((d) => d.uri);
+    const opened = new Set(open.map((uri) => pathFor(uri) ?? uri));
+    const uris = [...open, ...(await workspaceFiles()).filter((uri) => !opened.has(pathFor(uri) ?? uri))];
+    // The letters of the query, in order, in the name (as the editor matches)
+    const query = params.query.toLowerCase();
+    const matches = (name: string) => {
+      let at = 0;
+      for (const ch of name.toLowerCase()) if (ch === query[at]) at++;
+      return at === query.length;
+    };
+    const results: SymbolInformation[] = [];
+    for (const uri of uris) {
+      const text = await textOf(uri);
+      if (text === null) continue;
+      for (const symbol of symbolsOfFile(uri, text)) if (matches(symbol.name)) results.push(symbol);
+      if (results.length >= 1000) break;
+    }
+    return results;
+  });
+
+  // What the compiler inferred, in the lines asked for: the types of names
+  // bound with none written, the parameters of literal arguments. Only from
+  // an analysis of the text as it is now, where it answers.
+  connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return [];
+    const text = document.getText();
+    const analysis = analysisOf(params.textDocument.uri, text);
+    if (!analysis) return [];
+    const from = document.offsetAt(params.range.start);
+    const to = document.offsetAt(params.range.end);
+    return inlayHints(analysis, from, to, (offset) => document.positionAt(offset), (offset) => answersAt(analysis, offset));
   });
 
   // The places of the symbol at a position, for the editor to highlight: where

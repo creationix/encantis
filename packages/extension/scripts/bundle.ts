@@ -40,7 +40,7 @@ if (want('node')) {
   const outdir = join(root, 'dist', 'node');
   rmSync(outdir, { recursive: true, force: true });
   await bundle('node', {
-    entrypoints: [join(root, 'src/extension.ts'), join(root, 'src/server/lsp.ts')],
+    entrypoints: [join(root, 'src/extension.ts'), join(root, 'src/server.ts')],
     root: join(root, 'src'),
     outdir,
     target: 'node',

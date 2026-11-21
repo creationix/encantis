@@ -9,7 +9,7 @@ Encantis is a programming language that compiles to WebAssembly.
 
 ## Project Structure (Bun Monorepo)
 
-This is a bun workspace with three packages:
+This is a bun workspace with four packages:
 
 - **`packages/compiler/`** - Core language implementation (`@encantis/compiler`)
   - `parser.ts` - Parser (ohm-js based, matches grammar spec)
@@ -25,12 +25,19 @@ This is a bun workspace with three packages:
 
 - **`packages/cli/`** - Command-line interface (`@encantis/cli`)
   - `src/cli.ts` - CLI entry point
+  - Depends on `@encantis/compiler` and `@encantis/lsp` via workspace
+
+- **`packages/lsp/`** - Language server (`@encantis/lsp`): diagnostics, hover, completion, rename and the other language features
+  - `src/serve.ts` - `startServer(connection, options)`, on any transport; how files not open are read and the workspace's files found are the options
+  - `src/stdio.ts` - Over stdin and stdout, reading the file system: `encantis lsp`, for editors and agents other than VS Code
   - Depends on `@encantis/compiler` via workspace
 
 - **`packages/extension/`** - VS Code extension (`encantis-vscode-ext`)
-  - Dual-mode: Node.js desktop + WebWorker browser support
-  - LSP server with diagnostics, hover, and language features
-  - Depends on `@encantis/compiler` via workspace
+  - Dual-mode: Node.js desktop (`src/extension.ts`, `src/server.ts`) + WebWorker browser support (`src/web/`)
+  - Runs `@encantis/lsp`'s server, bundled with it; the editor finds the workspace's files for it (`encantis/findFiles`)
+  - Depends on `@encantis/compiler`, `@encantis/lsp` and `@encantis/cli` (`src/wasm.ts`, for the WAT preview) via workspace
+
+- **`plugins/encantis/`** - Claude Code plugin: gives Claude Code's LSP tool `encantis lsp` for `.ents` files (`lspServers` in `.claude-plugin/plugin.json`). The repo is its marketplace (`.claude-plugin/marketplace.json`). Check both with `claude plugin validate ./` and `claude plugin validate ./plugins/encantis`.
 
 - **`examples/`** - Example programs
 - **`docs/`** - Language documentation
@@ -52,6 +59,7 @@ encantis compile <file.ents>              # Output WAT to stdout
 encantis compile <file.ents> -o out.wat   # Output to file
 encantis ast <file.ents>                  # Output AST as JSON
 encantis check <file.ents>                # Check for errors
+encantis lsp                              # Language server on stdin/stdout
 ```
 
 ## Build Commands
@@ -63,6 +71,7 @@ bun run build:ext-web    # Bundle the web extension only
 bun run watch:ext        # Watch extension (Node.js)
 bun run watch:ext-web    # Watch extension (WebWorker)
 bun run reinstall:ext    # Package the .vsix and install it in VS Code
+node packages/extension/test/run.mjs desktop|web <file.vsix>   # Run a .vsix in VS Code, as CI does
 bun test                 # Run tests
 ```
 

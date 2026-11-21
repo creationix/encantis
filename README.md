@@ -44,6 +44,14 @@ The macOS binaries aren't notarized yet. If macOS refuses to open the binary, cl
 
 Install [Encantis Language](https://marketplace.visualstudio.com/items?itemName=creationix.encantis-vscode-ext) from the Marketplace (`code --install-extension creationix.encantis-vscode-ext`). It adds syntax highlighting, diagnostics, hover, go to definition, formatting, and a live WAT preview. Each release also has the extension as `encantis-vscode-<version>.vsix`, to install with **Extensions: Install from VSIX…** in the command palette.
 
+### Claude Code plugin
+
+The [`encantis` plugin](plugins/encantis/README.md) gives Claude Code the language server (`encantis lsp`). Claude then sees the errors in a `.ents` file after each edit it makes, and can go to definitions, find references and look up types. With `encantis` on your `PATH`, run this in Claude Code:
+
+```
+/plugin install encantis --marketplace creationix/encantis
+```
+
 ## Usage
 
 ```
@@ -54,6 +62,7 @@ encantis wasm <file> --release     Compile to the smallest wasm binary, or fail
 encantis test <file>               Run inline tests
 encantis run <file> [args...]      Compile and run with WASI
 encantis fmt <file...>             Format source files in place
+encantis lsp                       Language server on stdin and stdout, for editors and agents
 encantis --help                    All commands, including editor queries
 encantis --version
 ```

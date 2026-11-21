@@ -14,7 +14,7 @@ function server(options: ServerOptions = {}) {
   const sent = new Map<string, { message: string }[]>()
   const connection = new Proxy({}, {
     get(_target, name: string) {
-      if (name === 'languages') return { semanticTokens: { on: () => {} } }
+      if (name === 'languages') return { semanticTokens: { on: () => {} }, inlayHint: { on: (h: Handler) => handlers.set('onInlayHint', h) } }
       if (name === 'listen') return () => {}
       if (name === 'sendDiagnostics') return (p: { uri: string; diagnostics: { message: string }[] }) => sent.set(p.uri, p.diagnostics)
       return (handler: Handler) => {
@@ -215,6 +215,66 @@ describe('highlights', () => {
   })
 })
 
+describe('inlay hints', () => {
+  const text = `type Point = (x: i32, y: i32)
+def three = 3
+func scale(p: Point, by: i32) -> Point => Point(p.x * by, p.y * by)
+export func f(n: u32) -> i32 {
+  let p = scale(Point(1, 2), 2)
+  let q: Point = scale(p, three)
+  for i in n {
+    let j = i * 2
+  }
+  return p.x + q.y
+}
+`
+  type Hint = { position: { line: number; character: number }; label: string }
+  // The lines with their hints written in, as ⟨label⟩
+  async function hinted(source: string, edited = source, range?: { start: { line: number; character: number }; end: { line: number; character: number } }) {
+    const s = server()
+    await s.open(uri, source)
+    if (edited !== source) await s.change(uri, edited)
+    const lines = edited.split('\n')
+    const hints = s.ask<Hint[]>('onInlayHint', { textDocument: { uri }, range: range ?? { start: { line: 0, character: 0 }, end: { line: lines.length, character: 0 } } })
+    for (const h of [...hints].sort((a, b) => b.position.line - a.position.line || b.position.character - a.position.character)) {
+      const line = lines[h.position.line]
+      lines[h.position.line] = `${line.slice(0, h.position.character)}⟨${h.label}⟩${line.slice(h.position.character)}`
+    }
+    return lines.filter((l) => l.includes('⟨')).map((l) => l.trim())
+  }
+
+  test('the type of a name bound with none written, and the parameter of a literal argument', async () => {
+    expect(await hinted(text)).toEqual([
+      'let p⟨: Point⟩ = scale(Point(1, 2), ⟨by:⟩2)',
+      'for i⟨: u32⟩ in n {',
+      'let j⟨: u32⟩ = i * 2',
+    ])
+  })
+
+  test('only in the lines asked for', async () => {
+    expect(await hinted(text, text, { start: { line: 6, character: 0 }, end: { line: 7, character: 0 } })).toEqual(['for i⟨: u32⟩ in n {'])
+  })
+
+  // Written by its names, a type that refers to itself was expanded forever.
+  test('a type that refers to itself', async () => {
+    const recursive = `type Node = (next: ?*Node, v: u32)
+type Even = (odd: ?*Odd, v: u32)
+type Odd = (even: ?*Even, v: u32)
+export func f(n: *Node, e: *Even) -> u32 {
+  let m = n.next
+  let o = e.odd
+  return n.v
+}
+`
+    expect(await hinted(recursive)).toEqual(['let m⟨: ?*Node⟩ = n.next', 'let o⟨: ?*Odd⟩ = e.odd'])
+  })
+
+  test('none in a declaration that does not parse yet', async () => {
+    const edited = text.replace('  return p.x + q.y', '  return p.x + (q.y')
+    expect(await hinted(text, edited)).toEqual([])
+  })
+})
+
 describe('completion', () => {
   // Opens the text, edits it to the text with | taken out, and completes at |
   async function complete(edited: string) {
@@ -254,6 +314,64 @@ describe('completion', () => {
     expect((await complete(SHAPES.replace('  return w * h', '  let z = origin.|\n  return w * h'))).labels.slice(0, 2)).toEqual(['x', 'y'])
   })
 
+  // Completed in a text of its own, edited to the text with | taken out
+  async function completeIn(base: string, edited: string) {
+    const s = server()
+    await s.open(uri, base)
+    const at = edited.indexOf('|')
+    const text = edited.replace('|', '')
+    await s.change(uri, text)
+    return s.at<CompletionItem[]>('onCompletion', uri, text, at)
+  }
+  const GENERIC = `func Pair(comptime T: type) -> type => (a: T, b: T)
+func make(comptime T: type, x: T) -> Pair(T) => Pair(T)(x, x)
+func second(comptime T: type, p: Pair(T)) -> T => p.b
+type A = (x: i32)
+type B = (x: f64)
+func fa(a: A) -> i32 => a.x
+func fb(b: B) -> f64 => b.x
+export func f(n: u32, t: (i32, i32), q: *mut A) -> u32 {
+  let v = make(u32, n)
+  if n > 3 {
+    let inner = 1
+  }
+  return second(v) + fa(q.*) as u32
+}
+`
+
+  test('a local of a block that has closed is not offered, one of the block it is in is', async () => {
+    const after = await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = |\n  return second'))
+    expect(after.map((i) => i.label)).not.toContain('inner')
+    expect(after.map((i) => i.label)).toContain('v')
+    const within = await completeIn(GENERIC, GENERIC.replace('    let inner = 1', '    let inner = 1\n    let z = |'))
+    expect(within.map((i) => i.label)).toContain('inner')
+  })
+
+  test('after a point: unnamed fields by position, .* and the type puns of a pointer', async () => {
+    const tuple = await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = t.|\n  return second'))
+    expect(tuple.map((i) => [i.label, i.detail]).slice(0, 2)).toEqual([['0', 'i32'], ['1', 'i32']])
+    const pointer = (await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = q.|\n  return second'))).map((i) => i.label)
+    expect(pointer.slice(0, 2)).toEqual(['x', '*'])
+    expect(pointer).toContain('u32')
+    // A value is no memory to read as another type.
+    expect((await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = t.|\n  return second'))).map((i) => i.label)).not.toContain('u32')
+  })
+
+  test("a local given a generic's result, on a line not yet checked", async () => {
+    const items = await completeIn(GENERIC, GENERIC.replace('  return second', '  let w = make(u32, n)\n  let z = w.|\n  return second'))
+    expect(items.map((i) => [i.label, i.detail])).toEqual([
+      ['a', 'u32'],
+      ['b', 'u32'],
+      ['second', '(p: Pair(T)) -> T'],
+    ])
+  })
+
+  test("methods of a struct, not of another with fields of the same names", async () => {
+    const labels = (await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = q.|\n  return second'))).map((i) => i.label)
+    expect(labels).toContain('fa')
+    expect(labels).not.toContain('fb')
+  })
+
   test('nothing in a comment, a string or a number', async () => {
     expect((await complete(SHAPES.replace('  return w * h', '  // p.|\n  return w * h'))).labels).toEqual([])
     expect((await complete(SHAPES.replace('  return w * h', '  let s = "p.|"\n  return w * h'))).labels).toEqual([])
@@ -268,6 +386,30 @@ describe('completion', () => {
     expect(method.signature?.activeParameter).toBe(1)
     const builtin = await complete(SHAPES.replace('  return w * h', '  let m = min(w, |\n  return w * h'))
     expect(builtin.signature?.signatures[0].label).toBe('min(a: T, b: T) -> T')
+  })
+})
+
+describe('workspace symbols', () => {
+  test('the declarations of the files the editor finds and of the open documents', async () => {
+    const files = new Map([
+      [pathOf('file:///ws/a.ents') as string, 'export func alpha() -> u32 => 1\ntype Point = (x: i32, y: i32)\nimport "./b" ("beta" func beta())\n'],
+      [pathOf('file:///ws/b.ents') as string, 'export func beta() {}\n'],
+    ])
+    const s = server({ findFiles: async () => ['file:///ws/a.ents', 'file:///ws/b.ents'], readFile: async (path) => files.get(path) ?? null })
+    await s.open('file:///ws/c.ents', 'func gamma() {}\n')
+    type Found = { name: string; location: { uri: string; range: { start: { line: number; character: number } } }; containerName?: string }
+    const shown = (found: Found[]) => found.map((f) => `${f.name}${f.containerName ? ` in ${f.containerName}` : ''} ${f.location.uri.slice(-6)}:${f.location.range.start.line}:${f.location.range.start.character}`)
+    // An import is not a declaration of the file that imports it.
+    expect(shown(await s.ask<Promise<Found[]>>('onWorkspaceSymbol', { query: '' }))).toEqual([
+      'gamma c.ents:0:5',
+      'alpha a.ents:0:12',
+      'Point a.ents:1:5',
+      'x in Point a.ents:1:14',
+      'y in Point a.ents:1:22',
+      'beta b.ents:0:12',
+    ])
+    // The letters of the query, in order
+    expect(shown(await s.ask<Promise<Found[]>>('onWorkspaceSymbol', { query: 'pt' }))).toEqual(['Point a.ents:1:5'])
   })
 })
 
