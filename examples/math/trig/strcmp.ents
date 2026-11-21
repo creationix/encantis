@@ -1,5 +1,9 @@
-// Compare two slices, return 0 if equal, or positive or negative if different (to enable sorting)
-export func strcmp(a:[]u8, b:[]u8) -> i32 {
+// Compares two byte strings, for sorting: 0 when they are equal, negative
+// when a comes first, positive when b does. The first byte where they differ
+// decides, by the difference of the two bytes; where one is the start of the
+// other, the shorter comes first, by the difference of the lengths.
+export func strcmp(a: []u8, b: []u8) -> i32 {
+  // i is below both lengths, so the many-pointers need no check
   for i in min(a.len, b.len) {
     let diff = i32(a.ptr[i]) - i32(b.ptr[i])
     return diff when diff != 0
@@ -8,29 +12,36 @@ export func strcmp(a:[]u8, b:[]u8) -> i32 {
 }
 
 test "strcmp" {
-  test "equal strings" {
-    assert(strcmp("hello", "hello") == 0)
-    assert(strcmp("", "") == 0)
-    assert(strcmp("a", "a") == 0)
+  test "equal strings compare as 0" {
+    assert strcmp("hello", "hello") == 0
+    assert strcmp("", "") == 0
+    assert strcmp("a", "a") == 0
   }
 
-  test "ordering" {
-    assert(strcmp("a", "b") < 0)
-    assert(strcmp("b", "a") > 0)
-    assert(strcmp("abc", "abd") < 0)
-    assert(strcmp("abd", "abc") > 0)
+  test "the first differing byte orders two strings" {
+    assert strcmp("a", "b") < 0
+    assert strcmp("b", "a") > 0
+    assert strcmp("abc", "abd") < 0
+    assert strcmp("abd", "abc") > 0
   }
 
-  test "length differences" {
-    assert(strcmp("abc", "ab") > 0)
-    assert(strcmp("ab", "abc") < 0)
-    assert(strcmp("", "a") < 0)
-    assert(strcmp("a", "") > 0)
+  test "a string is after its own prefix" {
+    assert strcmp("abc", "ab") > 0
+    assert strcmp("ab", "abc") < 0
+    assert strcmp("", "a") < 0
+    assert strcmp("a", "") > 0
   }
 
-  test "common prefix" {
-    assert(strcmp("hello", "help") < 0)
-    assert(strcmp("help", "hello") > 0)
-    assert(strcmp("abc", "abcd") < 0)
+  test "after a common prefix the next byte decides" {
+    assert strcmp("hello", "help") < 0
+    assert strcmp("help", "hello") > 0
+    assert strcmp("abc", "abcd") < 0
+  }
+
+  test "the result is a difference of bytes, or of lengths" {
+    assert strcmp("a", "c") == 'a' - 'c'
+    assert strcmp("az", "ab") == 'z' - 'b'
+    assert strcmp("abcde", "ab") == 3
+    assert strcmp("", "xyz") == -3
   }
 }

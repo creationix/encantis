@@ -10,7 +10,7 @@ data points: *[2]Point = [Point(x: 5, y: 6), Point(y: 8, x: 7)]
 data swapped: *[1]Point = [(y: 8, x: 7)]
 data mixed = [(1:u8, 2:i16, 3:u64), (4, 5, 6)]
 data nested = [((1, 2), 3:u8), ((4, 5), 6)]
-data people: *[2]Named = [("ab", (1, 2), [3:u16, 4, 5], 6), Named("cde", Point(7, 8), [9:u16, 10, 11], 12)]
+data people: *[2]Named = [("ab", (1, 2), [3, 4, 5], 6), Named("cde", Point(7, 8), [9, 10, 11], 12)]
 
 test "an array of tuples" {
   assert pairs[0].0 == 1
@@ -40,9 +40,9 @@ test "a tuple with names gives each field by name, one without by position" {
 
 test "a slice field points at its own literal" {
   assert people[0].name.len == 2
-  assert people[0].name.ptr[1] == 98
+  assert (people[0].name[1] ?? 0) == 'b'
   assert people[1].name.len == 3
-  assert people[1].name.ptr[2] == 101
+  assert (people[1].name[2] ?? 0) == 'e'
   let n: u32 = 0
   for p in people { n += p.name.len }
   assert n == 5
@@ -50,19 +50,12 @@ test "a slice field points at its own literal" {
 
 type Entry = (key: *[!]u8, bytes: *[3]u8, code: u8)
 
-data entries: *[2]Entry = [("ab", "xyz", 1), Entry("hij", [7:u8, 8, 9], 2)]
-
-func key-length(key: *[!]u8) -> u32 {
-  let p = key as [*]u8
-  let n: u32 = 0
-  while p[n] != 0 { n += 1 }
-  return n
-}
+data entries: *[2]Entry = [("ab", "xyz", 1), Entry("hij", [7, 8, 9], 2)]
 
 test "a pointer field points at its own literal too" {
-  assert key-length(entries[0].key) == 2
-  assert key-length(entries[1].key) == 3
-  assert entries[0].bytes[2] == 122
+  assert entries[0].key.len == 2       // scanned for the zero byte "ab" ends with
+  assert entries[1].key.len == 3
+  assert entries[0].bytes[2] == 'z'
   assert entries[1].bytes[1] == 8
   assert entries[1].code == 2
 }
@@ -105,8 +98,8 @@ test "a tuple with a runtime field is filled in when the literal is reached" {
 type Mixed = (a: u64, b: u8, c: f32)
 
 func widths(x: u8) -> f32 {
-  let l: *[2]Mixed = [(5, x, 1.5), Mixed(7, 2, 2.5)]
-  return (l[0].a as f32) + (l[0].b as f32) + l[0].c + l[1].c + (l[1].a as f32)
+  let ms: *[2]Mixed = [(5, x, 1.5), Mixed(7, 2, 2.5)]
+  return ms[0].a as f32 + ms[0].b + ms[0].c + ms[1].c + ms[1].a as f32   // a u8 widens to f32
 }
 
 test "its literal fields take the types of the struct's fields" {

@@ -89,7 +89,7 @@ gzip         1074
 brotli       986
 ```
 
-Fourteen examples, the browser games among them, have size budgets in [`scripts/size-budgets.json`](scripts/size-budgets.json): the most bytes each one's release build may take. `bun test` (and so CI) fails when one is over. `bun run size` prints each example's sizes next to its budget. When an example grows on purpose, `bun run size --update` sets every budget to the current size plus 2%.
+Thirteen examples, the browser games among them, and `lib/text.ents` have size budgets in [`scripts/size-budgets.json`](scripts/size-budgets.json): the most bytes each one's release build may take. `bun test` (and so CI) fails when one is over. `bun run size` prints each one's sizes next to its budget. When one grows on purpose, `bun run size --update` sets every budget to the current size plus 2%.
 
 ## Documentation
 
@@ -97,7 +97,7 @@ Fourteen examples, the browser games among them, have size budgets in [`scripts/
 - [Grammar](docs/grammar.md): the formal syntax.
 - [Spec tests](spec/): how the language parses and checks, as markdown examples that run as tests.
 - [lib](lib/): helpers for reading input, parsing text and printing, and generic containers (a growable array, a hash set, a hash map, a stable sort) on a bump stack, written in Encantis.
-- [Examples](examples/): allocators, data structures, generic functions and types, crypto (BLAKE2b, SHA-2, Ed25519, Gimli), SIMD and WASI programs, each with inline tests.
+- [Examples](examples/): allocators, data structures, generic functions and types, crypto (BLAKE2b, SHA-2, Ed25519, Gimli), wide integers (u128) and WASI programs, each with inline tests.
 - [Browser games](examples/browser/): Lantern, a small complete game (about 5 KB compressed with its host and page; keyboard, gamepad and touch), a starter template, and the host contract they share. [Play it here](https://creationix.github.io/encantis/lantern/).
 
 ## Development

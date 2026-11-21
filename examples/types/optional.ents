@@ -1,16 +1,13 @@
-// Optional types: ?*T and ?[]T
-// Sentinel is ptr=0 (null), checked via i32.eqz
+// Optional pointers and slices, ?*T and ?[]T: none is written 0, and held as
+// the address 0. An optional is read only after if let or ?? has resolved it,
+// and an index checked at run time is resolved the same way.
 
 export memory
 
-// --- Setup: data section arrays for indexing examples ---
-
-data names:[][]u8 = ["Alice", "Bob", "Charlie"]
+data names: [][]u8 = ["Alice", "Bob", "Charlie"]
 data scores = [95, 87, 42]:*[_]i32
 
-// --- 1. Optional pointer parameter: ?*T ---
-
-// Accept a nullable pointer; unwrap with if-let
+// An optional pointer, resolved with if let.
 export func deref_or_zero(p: ?*u32) -> u32 {
   if let val = p {
     return val.*
@@ -18,22 +15,12 @@ export func deref_or_zero(p: ?*u32) -> u32 {
   return 0
 }
 
-// --- 2. Optional slice parameter: ?[]T ---
+// An optional slice, resolved with ??.
+export func slice_len(s: ?[]u8) -> u32 => (s ?? "empty").len
 
-// Accept a nullable slice; unwrap with ??
-export func slice_len(s: ?[]u8) -> u32 {
-  let resolved = s ?? "empty"
-  return resolved.len
-}
+// An element of a [][]u8 at a run-time index is a ?[]u8: none past the end.
+export func get_name(i: u32) -> []u8 => names[i] ?? "Unknown"
 
-// --- 3. Bounds-checked indexing on []T (pointer/slice elements) ---
-
-// Runtime index on [][]u8 returns ?[]u8
-export func get_name(i: u32) -> []u8 {
-  return names[i] ?? "Unknown"
-}
-
-// if-let with bounds-checked index
 export func name_len(i: u32) -> u32 {
   if let name = names[i] {
     return name.len
@@ -41,12 +28,9 @@ export func name_len(i: u32) -> u32 {
   return 0
 }
 
-// --- 4. Bounds-checked indexing on *[N]T (primitive elements) ---
-
-// Primitive elements require immediate ?? or if-let (no ?i32 type)
-export func get_score(i: u32) -> i32 {
-  return scores[i] ?? -1
-}
+// A number has no none, so an element of a *[N]i32 at a run-time index is
+// resolved where it is read, with ?? or if let.
+export func get_score(i: u32) -> i32 => scores[i] ?? -1
 
 export func has_score(i: u32) -> bool {
   if let score = scores[i] {
@@ -55,12 +39,25 @@ export func has_score(i: u32) -> bool {
   return false
 }
 
-// --- 5. Storing optional values for later resolution ---
-
+// A ?[]u8 can be kept in a variable and resolved later.
 export func find_name(i: u32) -> u32 {
-  // ?[]u8 — deferred resolution
   let maybe = names[i]
-  // Resolve later with ??
   let resolved = maybe ?? "nobody"
   return resolved.len
+}
+
+test "an optional pointer or slice is resolved before it is read" {
+  assert deref_or_zero(&7) == 7
+  assert deref_or_zero(0) == 0
+  assert slice_len("hi") == 2
+  assert slice_len(0) == 5
+}
+
+test "an index checked at run time is resolved like an optional" {
+  assert get_name(1).len == 3
+  assert get_name(3).len == 7
+  assert name_len(1) == 3 && name_len(3) == 0
+  assert get_score(2) == 42 && get_score(3) == -1
+  assert has_score(0) && !has_score(3)
+  assert find_name(0) == 5 && find_name(9) == 6
 }

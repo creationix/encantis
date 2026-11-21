@@ -16,123 +16,104 @@ def jump-1 = 0x170865df4b3201fc:u64
 def long-jump-0 = 0xd2a98b26625eee7b:u64
 def long-jump-1 = 0xdddf9b1090aa7ac1:u64
 
-test "xoroshiro128+" {
-  data tv_state = mut [0:u64; 2]
-
-  func seed(s0: u64, s1: u64) {
-    tv_state[0] = s0
-    tv_state[1] = s1
-  }
-
-  test "first output" {
-    seed(1, 2)
-    assert next(tv_state.u128) == 3
-  }
-
-  test "second output" {
-    seed(1, 2)
-    next(tv_state.u128)
-    assert next(tv_state.u128) == 0x0000006001030003
-  }
-
-  test "third output" {
-    seed(1, 2)
-    next(tv_state.u128)
-    next(tv_state.u128)
-    assert next(tv_state.u128) == 0x20c102c302000c03
-  }
-
-  test "state after three" {
-    seed(1, 2)
-    next(tv_state.u128)
-    next(tv_state.u128)
-    next(tv_state.u128)
-    assert tv_state[0] == 0x410000030d036d01
-    assert tv_state[1] == 0x4001806400204060
-  }
-}
-
-// Generate next random number and advance state in-place
-export func next(state:*mut u128) -> (result:u64) {
-  let s0 = state.u64[0]
-  let s1 = state.u64[1]
+// Returns the next number, and steps the state on in place
+export func next(state: *mut [2]u64) -> (result: u64) {
+  let s0 = state[0]
+  let s1 = state[1]
 
   result = s0 + s1
 
   s1 ^= s0
-  state.u64[0] = (s0 <<< 24) ^ s1 ^ (s1 << 16)  // a=24, b=16
-  state.u64[1] = s1 <<< 37                       // c=37
+  state[0] = (s0 <<< 24) ^ s1 ^ (s1 << 16)     // a=24, b=16
+  state[1] = s1 <<< 37                          // c=37
+}
+
+// Moves state on by the jump polynomial whose bits are word0's, then
+// word1's, each from its lowest: at each set bit the state is XORed into
+// the sum, and at every bit the state steps as next steps it. The state is
+// held in registers meanwhile, and the sum stored in its place at the end.
+func jump-by(state: *mut [2]u64, word0: u64, word1: u64) {
+  let s0 = state[0]
+  let s1 = state[1]
+  let t0: u64 = 0
+  let t1: u64 = 0
+  for w in 2 {
+    let word = if w == 0 { word0 } else { word1 }
+    for b in 64 {
+      if word & (1:u64 << b) != 0 {
+        t0 ^= s0
+        t1 ^= s1
+      }
+      s1 ^= s0
+      s0 = (s0 <<< 24) ^ s1 ^ (s1 << 16)
+      s1 <<<= 37
+    }
+  }
+  state[0] = t0
+  state[1] = t1
 }
 
 // Jump function - equivalent to 2^64 calls to next()
 // Used to generate non-overlapping subsequences for parallel computations
-export func jump(state:*mut u128) {
-  let s0 = state.u64[0]
-  let s1 = state.u64[1]
-  let t0:u64 = 0
-  let t1:u64 = 0
-
-  // Process jump-0
-  for b in 64 {
-    if (jump-0 & (1:u64 << b)) != 0 {
-      t0 ^= s0
-      t1 ^= s1
-    }
-    // Inline next() logic to avoid repeated memory access
-    let r = s0 + s1
-    s1 ^= s0
-    s0 = (s0 <<< 24) ^ s1 ^ (s1 << 16)
-    s1 <<<= 37
-  }
-
-  // Process jump-1
-  for b in 64 {
-    if (jump-1 & (1:u64 << b)) != 0 {
-      t0 ^= s0
-      t1 ^= s1
-    }
-    let r2 = s0 + s1
-    s1 ^= s0
-    s0 = (s0 <<< 24) ^ s1 ^ (s1 << 16)
-    s1 <<<= 37
-  }
-
-  state.u64[0] = t0
-  state.u64[1] = t1
+export func jump(state: *mut [2]u64) {
+  jump-by(state, jump-0, jump-1)
 }
 
 // Long-jump function - equivalent to 2^96 calls to next()
 // Used to generate 2^32 starting points for distributed computations
-export func long-jump(state:*mut u128) {
-  let s0 = state.u64[0]
-  let s1 = state.u64[1]
-  let t0:u64 = 0
-  let t1:u64 = 0
+export func long-jump(state: *mut [2]u64) {
+  jump-by(state, long-jump-0, long-jump-1)
+}
 
-  // Process long-jump-0
-  for b in 64 {
-    if (long-jump-0 & (1:u64 << b)) != 0 {
-      t0 ^= s0
-      t1 ^= s1
-    }
-    let r = s0 + s1
-    s1 ^= s0
-    s0 = (s0 <<< 24) ^ s1 ^ (s1 << 16)
-    s1 <<<= 37
+// The expected values are those of the C reference code
+test "xoroshiro128+" {
+  data tv-state = mut [0:u64; 2]
+
+  func seed(s0: u64, s1: u64) {
+    tv-state[0] = s0
+    tv-state[1] = s1
   }
 
-  // Process long-jump-1
-  for b in 64 {
-    if (long-jump-1 & (1:u64 << b)) != 0 {
-      t0 ^= s0
-      t1 ^= s1
-    }
-    let r2 = s0 + s1
-    s1 ^= s0
-    s0 = (s0 <<< 24) ^ s1 ^ (s1 << 16)
-    s1 <<<= 37
+  test "the first output of (1, 2) is their sum" {
+    seed(1, 2)
+    assert next(tv-state) == 3
   }
 
-  state.u64[0] = t0
-  state.u64[1] = t1
+  test "the second output of (1, 2) is the reference's" {
+    seed(1, 2)
+    next(tv-state)
+    assert next(tv-state) == 0x0000006001030003
+  }
+
+  test "the third output of (1, 2) is the reference's" {
+    seed(1, 2)
+    next(tv-state)
+    next(tv-state)
+    assert next(tv-state) == 0x20c102c302000c03
+  }
+
+  test "the state after three outputs is the reference's" {
+    seed(1, 2)
+    next(tv-state)
+    next(tv-state)
+    next(tv-state)
+    assert tv-state[0] == 0x410000030d036d01
+    assert tv-state[1] == 0x4001806400204060
+  }
+
+  test "jump moves the state as the reference's does" {
+    seed(1, 2)
+    jump(tv-state)
+    assert tv-state[0] == 0x66fbd4be1df0a7b5
+    assert tv-state[1] == 0x830c3ddbb4aa3172
+    assert next(tv-state) == 0xea081299d29ad927
+  }
+
+  test "long-jump moves the state as the reference's does" {
+    seed(1, 2)
+    long-jump(tv-state)
+    assert tv-state[0] == 0x3ce44494d47d323a
+    assert tv-state[1] == 0x2aa25ca8d61de643
+    assert next(tv-state) == 0x6786a13daa9b187d
+  }
 }

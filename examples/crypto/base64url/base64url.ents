@@ -1,220 +1,166 @@
-// base64url encoding/decoding (RFC 4648 §5, no padding)
+// base64url encoding and decoding (RFC 4648 §5), without padding
 
-// Encoding alphabet: A-Z a-z 0-9 - _
+// What encode and decode return when the output is too short, and decode
+// when its input is no base64url
+def failed = 0xFFFFFFFF:u32
+
+// The alphabet: the character of each 6-bit value, A-Z a-z 0-9 - _
 data encode_table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
-// Compute encoded length: ceil(input_len * 4 / 3)
-func encoded_len(input_len: u32) -> u32 {
-  let full_groups = input_len / 3
-  let remainder = input_len % 3
-  let len = full_groups * 4
-  if remainder == 1 { len += 2 }
-  if remainder == 2 { len += 3 }
-  return len
-}
+// The length of the encoding of n bytes: 4 characters for each 3 bytes, and
+// 2 or 3 for the 1 or 2 bytes left
+func encoded_len(n: u32) -> u32 => n / 3 * 4 + match n % 3 { 1 => 2, 2 => 3, _ => 0 }
 
-// Encode input bytes to base64url, writing to output buffer.
-// Returns number of bytes written or 0xFFFFFFFF if output is too small
+// Encodes input into output and returns the number of characters written,
+// or `failed`, writing nothing, when output is too short for them
 export func encode(input: []u8, output: []mut u8) -> (written: u32) {
-  return 0xFFFFFFFF when encoded_len(input.len) > output.len
-  let i: u32 = 0
-  let o: u32 = 0
-  let len = input.len
-  let inp = input.ptr
-  let out = output.ptr
+  written = encoded_len(input.len)
+  return failed when written > output.len
 
-  // Process full 3-byte groups
-  while i + 3 <= len {
-    let a = inp[i]:u32
-    let b = inp[i + 1]:u32
-    let c = inp[i + 2]:u32
-    let triple = (a << 16) | (b << 8) | c
-    
-    out[o]     = encode_table.u8[(triple >> 18) & 0x3F]
-    out[o + 1] = encode_table.u8[(triple >> 12) & 0x3F]
-    out[o + 2] = encode_table.u8[(triple >> 6) & 0x3F]
-    out[o + 3] = encode_table.u8[triple & 0x3F]
+  // The counts keep the reads within input, and output holds all that is
+  // written, so both go through the slices' pointers, unchecked
+  let src = input.ptr
+  let dst = output.ptr
 
-    i += 3
-    o += 4
+  // Each 3 bytes are 4 characters, 6 bits each
+  for g in input.len / 3 {
+    let triple = (src[0]:u32 << 16) | (src[1]:u32 << 8) | src[2]
+    dst[0] = encode_table[(triple >> 18) & 63]
+    dst[1] = encode_table[(triple >> 12) & 63]
+    dst[2] = encode_table[(triple >> 6) & 63]
+    dst[3] = encode_table[triple & 63]
+    src += 3
+    dst += 4
   }
 
-  // Handle remainder
-  let remaining = len - i
-  if remaining == 1 {
-    let a2 = inp[i]:u32
-    out[o]     = encode_table.u8[(a2 >> 2) & 0x3F]
-    out[o + 1] = encode_table.u8[(a2 << 4) & 0x3F]
-    o += 2
+  // 1 byte left is 2 characters, 2 bytes are 3, the last padded with zero bits
+  let left = input.len % 3
+  if left == 1 {
+    let byte = src[0]
+    dst[0] = encode_table[byte >> 2]
+    dst[1] = encode_table[(byte << 4) & 63]
+  } elif left == 2 {
+    let pair = (src[0]:u32 << 8) | src[1]
+    dst[0] = encode_table[(pair >> 10) & 63]
+    dst[1] = encode_table[(pair >> 4) & 63]
+    dst[2] = encode_table[(pair << 2) & 63]
   }
-  if remaining == 2 {
-    let a3 = inp[i]:u32
-    let b3 = inp[i + 1]:u32
-    let pair = (a3 << 8) | b3
-    out[o]     = encode_table.u8[(pair >> 10) & 0x3F]
-    out[o + 1] = encode_table.u8[(pair >> 4) & 0x3F]
-    out[o + 2] = encode_table.u8[(pair << 2) & 0x3F]
-    o += 3
-  }
-
-  written = o
 }
 
-// Decode table: maps ASCII byte → 6-bit value (0xFF = invalid)
-data decode_table = mut [0:u8; 128]
-
-global decode_init: u32 = 0
+// The 6-bit value of each byte, `invalid` for a byte outside the alphabet:
+// filled in from encode_table by the first decode. It has an entry for every
+// byte, so a byte indexes it with no check.
+def invalid = 0xFF
+data decode_table = mut [0:u8; 256]
+global decode_ready = false
 
 func init_decode() {
-  return when decode_init != 0
-  // Fill with 0xFF (invalid)
-  memset(decode_table, 0xFF, 128)
-  // A-Z = 0..25
-  let i: u32 = 0
-  while i < 26 {
-    decode_table.u8[65 + i] = i as u8
-    i += 1
+  return when decode_ready
+  decode_table[..] = invalid
+  for value, c in encode_table {
+    decode_table[c] = value as u8
   }
-  // a-z = 26..51
-  i = 0
-  while i < 26 {
-    decode_table.u8[97 + i] = (26 + i) as u8
-    i += 1
-  }
-  // 0-9 = 52..61
-  i = 0
-  while i < 10 {
-    decode_table.u8[48 + i] = (52 + i) as u8
-    i += 1
-  }
-  // - = 62, _ = 63
-  decode_table.u8[45] = 62 as u8
-  decode_table.u8[95] = 63 as u8
-  decode_init = 1
+  decode_ready = true
 }
 
-// Compute decoded length from encoded length
-func decoded_len(encoded_len: u32) -> u32 {
-  let full_groups = encoded_len / 4
-  let remainder = encoded_len % 4
-  let len = full_groups * 3
-  if remainder == 2 { len += 1 }
-  if remainder == 3 { len += 2 }
-  return len
+// The length of what n characters decode to: 3 bytes for each 4, and 1 or 2
+// for the 2 or 3 left
+func decoded_len(n: u32) -> u32 => n / 4 * 3 + match n % 4 { 2 => 1, 3 => 2, _ => 0 }
+
+// The n characters at src as one number, 6 bits each, the first highest, or
+// `failed` when one of them is outside the alphabet
+func sextets(src: [*]u8, n: u32) -> u32 {
+  let bits: u32 = 0
+  let seen: u8 = 0
+  for k in n {
+    let v = decode_table[src[k]]
+    seen |= v
+    bits = (bits << 6) | v
+  }
+  return failed when seen & 0x80 != 0   // invalid has the top bit set, and no value does
+  return bits
 }
 
-// Decode base64url input to bytes, writing to output buffer.
-// Returns number of bytes written, or 0xFFFFFFFF on invalid input.
+// Decodes input into output and returns the number of bytes written, or
+// `failed` when input is no base64url or output is too short. When input
+// goes wrong after its first 4 characters, the bytes of the groups before
+// are already written.
 export func decode(input: []u8, output: []mut u8) -> (written: u32) {
-  return 0xFFFFFFFF when decoded_len(input.len) > output.len
+  written = decoded_len(input.len)
+  return failed when written > output.len
   init_decode()
-  let i: u32 = 0
-  let o: u32 = 0
-  let len = input.len
-  let inp = input.ptr
-  let out = output.ptr
 
-  // Process full 4-char groups
-  while i + 4 <= len {
-    let a = decode_table.u8[inp[i]]:u32
-    let b = decode_table.u8[inp[i + 1]]:u32
-    let c = decode_table.u8[inp[i + 2]]:u32
-    let d = decode_table.u8[inp[i + 3]]:u32
-    return 0xFFFFFFFF when (a | b | c | d) & 0x80 != 0
+  // The counts keep the reads within input, and output holds all that is
+  // written, so both go through the slices' pointers, unchecked
+  let src = input.ptr
+  let dst = output.ptr
 
-    let quad = (a << 18) | (b << 12) | (c << 6) | d
-    out[o]     = (quad >> 16) as u8
-    out[o + 1] = (quad >> 8) as u8
-    out[o + 2] = quad as u8
-
-    i += 4
-    o += 3
+  // Each 4 characters are 3 bytes
+  for g in input.len / 4 {
+    let quad = sextets(src, 4)
+    return failed when quad == failed
+    dst[0] = (quad >> 16) as u8
+    dst[1] = (quad >> 8) as u8
+    dst[2] = quad as u8
+    src += 4
+    dst += 3
   }
 
-  // Handle remainder
-  let remaining = len - i
-  if remaining == 2 {
-    let a2 = decode_table.u8[inp[i]]:u32
-    let b2 = decode_table.u8[inp[i + 1]]:u32
-    return 0xFFFFFFFF when (a2 | b2) & 0x80 != 0
-    out[o] = ((a2 << 2) | (b2 >> 4)) as u8
-    o += 1
+  // 2 characters left are 1 byte and 3 are 2, their last 4 or 2 bits
+  // padding; 1 character left is no encoding
+  let left = input.len % 4
+  return failed when left == 1
+  let tail = sextets(src, left)
+  return failed when tail == failed
+  if left == 2 {
+    dst[0] = (tail >> 4) as u8
+  } elif left == 3 {
+    dst[0] = (tail >> 10) as u8
+    dst[1] = (tail >> 2) as u8
   }
-  if remaining == 3 {
-    let a3 = decode_table.u8[inp[i]]:u32
-    let b3 = decode_table.u8[inp[i + 1]]:u32
-    let c3 = decode_table.u8[inp[i + 2]]:u32
-    return 0xFFFFFFFF when (a3 | b3 | c3) & 0x80 != 0
-    let triple = (a3 << 10) | (b3 << 4) | (c3 >> 2)
-    out[o]     = (triple >> 8) as u8
-    out[o + 1] = triple as u8
-    o += 2
-  }
-  return 0xFFFFFFFF when remaining == 1
-
-  written = o
 }
 
 test "base64url" {
+  import "../../../lib/text" "starts_with" func starts_with(s: []u8, prefix: []u8) -> bool
+
   data enc_buf = mut [0:u8; 4096]
   data dec_buf = mut [0:u8; 4096]
 
-  func check_encode(input: []u8, expected: []u8) -> bool {
-    let n = encode(input, enc_buf)
-    return false when n != expected.len
-    let i: u32 = 0
-    while i < n {
-      return false when enc_buf.u8[i] != expected.ptr[i]
-      i += 1
-    }
+  // Whether input encodes to code, and code decodes back to input
+  func round_trip(input: []u8, code: []u8) -> bool {
+    return false when encode(input, enc_buf) != code.len || !starts_with(enc_buf, code)
+    return false when decode(code, dec_buf) != input.len || !starts_with(dec_buf, input)
     return true
   }
 
-  func check_decode(input: []u8, expected: []u8) -> bool {
-    let n = decode(input, dec_buf)
-    return false when n != expected.len
-    let i: u32 = 0
-    while i < n {
-      return false when dec_buf.u8[i] != expected.ptr[i]
-      i += 1
-    }
-    return true
+  test "the RFC 4648 vectors" {
+    assert round_trip("", "")
+    assert round_trip("f", "Zg")
+    assert round_trip("fo", "Zm8")
+    assert round_trip("foo", "Zm9v")
+    assert round_trip("foob", "Zm9vYg")
+    assert round_trip("fooba", "Zm9vYmE")
+    assert round_trip("foobar", "Zm9vYmFy")
   }
 
-  data tv_f = "f"
-  data tv_fo = "fo"
-  data tv_foo = "foo"
-  data tv_foob = "foob"
-  data tv_fooba = "fooba"
-  data tv_foobar = "foobar"
-  data enc_f = "Zg"
-  data enc_fo = "Zm8"
-  data enc_foo = "Zm9v"
-  data enc_foob = "Zm9vYg"
-  data enc_fooba = "Zm9vYmE"
-  data enc_foobar = "Zm9vYmFy"
-
-  test "encode" {
-    assert check_encode(tv_f, enc_f)
-    assert check_encode(tv_fo, enc_fo)
-    assert check_encode(tv_foo, enc_foo)
-    assert check_encode(tv_foob, enc_foob)
-    assert check_encode(tv_fooba, enc_fooba)
-    assert check_encode(tv_foobar, enc_foobar)
+  test "the last two values are - and _" {
+    assert round_trip(x"fbff", "-_8")
+    assert round_trip(x"fbefbe", "----")
+    assert round_trip(x"ffffff", "____")
   }
 
-  test "decode" {
-    assert check_decode(enc_f, tv_f)
-    assert check_decode(enc_fo, tv_fo)
-    assert check_decode(enc_foo, tv_foo)
-    assert check_decode(enc_foob, tv_foob)
-    assert check_decode(enc_fooba, tv_fooba)
-    assert check_decode(enc_foobar, tv_foobar)
+  test "decode refuses what is not base64url" {
+    assert decode("!!!", dec_buf) == failed
+    assert decode("Zm9v+g", dec_buf) == failed       // + and / are base64, not base64url
+    assert decode("Zm9vYg==", dec_buf) == failed     // no padding
+    assert decode("Zm9vY", dec_buf) == failed        // 1 character left over
+    assert decode("\xC1\xC1", dec_buf) == failed     // bytes past ASCII
   }
 
-  data tv_bad = "!!!"
-
-  test "reject invalid" {
-    assert decode(tv_bad, dec_buf) == 0xFFFFFFFF
+  test "an output too short fails, and one just long enough is filled" {
+    assert encode("foo", enc_buf[..3]) == failed
+    assert encode("foo", enc_buf[..4]) == 4
+    assert decode("Zm9vYg", dec_buf[..3]) == failed
+    assert decode("Zm9vYg", dec_buf[..4]) == 4
   }
 }

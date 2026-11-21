@@ -7,18 +7,16 @@ export func pair(n: u32) -> (count: u32, clipped: bool) {
 }
 
 // Unnamed results: positional is the only way to bind them.
-export func divmod(a: u32, b: u32) -> (u32, u32) {
-  return (a / b, a % b)
-}
+export func divmod(a: u32, b: u32) -> (u32, u32) => (a / b, a % b)
 
 export func paren(n: u32) -> u32 {
   let (a, b) = pair(n)
-  return a + (if b { 100 } else { 0 })
+  return a + if b { 100 } else { 0 }
 }
 
 export func bare(n: u32) -> u32 {
   let a, b = pair(n)
-  return a + (if b { 100 } else { 0 })
+  return a + if b { 100 } else { 0 }
 }
 
 export func unnamed(a: u32, b: u32) -> u32 {
@@ -29,7 +27,7 @@ export func unnamed(a: u32, b: u32) -> u32 {
 export func reassigned(n: u32) -> u32 {
   let a, b = pair(n)
   set a, b = pair(n + 10)
-  return a + (if b { 100 } else { 0 })
+  return a + if b { 100 } else { 0 }
 }
 
 test "let (a, b) binds by position" {

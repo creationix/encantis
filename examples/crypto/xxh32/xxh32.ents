@@ -1,97 +1,103 @@
-// xxHash32 implementation
-// Based on the xxHash specification by Yann Collet
+// xxHash32, from the xxHash specification by Yann Collet: a fast 32-bit
+// hash of bytes, not a cryptographic one.
 
 export "mem" memory
-
-test "xxh32" {
-  data tv_abc = "abc"
-  data tv_hello = "hello"
-  data tv_foobar = "foobar"
-
-  test "abc" {
-    assert xxh32(tv_abc, 0) == 0x32d153ff
-  }
-
-  test "hello" {
-    assert xxh32(tv_hello, 0) == 0xfb0077f9
-  }
-
-  test "foobar" {
-    assert xxh32(tv_foobar, 0) == 0xeda34aaf
-  }
-
-  test "seeded" {
-    assert xxh32(tv_abc, 42) == 0x0147abfe
-  }
-}
 
 def prime32-1 = 2654435761:u32
 def prime32-2 = 2246822519:u32
 def prime32-3 = 3266489917:u32
-def prime32-4 =  668265263:u32
-def prime32-5 =  374761393:u32
+def prime32-4 = 668265263:u32
+def prime32-5 = 374761393:u32
 
-inline func round32(seed:u32, value:u32) -> (seed:u32) {
-  seed += value * prime32-2
-  seed <<<= 13
-  seed *= prime32-1
+// Mixes one 32-bit lane of input into an accumulator
+func round32(acc: u32, lane: u32) -> (acc: u32) {
+  acc += lane * prime32-2
+  acc <<<= 13
+  acc *= prime32-1
 }
 
-export func xxh32(input:[]u8, seed:u32) -> (h32:u32) {
+// The xxHash32 of input, with seed
+export func xxh32(input: []u8, seed: u32) -> (h32: u32) {
   let ptr = input.ptr
-  let last:*u8 = ptr + input.len
+  let end = ptr + input.len
 
   if input.len >= 16 {
-    let v1:u32 = seed + prime32-1 + prime32-2
-    let v2:u32 = seed + prime32-2
-    let v3:u32 = seed
-    let v4:u32 = seed - prime32-1
+    let v1 = seed + prime32-1 + prime32-2
+    let v2 = seed + prime32-2
+    let v3 = seed
+    let v4 = seed - prime32-1
 
-    // For every chunk of 4 words, so 4 * 32bits = 16 bytes
-    let limit:*u8 = last - 16
+    // Each 16-byte stripe gives each of the four accumulators one 32-bit
+    // word; limit is the last place a whole stripe can start
+    let limit = end - 16
     loop {
       v1 = round32(v1, ptr.u32[0])
-      ptr += 4
-      v2 = round32(v2, ptr.u32[0])
-      ptr += 4
-      v3 = round32(v3, ptr.u32[0])
-      ptr += 4
-      v4 = round32(v4, ptr.u32[0])
-      ptr += 4
+      v2 = round32(v2, ptr.u32[1])
+      v3 = round32(v3, ptr.u32[2])
+      v4 = round32(v4, ptr.u32[3])
+      ptr += 16
       break when ptr > limit
     }
 
-    h32 = (v1 <<< 1)
-        + (v2 <<< 7)
-        + (v3 <<< 12)
-        + (v4 <<< 18)
-
+    h32 = (v1 <<< 1) + (v2 <<< 7) + (v3 <<< 12) + (v4 <<< 18)
   } else {
-    // When input is smaller than 16 bytes
     h32 = seed + prime32-5
   }
 
   h32 += input.len
 
-  // For the remaining words not covered above, either 0, 1, 2 or 3
-  while ptr + 4 <= last {
+  // The 0 to 3 whole words left after the stripes
+  while ptr + 4 <= end {
     h32 += ptr.u32[0] * prime32-3
     h32 = (h32 <<< 17) * prime32-4
     ptr += 4
   }
 
-  // For the remaining bytes that didn't make a whole word,
-  // either 0, 1, 2 or 3 bytes, as 4 bytes = 32bits = 1 word.
-  while ptr < last {
+  // The 0 to 3 bytes left after them
+  while ptr < end {
     h32 += ptr[0] * prime32-5
     h32 = (h32 <<< 11) * prime32-1
     ptr += 1
   }
 
-  // Finalize
+  // Avalanche: every input bit reaches every output bit
   h32 ^= h32 >> 15
   h32 *= prime32-2
   h32 ^= h32 >> 13
   h32 *= prime32-3
   h32 ^= h32 >> 16
+}
+
+test "xxh32" {
+  test "abc hashes to its known value" {
+    assert xxh32("abc", 0) == 0x32d153ff
+  }
+
+  test "hello hashes to its known value" {
+    assert xxh32("hello", 0) == 0xfb0077f9
+  }
+
+  test "foobar hashes to its known value" {
+    assert xxh32("foobar", 0) == 0xeda34aaf
+  }
+
+  test "abc with the seed 42 hashes to its known value" {
+    assert xxh32("abc", 42) == 0x0147abfe
+  }
+
+  test "the empty input hashes to its known value" {
+    assert xxh32("", 0) == 0x02cc5d05
+  }
+
+  // 39 bytes: two whole stripes, then 1 word and 3 bytes
+  test "whole stripes and a tail hash to their known values" {
+    assert xxh32("Nobody inspects the spammish repetition", 0) == 0xe2293b2f
+    assert xxh32("Nobody inspects the spammish repetition", 42) == 0x4ae5ae3a
+  }
+
+  // 32 bytes: exactly two stripes, and nothing after them
+  test "exactly two stripes hash to their known values" {
+    assert xxh32("abcdefghijklmnopqrstuvwxyz012345", 0) == 0x353145a3
+    assert xxh32("abcdefghijklmnopqrstuvwxyz012345", 42) == 0xeda39121
+  }
 }
