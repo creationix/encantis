@@ -4,6 +4,7 @@
 import type * as AST from './ast'
 import { argValue, ungroupedType, walkFuncBody, walkStatement } from './ast'
 import { isSourceImport, resolveModulePath } from './loader'
+import { posix } from 'path'
 import {
   type ResolvedType,
   type ForwardRefRT,
@@ -1800,8 +1801,10 @@ class CheckContext {
     const isSource = isSourceImport(decl.module)
     // The file a source import imports, which one file's two spellings
     // (./lib, ./lib.ents) name alike: importing one function or global of
-    // it twice is that one again (3.4)
-    const from = isSource && this.filePath ? resolveModulePath(decl.module, this.filePath) : decl.module
+    // it twice is that one again (3.4). A module checked on its own, as the
+    // editor checks one where it cannot load the program, has no path: its
+    // imports are told apart by their paths written alike.
+    const from = !isSource ? decl.module : this.filePath ? resolveModulePath(decl.module, this.filePath) : spelledAlike(decl.module)
     let depExports: Map<string, Symbol> | undefined
     if (isSource && this.filePath && this.moduleExports) {
       const depPath = resolveModulePath(decl.module, this.filePath)
@@ -1900,10 +1903,14 @@ class CheckContext {
               this.errors.push({ offset: item.span.start, message: `'${item.name}' in '${decl.module}' is not a global` })
               break
             }
-            this.moduleScope.symbols.set(item.item.ident, { kind: 'global', type: exported.type })
+            const sym: Symbol = { kind: 'global', type: exported.type }
+            this.importedGlobalSyms.add(sym)
+            this.moduleScope.symbols.set(item.item.ident, sym)
           } else {
             const type = this.resolveHeld(item.item.type)
-            this.moduleScope.symbols.set(item.item.ident, isSource ? { kind: 'global', type } : { kind: 'global', type, fromHost: true })
+            const sym: Symbol = isSource ? { kind: 'global', type } : { kind: 'global', type, fromHost: true }
+            this.importedGlobalSyms.add(sym)
+            this.moduleScope.symbols.set(item.item.ident, sym)
           }
           // Defined at its local name, as an imported function is
           this.recordDefinition(item.item.ident, item.item.span.start)
@@ -2102,6 +2109,8 @@ class CheckContext {
   // that name: a test's function or import of the name is told it (12.4),
   // as for an imported function's
   private readonly importedGlobals = new Map<string, number>()
+  // The globals the module or a test imports, by their symbols
+  private readonly importedGlobalSyms = new WeakSet<Symbol>()
   // `isImport`: the declaration is an import (in a test, its message says so)
   private takenByAnother(name: string, offset: number, kind: 'func' | 'value', inTest = false, isImport = false): boolean {
     const first = this.topLevel.get(name)
@@ -2110,10 +2119,12 @@ class CheckContext {
       return false
     }
     if (first === 'func' && kind === 'func') return false
-    const global = inTest ? this.importedGlobals.get(name) : undefined
-    if (global !== undefined) {
+    // An import of the module, a global's or, for a test's import of a
+    // global, a function's: told with where its local name is
+    const imported = !inTest ? undefined : this.importedGlobals.get(name) ?? (isImport ? this.importedFuncs.get(name)?.at : undefined)
+    if (imported !== undefined) {
       const what = isImport ? 'an import in a test cannot reuse the name of an import of the module' : 'a function declared in a test cannot reuse the name of an import'
-      this.error(offset, `'${name}' is already declared: ${what}${this.firstDeclared(global)}`)
+      this.error(offset, `'${name}' is already declared: ${what}${this.firstDeclared(imported)}`)
       return true
     }
     this.error(offset, `'${name}' is already declared`)
@@ -3424,8 +3435,16 @@ class CheckContext {
             if (sym.kind === 'func' && sym.host) this.testFuncNames.set(sym, { name: `${id}.${name}`, shown: `${shown}.${name}` })
           }
           for (const imported of item.items) {
-            if (imported.item.kind === 'ImportFunc') once(imported.item.ident ?? imported.name, imported.span.start, from)
-            if (imported.item.kind === 'ImportGlobal') once(imported.item.ident, imported.span.start, from)
+            const name = imported.item.kind === 'ImportFunc' ? imported.item.ident ?? imported.name : imported.item.kind === 'ImportGlobal' ? imported.item.ident : undefined
+            if (name === undefined) continue
+            const refusals = this.errors.length
+            once(name, imported.span.start, from)
+            // Refused as a second of the test's names, it is the name all
+            // the same, as a function is (below)
+            const key = imported.item.kind === 'ImportFunc' ? callableName(imported) : name
+            const first = known.get(key)
+            const after = this.moduleScope.symbols.get(key)
+            if (this.errors.length > refusals && first && after && after !== first) this.clashed(after, first, true)
           }
           break
         }
@@ -11017,7 +11036,9 @@ class CheckContext {
   // say it; null for a name it can take
   private declarationKind(sym: Symbol, name: string): string | null {
     if (sym.kind === 'func' && sym.nested) return 'a nested function in scope'
-    if (sym.kind === 'global' && sym.fromHost) return 'an import'
+    // A global another source module gives is an import too, as the host's
+    // is, and as takenByAnother says
+    if (sym.kind === 'global' && (sym.fromHost || this.importedGlobalSyms.has(sym))) return 'an import'
     const taken = takenName(sym)
     if (taken) return taken
     // A test's import from another module is an import too (testOrigins)
@@ -12429,6 +12450,13 @@ export function declaredName(name: string): string {
   const written = name.startsWith('%') ? name.slice(1) : name
   const cut = written.indexOf(':')
   return cut < 0 ? written : written.slice(0, cut)
+}
+
+// A source import's path as one spelling of it, where there is no file to
+// resolve it from: ./lib, lib.ents and ./sub/../lib.ents are one file
+function spelledAlike(module: string): string {
+  const normal = posix.normalize(module)
+  return normal.endsWith('.ents') ? normal : `${normal}.ents`
 }
 
 // Whether a function an import brings in without a local name can be called

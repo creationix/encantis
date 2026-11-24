@@ -3514,4 +3514,90 @@ test "t" {
 }`,
     })).toMatchObject({ ran: ['t'], failed: [] })
   })
+
+  // An import refused as a second of its test's names is the name all the
+  // same, and a later declaration of the name is told the first, as after a
+  // function refused so (3.3: a third declaration is told the first)
+  test('a later clash after an import refused as a test\'s second name is told the first', () => {
+    expect(errorsOf(`export func f() -> u32 => 1
+test "group" {
+  func ee() -> u32 => 3
+  import "env" "ee" func ee() -> u32
+  import "./lib" "dbl" func dd(x: u32) -> u32
+  import "./lib" "g" global dd: u32
+  test "inner" {
+    let v: u32 = 1
+    func ee() -> u32 => v
+    func dd() -> u32 => v
+    assert true
+  }
+}
+test "same test" {
+  func e2() -> u32 => 3
+  import "env" "e2" func e2() -> u32
+  let e2: u32 = 1
+  assert true
+}`)).toEqual([
+      "'ee' is already declared in this test",
+      "'dd' is already declared in this test",
+      "'ee' is already declared: a function that uses its test's variables cannot reuse the name of a function of the module (first declared at 3:8)",
+      "'dd' is already declared: a function that uses its test's variables cannot reuse the name of an import (first declared at 5:29)",
+      "'e2' is already declared in this test",
+      "'e2' is already declared in this scope (first declared at 15:8)",
+    ])
+  })
+
+  // A global another source module gives is an import, whichever kind of a
+  // test's function takes its name, as a host global is
+  test('an imported global is an import to every function a test declares', () => {
+    expect(errorsOf(`import "./lib" "g" global g: u32
+export func f() -> u32 => g
+test "plain" {
+  func g() -> u32 => 1
+  assert true
+}
+test "capturing" {
+  let v: u32 = 0
+  func g() -> u32 => v
+  assert true
+}
+test "in a block" {
+  if true { func g() -> u32 => 1 }
+  assert true
+}`)).toEqual([
+      "'g' is already declared: a function declared in a test cannot reuse the name of an import (first declared at 1:27)",
+      "'g' is already declared: a function that uses its test's variables cannot reuse the name of an import (first declared at 1:27)",
+      "'g' is already declared: a nested function cannot reuse the name of an import (first declared at 1:27)",
+    ])
+  })
+
+  // A test's import of a global named like a function the module imports is
+  // told the import's place, as one named like an imported global is
+  test('a test\'s global import named like an imported function is told the import\'s place', () => {
+    expect(errorsOf(`import "./lib" "dbl" func dbl(x: u32) -> u32
+import "env" "hf" func hf() -> u32
+export func f() -> u32 => dbl(1) + hf()
+test "t" {
+  import "./lib" "g" global dbl: u32
+  import "env" "x" global hf: u32
+  assert true
+}`)).toEqual([
+      "'dbl' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 1:27)",
+      "'hf' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 2:24)",
+    ])
+  })
+
+  // A module checked on its own, as the editor does where it cannot load the
+  // program, tells one file's spellings apart no more than a program does
+  test('one file by two spellings of its path is one file in a module checked on its own', () => {
+    expect(errorsOf(`import "./lib" "dbl" func dbl(x: u32) -> u32
+import "./lib.ents" "dbl" func dbl(x: u32) -> u32
+import "./lib" "g" global g: u32
+import "./lib.ents" "g" global g: u32
+export func f() -> u32 => dbl(g)
+test "t" {
+  import "./sub/../lib" "dbl" func dbl(x: u32) -> u32
+  assert f() == 14
+}`)).toEqual([])
+  })
 })
