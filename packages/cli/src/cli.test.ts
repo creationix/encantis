@@ -154,6 +154,34 @@ export func f(x: f64) -> u32 => bucket(x, 16)
   }
 })
 
+// #40: two modules that declared memory passed check, and compile and wasm
+// stopped with a stack trace.
+describe('two memory declarations in a program', () => {
+  async function run(command: string) {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), 'export memory 2\nexport func one() -> u32 => 1\n')
+      await writeFile(join(dir, 'main.ents'), 'import "./lib" ("one" func one() -> u32)\nmemory 4\nexport func two() -> u32 => one() + 1\n')
+      const out = join(dir, 'out')
+      const run = Bun.spawnSync([process.execPath, CLI, command, join(dir, 'main.ents'), ...(command === 'check' ? [] : ['-o', out])])
+      return { exitCode: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString(), wrote: existsSync(out) }
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  }
+
+  for (const command of ['check', 'compile', 'wasm']) {
+    test(`${command} reports the second, in main.ents, and writes nothing`, async () => {
+      const { exitCode, stdout, stderr, wrote } = await run(command)
+      expect(exitCode).toBe(1)
+      expect(stdout).toBe('')
+      expect(wrote).toBe(false)
+      expect(stderr.trim()).toMatch(/main\.ents:2:1: memory is already declared: a program has one memory declaration at most \(first declared at lib\.ents:1:1\)$/)
+      expect(stderr).not.toContain('    at ')
+    })
+  }
+})
+
 // The queries answer for the name where it stands: a local where it is
 // defined, the binding of an if let at its name, each name of a for, and a
 // field as a field. Before, each was looked up by name, and a rename from one

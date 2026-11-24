@@ -41,25 +41,27 @@ export async function wasmOfSource(source: string): Promise<Uint8Array> {
 // Builds one module given as source text with its tests and runs them, as
 // `encantis test` does. Returns the titles of the tests that ran and of those
 // that failed. Throws when the module does not load, check or validate.
-export async function runTestsOfSource(source: string): Promise<{ ran: string[]; failed: string[] }> {
+// `others` are files beside it, by name (`lib.ents`), that it can import.
+export async function runTestsOfSource(source: string, others: Record<string, string> = {}): Promise<{ ran: string[]; failed: string[] }> {
   const dir = await mkdtemp(join(tmpdir(), 'encantis-tests-'))
   try {
     const path = join(dir, 'module.ents')
     await writeFile(path, source)
+    for (const [name, text] of Object.entries(others)) await writeFile(join(dir, name), text)
     const load = await loadModule(path, { includeTests: true })
     if (load.errors.length > 0) throw new Error(`Load errors:\n${load.errors.map(e => e.message).join('\n')}`)
     const check = typecheckProgram(load.modules, path, { includeTests: true })
     if (check.errors.length > 0) throw new Error(`Type errors:\n${check.errors.map(e => e.message).join('\n')}`)
-    const { wat, testNames, testTitles, standIns } = programToWatWithTests(load.modules, check.results, path)
+    const { wat, testExports, testTitles, standIns } = programToWatWithTests(load.modules, check.results, path)
     const bytes = await wasmOfWat(wat)
     const module = await WebAssembly.compile(bytes)
     const host = createTestHost(module, () => {}, undefined, bytes, standIns)
     const instance = await WebAssembly.instantiate(module, host.imports)
     host.attach(instance)
     const failed: string[] = []
-    for (const [i, name] of testNames.entries()) {
+    for (const [i, name] of testExports.entries()) {
       try {
-        ;(instance.exports[`test_${name}`] as () => void)()
+        ;(instance.exports[name] as () => void)()
       } catch {
         failed.push(testTitles[i])
       }

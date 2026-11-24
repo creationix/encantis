@@ -153,9 +153,12 @@ describe('rename', () => {
   })
 
   test('is refused where the new name would mean something else or is no name', async () => {
-    // The def, used in area, would be hidden there by its parameter k.
-    const used = SHAPES.replace('let w = p.x * k', 'let w = p.x * k * scale')
-    expect(await refused(used, used.indexOf('scale ='), 'k')).toContain('some of its uses would mean another thing')
+    // The global, used in area, would be hidden there by its parameter k.
+    const used = SHAPES.replace('let w = p.x * k', 'let w = p.x * k * gain').replace('def scale = 3', 'def scale = 3\nglobal gain: i32 = 2')
+    expect(await refused(used, used.indexOf('gain:'), 'k')).toContain('some of its uses would mean another thing')
+    // A def cannot take the name of a parameter at all.
+    const def = SHAPES.replace('let w = p.x * k', 'let w = p.x * k * scale')
+    expect(await refused(def, def.indexOf('scale ='), 'k')).toContain("'k' is already declared: a parameter cannot reuse the name of a def")
     // Two locals of a name in one scope
     expect(await refused(SHAPES, SHAPES.indexOf('w * h'), 'h')).toContain("'h' is already declared")
     expect(await refused(SHAPES, SHAPES.indexOf('w * h'), 'loop')).toBe("'loop' is a keyword")

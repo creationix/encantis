@@ -47,20 +47,22 @@ export func total(n: u32) -> u32 {
 func mark() -> u32 => (space as u32) + top
 
 func reset(m: u32) {
-  top = m - (space as u32)
+  let at = m - (space as u32)
+  assert at <= capacity
+  top = at
 }
 
 func alloc(n: u32) -> (p: u32) {
   top = (top + 7) & 0xFFFFFFF8
+  assert n <= capacity - top
   p = (space as u32) + top
   top += n
-  assert top <= capacity
 }
 
 func extend(n: u32) -> (p: u32) {
+  assert n <= capacity - top
   p = (space as u32) + top
   top += n
-  assert top <= capacity
 }
 
 func vec_cell(cap: u32) -> *mut CellVec {

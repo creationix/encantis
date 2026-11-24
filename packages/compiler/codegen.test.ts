@@ -918,7 +918,7 @@ describe('defer codegen', () => {
     const load = await loadModule(file, { includeTests: true })
     const check = typecheckProgram(load.modules, file, { includeTests: true })
     const { wat } = programToWatWithTests(load.modules, check.results, file)
-    const testFunc = wat.slice(wat.indexOf('(func $test_cleanup'))
+    const testFunc = wat.slice(wat.indexOf(';; test "cleanup"'))
     expect(testFunc).toContain('call $done')
   })
 
@@ -4160,6 +4160,210 @@ describe('the address of an element, where a pointer is expected', () => {
     `).module as AST.Module).errors.map((e) => e.message)
     expect(errs).toEqual(["'x' has no address: a variable is held in registers", "'p' has no address: a variable is held in registers"])
   })
+
+  // #37: & before a pointer was the pointer itself, silently.
+  test('of a pointer that is in no cell is an error', () => {
+    const errs = typecheck(parse(`
+      type Pt = (x: i32, y: i32)
+      type P = *i32
+      data buf = [1:u8, 2, 3]
+      global where: *i32 = 16 as *i32
+      func get(p: *i32) -> i32 => p.*
+      func id(p: *i32) -> *i32 => p
+      func a(p: *i32) -> i32 => get(&p)
+      func b(s: []u8) -> u32 => (&s).len
+      func c(m: [*]i32) -> [*]i32 => &m
+      func d(o: ?*i32) -> ?*i32 => &o
+      func e(p: *i32) -> i32 => get(&id(p))
+      func f(p: *i32) -> i32 => get(&p.id())
+      func g(n: u32) -> i32 => get(&(n as *i32))
+      func h(base: [*]u32, k: u32) -> [*]Pt => &base[k] as [*]Pt
+      func i() -> *[3]u8 => &buf
+      func j() -> *i32 => &where
+      func k(p: P) -> P => &p
+      func l(c: bool, p: *i32, q: *i32) -> *i32 => &(if c { p } else { q })
+      func m(p: ?*i32, q: *i32) -> *i32 => &(p ?? q)
+      func o() -> u32 => (&(4096:*u32)) as u32
+      func q() -> u32 => (&(0:?*u32)) as u32
+      func n() -> u32 {
+        let s: []u8 = "ab"
+        let t = &s
+        return t.len
+      }
+    `).module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual([
+      "'p' is already a pointer (*i32): drop the &",
+      "'s' is already a pointer ([]u8): drop the &",
+      "'m' is already a pointer ([*]i32): drop the &",
+      "'o' is already a pointer (?*i32): drop the &",
+      "'id(p)' is already a pointer (*i32): drop the &",
+      "'p.id()' is already a pointer (*i32): drop the &",
+      "'(n as *i32)' is already a pointer (*i32): drop the &",
+      "'base[k] as [*]Pt' is already a pointer ([*]Pt): drop the & (a cast binds tighter than &: for the address of base[k], write (&base[k]) as [*]Pt)",
+      "'buf' is already a pointer (*[3]u8): drop the &",
+      "'where' is already a pointer (*i32): drop the &",
+      "'p' is already a pointer (P): drop the &",
+      "this value is already a pointer (*i32): drop the &",
+      "this value is already a pointer (*i32): drop the &",
+      "this value is already a pointer (*u32): drop the &",
+      "this value is already a pointer (?*u32): drop the &",
+      "'s' is already a pointer ([]u8): drop the &",
+    ])
+  })
+
+  test('of a pointer in a test, and of what another module gives', async () => {
+    expect(typecheck(parse(`
+      test "t" {
+        let p = 8 as *i32
+        let q = &p
+        assert q == p
+      }
+    `).module as AST.Module).errors.map((e) => e.message)).toEqual(["'p' is already a pointer (*i32): drop the &"])
+    const { typecheckProgram } = await import('./checker')
+    const { resolve } = await import('node:path')
+    const [lib, main] = [resolve('/p/lib.ents'), resolve('/p/main.ents')]
+    const modules = new Map([
+      [lib, 'export func cell() -> *i32 => 8 as *i32\nexport global where: *i32 = 16 as *i32\n'],
+      [main, 'import "./lib" (\n  "cell" func cell() -> *i32\n  "where" global where: *i32\n)\nfunc get(p: *i32) -> i32 => p.*\nexport func a() -> i32 => get(&cell())\nexport func b() -> i32 => get(&where)\nexport func c() -> i32 => get(&cell().*)\n'],
+    ].map(([path, src]) => [path, { module: parse(src).module as AST.Module, source: src }]))
+    expect(typecheckProgram(modules, main).errors.map((e) => e.message)).toEqual([
+      "'cell()' is already a pointer (*i32): drop the &",
+      "'where' is already a pointer (*i32): drop the &",
+    ])
+  })
+
+  test('of a pointer in a generic, in the instance whose type is a pointer', () => {
+    const errs = typecheck(parse(`
+      func g(comptime T: type, x: T) -> T => &x
+      func h(comptime T: type, p: *(v: T)) -> *T => &p.v
+      func use1(p: *i32) -> *i32 => g(*i32, p)
+      func use2(p: *(v: *i32)) -> **i32 => h(*i32, p)
+    `).module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual(["'x' is already a pointer (*i32): drop the &, in g(T = *i32)"])
+  })
+
+  // A cast binds tighter than &: `&x as T` is `&(x as T)`. What was meant
+  // is said where x has an address, and only there.
+  test('of a cast says what was meant where what is cast has an address', () => {
+    const errs = typecheck(parse(`
+      type Pt = (x: i32, y: i32)
+      func a(base: [*]Pt, k: u32) -> [*]Pt => &base[k] as [*]Pt
+      func b(base: [*]Pt, k: u32) -> u32 => &base[k] as u32
+      func c(p: [*]u32) -> u32 => &p[1] as u32
+      func d(pp: **i32) -> u32 => &pp.* as u32
+      func e(p: *Pt) -> *u8 => &p.x as *u8
+      func f(m: *[3x4]u8) -> [*]u8 => &m[1] as [*]u8
+      func g(a: i32) -> u32 {
+        let s: Pt = (a, 2)
+        return (&s.x as *u8) as u32
+      }
+      func h(a: [4]u32) -> u32 => (&a[1] as *u8) as u32
+      func i(p: *Pt) -> *u8 => &(p.x as *u8)
+      func j(z: *[!]u8) -> [*]u8 => &z[0] as [*]u8
+    `).module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual([
+      'cannot cast Pt to [*]Pt (a cast binds tighter than &: for the address of base[k], write (&base[k]) as [*]Pt)',
+      'cannot cast Pt to u32 (a cast binds tighter than &: for the address of base[k], write (&base[k]) as u32)',
+      '& requires a literal, a value in memory, or an element of an array, slice or many-pointer (a cast binds tighter than &: for the address of p[1], write (&p[1]) as u32)',
+      '& requires a literal, a value in memory, or an element of an array, slice or many-pointer (a cast binds tighter than &: for the address of pp.*, write (&pp.*) as u32)',
+      "'p.x as *u8' is already a pointer (*u8): drop the & (a cast binds tighter than &: for the address of p.x, write (&p.x) as *u8)",
+      "'m[1] as [*]u8' is already a pointer ([*]u8): drop the & (a cast binds tighter than &: for the address of m[1], write (&m[1]) as [*]u8)",
+      "'s.x as *u8' is already a pointer (*u8): drop the &",
+      "'a[1] as *u8' is already a pointer (*u8): drop the &",
+      "'(p.x as *u8)' is already a pointer (*u8): drop the &",
+      "index 0 on *[!]u8 requires 'if let' or '??': its length is only found at run time, by a scan (no optional type for u8)",
+    ])
+  })
+
+  test('of a string, an array or a tuple literal is as before', () => {
+    const result = typecheck(parse(`
+      func a() -> u32 {
+        let p = &"abc"
+        return p.len
+      }
+      func b() -> u32 => (&"abc":[]u8).len
+      func c() -> u32 => (&[1, 2]).len
+      func d() -> i32 => (&(1, 2)).0
+    `).module as AST.Module)
+    expect(result.errors.map((e) => e.message)).toEqual([])
+  })
+
+  test('of an element of a *[!]T is refused', () => {
+    const errs = typecheck(parse(`
+      func a(z: *[!]u8, i: u32) -> ?*u8 => &z[i]
+      func b(z: *[!]*u8) -> ?**u8 => &z[0]
+    `).module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual([
+      "cannot take the address of an element of *[!]u8: make a slice of it first, (z.ptr, z.len), and take the address of the slice's element",
+      "cannot take the address of an element of *[!]*u8: make a slice of it first, (z.ptr, z.len), and take the address of the slice's element",
+    ])
+  })
+
+  // At d4bce9e such an address was taken a second time where the operand
+  // was inferred again: `&b.id` given to a function of a shared name was a
+  // **u32, and refused.
+  test('of a place inferred again is taken once', async () => {
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      type Node = (id: u32, pos: Pt, next: ?*Node, row: [4]u8)
+      memory 1
+      func pick(p: *i32) -> u32 => 1
+      func pick(p: *u32) -> u32 => 2
+      func pick(p: *?*Node) -> u32 => 3
+      func pick(p: *Pt) -> u32 => 4
+      func pick(p: *[4]u8) -> u32 => 5
+      func id(comptime T: type, x: T) -> T => x
+      func len2(p: *Pt) -> i32 => p.x * p.x + p.y * p.y
+      export func shared(n: u32) -> u32 {
+        let b = n as *mut Node
+        return pick(&b.pos.x) + pick(&b.id) * 10 + pick(&b.next) * 100 + pick(&b.pos) * 1000 +
+          pick(&b.row) * 10000 + pick(&(b as *u32).*) * 100000
+      }
+      export func generic(n: u32) -> u32 {
+        let b = n as *Node
+        return ((id(&b.pos.y) as u32) - n) + ((id(&b.next) as u32) - n) * 100 + ((id(&b.row) as u32) - n) * 10000
+      }
+      export func method(n: u32) -> i32 {
+        let b = n as *mut Node
+        b.pos = Pt(3, 4)
+        return (&b.pos).len2()
+      }
+    `)
+    expect(x.shared(64)).toBe(254321)
+    expect(x.generic(64)).toBe(161208)
+    expect(x.method(64)).toBe(25)
+  })
+
+  test('of a pointer or a slice that lies in memory is where it is', async () => {
+    const x = await run(`
+      type Node = (val: i32, next: ?*Node, items: []u8, many: [*]u8)
+      memory 1
+      func link(n: *mut Node) -> *mut ?*Node => &n.next
+      func items(n: *Node) -> *[]u8 => &n.items
+      func many(n: *Node) -> *[*]u8 => &n.many
+      func slot(a: [*]*i32, i: u32) -> **i32 => &a[i]
+      func through(pp: **i32) -> **i32 => &pp.*
+      func row(p: *[3x4]u8) -> *[4]u8 => &p[1]
+      export func next_at(n: u32) -> u32 => link(n as *mut Node) as u32
+      export func items_at(n: u32) -> u32 => items(n as *Node) as u32
+      export func many_at(n: u32) -> u32 => many(n as *Node) as u32
+      export func slot_at(a: u32, i: u32) -> u32 => slot(a as [*]*i32, i) as u32
+      export func through_at(pp: u32) -> u32 => through(pp as **i32) as u32
+      export func row_at(p: u32) -> u32 => row(p as *[3x4]u8) as u32
+      export func store(n: u32, v: u32) -> u32 {
+        let cell = link(n as *mut Node)
+        cell.* = v as *Node
+        return ((n as *Node).next ?? (0 as *Node)) as u32
+      }
+    `)
+    expect(x.next_at(64)).toBe(68)
+    expect(x.items_at(64)).toBe(72)
+    expect(x.many_at(64)).toBe(80)
+    expect(x.slot_at(100, 3)).toBe(112)
+    expect(x.through_at(40)).toBe(40)
+    expect(x.row_at(200)).toBe(204)
+    expect(x.store(64, 1234)).toBe(1234)
+  })
 })
 
 describe('the wasm names of variables', () => {
@@ -4822,5 +5026,136 @@ describe('a constant expression as the index of a value array', () => {
   test('a store', () => {
     twinOf('export func f() -> u32 {\n  let w: [3]u32 = [1, 2, 3]\n  w[INDEX] = 7\n  return w[2]\n}', '1 + 1')
     twinOf('type Buf = (len: u32, items: [3]u8)\nexport func f(b: *mut Buf) { b.items[INDEX] = 9 }', '1 + 1')
+  })
+})
+
+describe('the functions and exports of tests', () => {
+  // Each test is a function exported as test: and its name, which no export
+  // of the module can begin with, and its function and those it declares
+  // have names in the WAT that no function of the module can have.
+  const runTests = async (source: string, others?: Record<string, string>) => (await import('./test-utils')).runTestsOfSource(source, others)
+
+  test('a module function or export named as the test build names a test', async () => {
+    expect(await runTests(`
+      func test_xor() -> u32 => 1
+      export func test_and() -> u32 => 2
+      export "test_or" func g() -> u32 => 3
+      func test_a_b() -> u32 => 4
+      import "env" "test_host" func test_host() -> u32
+      func test_two(x: u32) -> u32 => x
+      func test_two(x: u64) -> u32 => 6
+      func test_id(comptime T: type, x: T) -> T => x
+      test "xor" { assert test_xor() == 1 }
+      test "and" { assert test_and() == 2 }
+      test "or" { assert g() == 3 }
+      test "a b" { assert test_a_b() == 4 }
+      test "host" { assert test_two(5:u64) == 6 }
+      test "two" { assert test_id(u8, 7) == 7 }
+    `)).toEqual({ ran: ['xor', 'and', 'or', 'a b', 'host', 'two'], failed: [] })
+  })
+
+  test('the functions tests declare are told apart, whatever the names of the tests', async () => {
+    // test "a" with b_f, test "a_b" with f; a group and a test of one name;
+    // a test without a name that declares what its group does.
+    expect(await runTests(`
+      test "a" {
+        func b_f() -> u32 => 1
+        assert b_f() == 1
+      }
+      test "a_b" {
+        func f() -> u32 => 2
+        assert f() == 2
+      }
+      test "g" {
+        func h() -> u32 => 3
+        test {
+          func h() -> u32 => 3
+        }
+        test "x" { assert h() == 3 }
+      }
+      test "g" {
+        func h() -> u32 => 3
+        assert h() == 3
+      }
+    `)).toEqual({ ran: ['a', 'a_b', 'g > x', 'g'], failed: [] })
+    // A function without a name is left out, as at module level.
+    expect(await runTests(`
+      test "a" {
+        func(x: u32) -> u32 => x
+        func(x: u32) -> u32 => x + 1
+        assert true
+      }
+    `)).toEqual({ ran: ['a'], failed: [] })
+  })
+
+  test('what tests import is told apart from the module and from other tests', async () => {
+    // A host function or global a test imports is named in the WAT under
+    // the test, beside a module function of its name and the same import in
+    // another test or group; a global's parts are named apart, as a module
+    // global's are. A function a test imports from another module is that
+    // module's, whatever the test calls it, and leaves the module's function
+    // of that name to the module.
+    const lib = 'export func one() -> u32 => 1\nexport global five: u32 = 5\n'
+    expect(await runTests(`
+      func f() -> u32 => 2
+      func one() -> u32 => 3
+      export func g() -> u32 => f() + one()
+      test "a" {
+        import "env" "f" func f() -> u32
+        import "env" "p" global p: (x: u32, y: u32)
+        import "env" "p_x" global p_x: u32
+        assert g() == 5
+        assert p.x == 0 && p_x == 0
+      }
+      test "b" {
+        import "env" "f" func f() -> u32
+        import "env" "p" global p: (x: u32, y: u32)
+        assert p.y == 0
+      }
+      test "c" {
+        import "env" "f" func f() -> u32
+        test "x" { assert true }
+        test "y" { assert f() == 0 }
+      }
+      test "d" {
+        import "./lib" ( "one" func one() -> u32 )
+        assert one() == 1
+        assert g() == 5
+      }
+      test "e" {
+        import "./lib" (
+          "one" func uno() -> u32
+          "five" global five: u32
+        )
+        assert uno() == 1 && five == 5
+      }
+    `, { 'lib.ents': lib })).toEqual({ ran: ['a', 'b', 'c > x', 'c > y', 'd', 'e'], failed: ['c > y'] })
+  })
+
+  test('the test build exports each test as test: and its name', async () => {
+    const { mkdtemp, writeFile, rm } = await import('fs/promises')
+    const { tmpdir } = await import('os')
+    const { join } = await import('path')
+    const { loadModule } = await import('./loader')
+    const { typecheckProgram } = await import('./checker')
+    const { programToWatWithTests } = await import('./codegen')
+    const dir = await mkdtemp(join(tmpdir(), 'ents-'))
+    try {
+      const file = join(dir, 'names.ents')
+      await writeFile(file, 'export func f() -> u32 => 1\ntest "a square" { assert true }\ntest "rectangles" {\n  test "one row" { assert true }\n}\ntest "a-z" { assert true }\ntest "two\\nlines" { assert true }\ntest "\\u{1F600}" { assert true }\n')
+      const load = await loadModule(file, { includeTests: true })
+      const check = typecheckProgram(load.modules, file, { includeTests: true })
+      const { wat, testExports, testTitles } = programToWatWithTests(load.modules, check.results, file)
+      // A character is a code point, and a line end in a name ends no line of the WAT.
+      expect(testExports).toEqual(['test:a_square', 'test:rectangles__one_row', 'test:a_z', 'test:two_lines', 'test:_'])
+      expect(testTitles).toEqual(['a square', 'rectangles > one row', 'a-z', 'two\nlines', '\u{1F600}'])
+      // A host that runs the tests itself finds them in the order to run them.
+      const { wasmOfWat } = await import('./test-utils')
+      const exported = WebAssembly.Module.exports(await WebAssembly.compile(await wasmOfWat(wat))).map((e) => e.name)
+      expect(exported.filter((name) => name.startsWith('test:'))).toEqual(testExports)
+      expect(exported).toContain('f')
+    } finally {
+      await rm(dir, { recursive: true })
+    }
   })
 })
