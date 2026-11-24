@@ -72,7 +72,7 @@ export interface CodegenContext {
   claimed?: Map<string, string>
   // The locals of the variable an `if let` binds, which is seen only in its
   // then-branch (see withBinding).
-  bindings?: Map<AST.IfExpr, string[]>
+  bindings?: Map<AST.IfExpr | AST.ElifBranch, string[]>
   // The variables a `let` or a `for` declares, with their locals: from there
   // on its names stand for them (see letToWat, forToWat).
   declared?: Map<AST.LetStmt | AST.ForStmt, [string, string[]][]>
@@ -1974,25 +1974,25 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   return `${parts.join('\n')}\n(if ${resultStr} ${boundsCheck} (then ${loadVal}) (else ${fallbackVal}))`
 }
 
-function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
-  const pattern = expr.pattern
+// An `if let` or `elif let` branch: its value tested for having one, and
+// its branch run with the name bound to it, else what `otherwise` gives
+// (empty for nothing). `resultStr` is the result of the whole if, whose
+// value each branch leaves on the stack.
+function ifLetArmToWat(arm: AST.IfExpr | AST.ElifBranch, ctx: CodegenContext, resultStr: string, otherwise: () => string): string {
+  const pattern = arm.pattern
   if (!pattern || pattern.kind !== 'binding') {
     throw new Error('Invalid if-let expression')
   }
 
-  const elemType = ctx.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
+  const elemType = ctx.types.get(typeKey(arm.condition.span.start, 'IfLetBinding'))
   if (!elemType) throw new Error('Missing element type for if-let')
 
-  // As a value, each branch leaves its last expression on the stack.
-  const type = lookupExprType(expr, ctx)
-  const resultTypes = type ? typeToWasm(type) : []
-  const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
   // The binding is seen in the then-branch only.
-  const found = ctx.bindings?.get(expr)
+  const found = ctx.bindings?.get(arm)
   if (!found) throw new Error(`Missing local for if-let binding '${pattern.name}'`)
   const bindingNames = found
-  const thenBody = withBinding(ctx, pattern.name, bindingNames, () => bodyToWat(expr.thenBranch, ctx, resultTypes.length > 0))
-  const elseBody = elseToWat(expr, ctx, resultTypes.length > 0, resultStr)
+  const thenBody = withBinding(ctx, pattern.name, bindingNames, () => bodyToWat(arm.thenBranch, ctx, resultStr !== ''))
+  const elseBody = otherwise()
   function makeBind(loadVal: string): string {
     if (bindingNames.length === 1) {
       return `(local.set $${bindingNames[0]} ${loadVal})`
@@ -2002,9 +2002,9 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   }
 
   // Index expression: bounds check
-  if (expr.condition.kind === 'IndexExpr' && !holdsOptionals(expr.condition, ctx)) {
-    const indexExpr = expr.condition
-    const uid = scratchId(expr.span.start)
+  if (arm.condition.kind === 'IndexExpr' && !holdsOptionals(arm.condition, ctx)) {
+    const indexExpr = arm.condition
+    const uid = scratchId(arm.span.start)
     const idxLocal = `__iflet_idx_${uid}`
     const ptrLocal = `__iflet_ptr_${uid}`
     const lenLocal = `__iflet_len_${uid}`
@@ -2053,10 +2053,10 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   }
 
   // Generic optional expression: null check (ptr != 0)
-  const uid = scratchId(expr.span.start)
+  const uid = scratchId(arm.span.start)
   const ptrLocal = `__iflet_ptr_${uid}`
   const parts: string[] = []
-  const condWat = exprToWat(expr.condition, ctx)
+  const condWat = exprToWat(arm.condition, ctx)
 
   if (bindingNames.length >= 2) {
     // Slice optional: (ptr, len) — check ptr, bind both
@@ -2089,6 +2089,14 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then ${bindWat}\n${thenBody}))`
 }
 
+function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
+  // As a value, each branch leaves its last expression on the stack.
+  const type = lookupExprType(expr, ctx)
+  const resultTypes = type ? typeToWasm(type) : []
+  const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
+  return ifLetArmToWat(expr, ctx, resultStr, () => elseToWat(expr, ctx, resultTypes.length > 0, resultStr))
+}
+
 function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   if (expr.pattern) {
     return ifLetToWat(expr, ctx)
@@ -2112,11 +2120,17 @@ function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
 }
 
 // What an if or if-let does when its first test fails: the elif branches,
-// as nested ifs, then the else branch. Empty when it has neither.
+// as nested ifs, then the else branch. Empty when it has neither. An
+// `elif let` is tested as an `if let` is.
 function elseToWat(expr: AST.IfExpr, ctx: CodegenContext, hasResult: boolean, resultStr: string): string {
   let current = expr.else_ ? bodyToWat(expr.else_, ctx, hasResult) : ''
   for (let i = expr.elifs.length - 1; i >= 0; i--) {
     const elif = expr.elifs[i]
+    if (elif.pattern) {
+      const rest = current
+      current = ifLetArmToWat(elif, ctx, resultStr, () => rest)
+      continue
+    }
     const elifCond = exprToWat(elif.condition, ctx)
     const elifThen = bodyToWat(elif.thenBranch, ctx, hasResult)
     current = `(if ${resultStr} ${elifCond} (then ${elifThen}) (else ${current}))`
@@ -2901,18 +2915,21 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
     // The body sits in its own $continue block so that continue still reaches
     // the increment. The count is evaluated once, before the loop: a constant,
     // or a variable the body doesn't change, is read where it is compared.
-    // A signed count is compared signed, so a negative one runs the loop zero
-    // times; value counts up from 0 and stops at the count, so it never
-    // reaches the values where the two comparisons differ.
+    // value is a u32, compared unsigned with the count. A signed variable
+    // count is first tested once, before the first pass: a negative one runs
+    // no pass, and one that isn't is the same number as a u32. (A negative
+    // constant is compared signed, and 0 is past it before the first pass.)
     const constant = /^\(i32\.const (-?\d+)\)$/.exec(iterWat)
     const steady = constant !== null || steadyRead(stmt, iterWat)
     const count = steady ? iterWat : scratchLocal(ctx, 'i32')
-    const negative = iterType.kind === 'primitive' && RT.isSigned(iterType) && !(constant && Number(constant[1]) >= 0)
-    const compare = negative ? 'i32.ge_s' : 'i32.ge_u'
+    const read = steady ? count : `(local.get ${count})`
+    const signed = iterType.kind === 'primitive' && RT.isSigned(iterType)
+    const compare = signed && constant && Number(constant[1]) < 0 ? 'i32.ge_s' : 'i32.ge_u'
+    const negative = signed && !constant ? `\n    (br_if $break (i32.lt_s ${read} (i32.const 0)))` : ''
     return `${steady ? '' : `(local.set ${count} ${iterWat})\n`}(local.set $${valueName} (i32.const 0))
-(block $break
+(block $break${negative}
     (loop $next
-      (br_if $break (${compare} (local.get $${valueName}) ${steady ? count : `(local.get ${count})`}))
+      (br_if $break (${compare} (local.get $${valueName}) ${read}))
       (block $continue
         ${body}
       )
@@ -3456,34 +3473,38 @@ function collectLocals(
     }
   }
 
+  // The locals of an `if let` or `elif let` branch: its binding's, and the
+  // scratch locals its test uses.
+  function ifLetLocals(arm: AST.IfExpr | AST.ElifBranch) {
+    if (arm.pattern?.kind !== 'binding') return
+    const elemType = checkResult.types.get(typeKey(arm.condition.span.start, 'IfLetBinding'))
+    if (!elemType) return
+    // The binding's locals, seen in the then-branch only (ifLetArmToWat):
+    // after it, its name can be another variable's.
+    ctx.bindings ??= new Map()
+    ctx.bindings.set(arm, claimLocals(ctx, arm.pattern.name, elemType, locals, true, 'if let '))
+    const uid = scratchId(arm.span.start)
+    if (arm.condition.kind === 'IndexExpr') {
+      // Temporary locals for bounds checking
+      locals.push({ name: `__iflet_idx_${uid}`, type: 'i32' })
+      ctx.locals.set(`__iflet_idx_${uid}`, [`__iflet_idx_${uid}`])
+    }
+    // An optional host reference is held while it is tested for null.
+    if (unwrap(elemType).kind === 'host') locals.push({ name: `__iflet_ref_${uid}`, type: 'externref' })
+    // Temporary locals for null check
+    locals.push({ name: `__iflet_ptr_${uid}`, type: 'i32' })
+    locals.push({ name: `__iflet_len_${uid}`, type: 'i32' })
+    ctx.locals.set(`__iflet_ptr_${uid}`, [`__iflet_ptr_${uid}`])
+    ctx.locals.set(`__iflet_len_${uid}`, [`__iflet_len_${uid}`])
+  }
+
   function visitExpr(expr: AST.Expr) {
     if (expr.kind === 'IfExpr') {
-      // Collect if-let binding locals
-      if (expr.pattern && expr.pattern.kind === 'binding') {
-        const elemType = checkResult.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
-        if (elemType) {
-          // The binding's locals, seen in the then-branch only (ifLetToWat):
-          // after it, its name can be another variable's.
-          ctx.bindings ??= new Map()
-          ctx.bindings.set(expr, claimLocals(ctx, expr.pattern.name, elemType, locals, true, 'if let '))
-          const uid = scratchId(expr.span.start)
-          if (expr.condition.kind === 'IndexExpr') {
-            // Temporary locals for bounds checking
-            locals.push({ name: `__iflet_idx_${uid}`, type: 'i32' })
-            ctx.locals.set(`__iflet_idx_${uid}`, [`__iflet_idx_${uid}`])
-          }
-          // An optional host reference is held while it is tested for null.
-          if (unwrap(elemType).kind === 'host') locals.push({ name: `__iflet_ref_${uid}`, type: 'externref' })
-          // Temporary locals for null check
-          locals.push({ name: `__iflet_ptr_${uid}`, type: 'i32' })
-          locals.push({ name: `__iflet_len_${uid}`, type: 'i32' })
-          ctx.locals.set(`__iflet_ptr_${uid}`, [`__iflet_ptr_${uid}`])
-          ctx.locals.set(`__iflet_len_${uid}`, [`__iflet_len_${uid}`])
-        }
-      }
+      ifLetLocals(expr)
       visitExpr(expr.condition)
       visitBody(expr.thenBranch)
       for (const elif of expr.elifs) {
+        ifLetLocals(elif)
         visitExpr(elif.condition)
         visitBody(elif.thenBranch)
       }

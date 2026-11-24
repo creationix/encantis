@@ -4584,3 +4584,63 @@ describe('the variables of a for, an if let or a match arm', () => {
     expect(errs('func f(x: i64, c: bool) -> i64 => max(if c {\n for x in 3 { }\n 5\n } else { 2 }, x)')).toEqual([loop('x', 'a parameter')])
   })
 })
+
+// An `elif let` is an `if let` in the place of an `elif`: issue #43, where
+// it was accepted and bound nothing.
+describe('elif let', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const unproven = (n: number) => `runtime index on *[${n}]u32 requires 'if let' or '??' (no optional type for u32)`
+  const cells = 'data cells = [7:u32, 8, 9, 10]\n'
+
+  test('binds its name in its branch, as an if let does', () => {
+    expect(errs(`${cells}func f(c: bool, p: ?*u32, i: u32) -> u32 {\n if c {\n return 1\n } elif let v = p {\n return v.*\n } elif let w = cells[i] {\n return w\n }\n return 0\n}`)).toEqual([])
+    expect(errs('func f(p: ?[]u8, q: ?*u8) -> u32 {\n if let a = q {\n return 1\n } elif let s = p {\n return s.len\n }\n return 0\n}')).toEqual([])
+    expect(errs('func f(s: []mut u8, i: u32, c: bool) {\n if c { } elif let e = &s[i] {\n e.* = 1\n }\n}')).toEqual([])
+    expect(errs('func f(s: []u8, a: u32, c: bool) -> u32 {\n if c { } elif let r = s[a..a + 2] {\n return r.len\n }\n return 0\n}')).toEqual([])
+  })
+
+  test('is a value with an else, its type settled with the other branches', () => {
+    expect(errs(`${cells}func f(c: bool, p: ?*u32, i: u32) -> u32 => if c { 1 } elif let v = p { v.* } elif let w = cells[i] { w } else { 0 }`)).toEqual([])
+    expect(errs('func f(c: bool, p: ?*u8, a: i32, b: u32) -> i64 => if c { a } elif let q = p { q.* } else { b }')).toEqual([])
+    expect(errs('func f(c: bool, p: ?*u8) -> u8 => if c { 1 } elif let q = p { q.* } else { 300 }')).toEqual(['cannot assign int(300) to u8'])
+    // With no type given, the branches settle on one type together, as an elif's do.
+    expect(errs('func f(c: bool, p: ?*u32) -> i64 {\n let r = if c { 1:u8 } elif let v = p { v.* } else { 5000000000 }\n return r\n}')).toEqual([])
+    expect(errs('func f(c: bool, p: ?*u32) -> u32 {\n let r = if c { 1:u8 } elif let v = p { v.* } else { 5000000000 }\n return r\n}')).toEqual(['cannot assign i64 to u32'])
+    expect(errs('func f(c: bool, p: ?*u32, xs: []i32) -> u32 {\n let v = if c { xs } elif let q = p { [1] } else { [] }\n return v.len\n}')).toEqual([])
+    expect(errs('func f(c: bool, p: ?*u32, x: i32) -> u32 {\n let v = if c { 1 } elif let q = p { q.* } else { x }\n return 0\n}'))
+      .toEqual(['branches have different types: i32 and u32 (cast one explicitly)'])
+  })
+
+  test('its binding and its lets are seen in its branch only', () => {
+    expect(errs('func f(c: bool, p: ?*u32) -> u32 {\n if c { } elif let v = p { }\n return v.*\n}')[0]).toContain("unknown identifier 'v'")
+    expect(errs('func f(c: bool, p: ?*u32) -> u32 => if c { 1 } elif let v = p { 2 } else { v.* }')[0]).toContain("unknown identifier 'v'")
+    expect(errs('func f(c: bool, p: ?*u32, d: bool) -> u32 => if c { 1 } elif let v = p { 2 } elif d { v.* } else { 0 }')[0]).toContain("unknown identifier 'v'")
+    expect(errs('func f(c: bool, p: ?*u32) -> u32 {\n if c { } elif let v = p {\n let t = v.*\n }\n return t\n}')[0]).toContain("unknown identifier 't'")
+    // So two of them can each bind a name and declare a variable of one name.
+    expect(errs('func f(p: ?*u32, q: ?*f64) -> f64 {\n if let v = p {\n let t = v.* as f64\n return t\n } elif let v = q {\n let t = v.*\n return t\n }\n return 0.0\n}')).toEqual([])
+    // A let in a later plain branch is the function's.
+    expect(errs('func f(c: bool, p: ?*u32) -> u32 {\n if c { } elif let v = p { } else {\n let t: u32 = 4\n }\n return t\n}')).toEqual([])
+  })
+
+  test('takes what an if let takes, with its messages', () => {
+    expect(errs('func f(c: bool, p: ?*u32) -> u32 {\n if c { } elif let _ = p {\n return 1\n }\n return 0\n}')).toEqual(['if let only supports simple bindings'])
+    expect(errs(`${cells}func f(c: bool, i: u32) -> u32 {\n if c { } elif let (x, y) = cells[i] {\n return x\n }\n return 0\n}`)).toEqual(['if let only supports simple bindings'])
+    expect(errs('func f(c: bool, n: u32) -> u32 {\n if c { } elif let m = n {\n return m\n }\n return 0\n}')).toEqual(['if let requires an optional expression or bounds-checked index'])
+    expect(errs('func f(c: bool, mp: [*]i32, i: u32) {\n if c { } elif let b = mp[i] { }\n}'))
+      .toEqual(['if let has nothing to check here: [*]i32 has no length, so its index is never checked — index it directly'])
+    // Reported at the elif.
+    const src = 'func f(c: bool, n: u32) -> u32 {\n if c { } elif let m = n {\n return m\n }\n return 0\n}'
+    expect(checkModule(src).errors[0].offset).toBe(src.indexOf('elif'))
+  })
+
+  test('a condition narrows in the branches of a chain with an if let or an elif let in it', () => {
+    // Where x >= 4 is false, x < 4: in the elif let's branch and after it.
+    expect(errs(`${cells}func f(x: u32, p: ?*u32) -> u32 {\n if x >= 4 {\n return 0\n } elif let v = p {\n return v.* + cells[x]\n } else {\n return cells[x]\n }\n}`)).toEqual([])
+    // An elif's own condition holds in its branch, also after an if let.
+    expect(errs(`${cells}func f(p: ?*u32, x: u32) -> u32 {\n if let v = p {\n return v.*\n } elif x < 4 {\n return cells[x]\n }\n return 0\n}`)).toEqual([])
+    expect(errs(`${cells}func f(p: ?*u32, x: u32) -> u32 => if let v = p { v.* } elif x >= 4 { 0 } else { cells[x] }`)).toEqual([])
+    expect(errs(`${cells}func f(x: u32, p: ?*u32) -> u32 => if x >= 9 { 0 } elif let v = p { v.* } elif x < 4 { cells[x] } else { 1 }`)).toEqual([])
+    // The value of an if let is no condition: it narrows nothing.
+    expect(errs(`${cells}func f(x: u32, p: ?*u32) -> u32 => if x < 9 { 0 } elif let v = p { cells[x] } else { 1 }`)).toEqual([unproven(4)])
+  })
+})
