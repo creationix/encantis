@@ -1724,12 +1724,19 @@ class CheckContext {
           const name = item.item.ident ?? item.name
           if (this.takenByGeneric(name, item.span.start)) break
           if (this.takenByAnother(name, item.span.start, 'func', inTest)) break
+          // A test takes no name of an import of the module (12.4). A
+          // function of another source module imported again is that one
+          // again (3.4); a host function is not, as at module level, where
+          // one imported twice under one name is refused too (7.1). A name
+          // several functions of the module share has its own message
+          // (sharedByModule).
           const imported = `${isSource && this.filePath ? resolveModulePath(decl.module, this.filePath) : decl.module}\n${item.name}`
-          if (inTest && (this.importedFuncs.get(name) ?? imported) !== imported) {
-            this.error(item.span.start, `'${name}' is already declared`)
+          const known = inTest && !this.shared(name) ? this.importedFuncs.get(name) : undefined
+          if (known && (!isSource || known.key !== imported)) {
+            this.error(item.span.start, `'${name}' is already declared: an import in a test cannot reuse the name of an import of the module${this.firstDeclared(known.at)}`)
             break
           }
-          if (!inTest && !this.importedFuncs.has(name)) this.importedFuncs.set(name, imported)
+          if (!inTest && !this.importedFuncs.has(name)) this.importedFuncs.set(name, { key: imported, at: item.item.span.start })
           if (!isSource && isGenericSignature(item.item.signature)) {
             this.error(item.span.start, `a host import cannot have comptime parameters`)
             break
@@ -1985,9 +1992,10 @@ class CheckContext {
   private readonly globalOrigins = new Map<string, string>()
   // What each function the module imports is, by the name it is imported
   // as: the source file or host module and the name it is imported by
-  // there. A function or an import a test declares cannot take the name
-  // (12.4), unless it imports the same function again.
-  private readonly importedFuncs = new Map<string, string>()
+  // there, and where the import's local name is written. A function or an
+  // import a test declares cannot take the name (12.4), unless it imports
+  // the same function of another source module again.
+  private readonly importedFuncs = new Map<string, { key: string; at: number }>()
   private takenByAnother(name: string, offset: number, kind: 'func' | 'value', inTest = false): boolean {
     const first = this.topLevel.get(name)
     if (first === undefined) {
@@ -2007,8 +2015,11 @@ class CheckContext {
     if (!decl.ident) return // Anonymous function
     if (this.takenByGeneric(decl.ident, decl.span.start)) return
     if (this.takenByAnother(decl.ident, decl.span.start, 'func', inTest)) return
-    if (inTest && this.importedFuncs.has(decl.ident)) {
-      this.error(decl.span.start, `'${decl.ident}' is already declared`)
+    // A name several functions of the module share has its own message
+    // (sharedByModule)
+    const imported = inTest && !this.shared(decl.ident) ? this.importedFuncs.get(decl.ident) : undefined
+    if (imported) {
+      this.error(decl.span.start, `'${decl.ident}' is already declared: a function declared in a test cannot reuse the name of an import${this.firstDeclared(imported.at)}`)
       return
     }
     for (const { at, message } of this.defNamedFields(decl)) this.error(at, message)

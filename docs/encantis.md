@@ -11321,7 +11321,7 @@ test "a test sorts with a comparator that captures" {
 <!-- spec:end -->
 
 
-A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)). Nor do two functions or imports of one test share a name, whatever their parameters: the functions of a test do not share a name as the module's do. A test nested in it can declare its own of the name, and so can another test.
+A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)). The error for an import's name ends with where the import's local name is, as [3.3](#33-variables) says. The one exception is a function of another source module imported again under the name the module imports it by, which is that one again ([3.4](#34-functions)); the same host function imported again is refused, as it is at module level ([7.1](#71-imports)). Nor do two functions or imports of one test share a name, whatever their parameters: the functions of a test do not share a name as the module's do. A test nested in it can declare its own of the name, and so can another test.
 
 <!-- spec:begin compile -->
 
@@ -11335,6 +11335,7 @@ test "what a test cannot declare" {
   func size() -> u32 => 4
   func log(x: u32) { }
   import "env" "warn" func log(x: u32)
+  import "env" "log" func log(x: u32)
   func hash(k: u32) -> u32 => 0
   func pick(comptime T: type, a: T) -> T => a
   func Box(comptime T: type) -> type => (v: T)
@@ -11347,8 +11348,9 @@ test "what a test cannot declare" {
 
 ```errors
 'size' is already declared
-'log' is already declared
-'log' is already declared
+'log' is already declared: a function declared in a test cannot reuse the name of an import (first declared at 4:25)
+'log' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 4:25)
+'log' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 4:25)
 'hash' is the name of several functions of the module: a function declared in a test cannot take it over
 a generic function is declared at module level, not inside a test
 a generic type is declared at module level, not inside a test

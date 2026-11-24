@@ -2739,7 +2739,9 @@ export func m3(a: u32) -> u32 => gk(a) + apply(shared)`
   })
 
   // A function or an import declared in a test cannot take the name of an
-  // import of the module (12.4), unless it imports the same function again
+  // import of the module (12.4), said with where the import's name is, also
+  // for the same host function again, which the module could not import
+  // twice under one name either (7.1)
   test('a test\'s function or import cannot take the name of an import of the module', () => {
     expect(testErrorsOf(`import "env" "e" func e() -> u32
 import "env" "f" func f() -> u32
@@ -2752,7 +2754,50 @@ test "another host function" {
 test "the same import again" {
   import "env" "f" func f() -> u32
   assert f() == f()
-}`)).toEqual(["'e' is already declared", "'e' is already declared"])
+}
+test "the same import again, another signature" {
+  import "env" "f" func f() -> u64
+}`)).toEqual([
+      "'e' is already declared: a function declared in a test cannot reuse the name of an import (first declared at 1:23)",
+      "'e' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 1:23)",
+      "'f' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 2:23)",
+      "'f' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 2:23)",
+    ])
+  })
+
+  // A name several functions of the module share, imports among them, is
+  // refused a test's function or import as that name, wherever it is
+  test('a test\'s function or import of a name several imports share is told so', () => {
+    const shared = "'log' is the name of several functions of the module: a function declared in a test cannot take it over"
+    expect(testErrorsOf(`import "env" "log32" func log(x: u32)
+import "env" "log64" func log(x: u64)
+test "a function" {
+  func log(x: u32) { }
+}
+test "the first import again" {
+  import "env" "log32" func log(x: u32)
+}
+test "the second import again" {
+  import "env" "log64" func log(x: u64)
+}
+test "another" {
+  import "env" "log8" func log(x: u8)
+}`)).toEqual([shared, shared, shared, shared])
+  })
+
+  // A function of another source module imported again under its name is
+  // that one again (3.4), in a test too
+  test('a test imports the module\'s function of another source module again', async () => {
+    const { ran, failed } = await runProgram({
+      'slib.ents': 'export func g() -> u32 => 3',
+      'main.ents': `import "./slib.ents" ("g" func g() -> u32)
+export func m() -> u32 => g()
+test "again" {
+  import "./slib.ents" ("g" func g() -> u32)
+  assert g() == 3 && m() == 3
+}`,
+    })
+    expect({ ran, failed }).toEqual({ ran: ['again'], failed: [] })
   })
 
   // The test runner lists every named test without nested tests
