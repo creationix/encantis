@@ -918,7 +918,7 @@ describe('defer codegen', () => {
     const load = await loadModule(file, { includeTests: true })
     const check = typecheckProgram(load.modules, file, { includeTests: true })
     const { wat } = programToWatWithTests(load.modules, check.results, file)
-    const testFunc = wat.slice(wat.indexOf('(func $test_cleanup'))
+    const testFunc = wat.slice(wat.indexOf(';; test "cleanup"'))
     expect(testFunc).toContain('call $done')
   })
 
@@ -4700,5 +4700,136 @@ describe('a constant expression as the index of a value array', () => {
   test('a store', () => {
     twinOf('export func f() -> u32 {\n  let w: [3]u32 = [1, 2, 3]\n  w[INDEX] = 7\n  return w[2]\n}', '1 + 1')
     twinOf('type Buf = (len: u32, items: [3]u8)\nexport func f(b: *mut Buf) { b.items[INDEX] = 9 }', '1 + 1')
+  })
+})
+
+describe('the functions and exports of tests', () => {
+  // Each test is a function exported as test: and its name, which no export
+  // of the module can begin with, and its function and those it declares
+  // have names in the WAT that no function of the module can have.
+  const runTests = async (source: string, others?: Record<string, string>) => (await import('./test-utils')).runTestsOfSource(source, others)
+
+  test('a module function or export named as the test build names a test', async () => {
+    expect(await runTests(`
+      func test_xor() -> u32 => 1
+      export func test_and() -> u32 => 2
+      export "test_or" func g() -> u32 => 3
+      func test_a_b() -> u32 => 4
+      import "env" "test_host" func test_host() -> u32
+      func test_two(x: u32) -> u32 => x
+      func test_two(x: u64) -> u32 => 6
+      func test_id(comptime T: type, x: T) -> T => x
+      test "xor" { assert test_xor() == 1 }
+      test "and" { assert test_and() == 2 }
+      test "or" { assert g() == 3 }
+      test "a b" { assert test_a_b() == 4 }
+      test "host" { assert test_two(5:u64) == 6 }
+      test "two" { assert test_id(u8, 7) == 7 }
+    `)).toEqual({ ran: ['xor', 'and', 'or', 'a b', 'host', 'two'], failed: [] })
+  })
+
+  test('the functions tests declare are told apart, whatever the names of the tests', async () => {
+    // test "a" with b_f, test "a_b" with f; a group and a test of one name;
+    // a test without a name that declares what its group does.
+    expect(await runTests(`
+      test "a" {
+        func b_f() -> u32 => 1
+        assert b_f() == 1
+      }
+      test "a_b" {
+        func f() -> u32 => 2
+        assert f() == 2
+      }
+      test "g" {
+        func h() -> u32 => 3
+        test {
+          func h() -> u32 => 3
+        }
+        test "x" { assert h() == 3 }
+      }
+      test "g" {
+        func h() -> u32 => 3
+        assert h() == 3
+      }
+    `)).toEqual({ ran: ['a', 'a_b', 'g > x', 'g'], failed: [] })
+    // A function without a name is left out, as at module level.
+    expect(await runTests(`
+      test "a" {
+        func(x: u32) -> u32 => x
+        func(x: u32) -> u32 => x + 1
+        assert true
+      }
+    `)).toEqual({ ran: ['a'], failed: [] })
+  })
+
+  test('what tests import is told apart from the module and from other tests', async () => {
+    // A host function or global a test imports is named in the WAT under
+    // the test, beside a module function of its name and the same import in
+    // another test or group; a global's parts are named apart, as a module
+    // global's are. A function a test imports from another module is that
+    // module's, whatever the test calls it, and leaves the module's function
+    // of that name to the module.
+    const lib = 'export func one() -> u32 => 1\nexport global five: u32 = 5\n'
+    expect(await runTests(`
+      func f() -> u32 => 2
+      func one() -> u32 => 3
+      export func g() -> u32 => f() + one()
+      test "a" {
+        import "env" "f" func f() -> u32
+        import "env" "p" global p: (x: u32, y: u32)
+        import "env" "p_x" global p_x: u32
+        assert g() == 5
+        assert p.x == 0 && p_x == 0
+      }
+      test "b" {
+        import "env" "f" func f() -> u32
+        import "env" "p" global p: (x: u32, y: u32)
+        assert p.y == 0
+      }
+      test "c" {
+        import "env" "f" func f() -> u32
+        test "x" { assert true }
+        test "y" { assert f() == 0 }
+      }
+      test "d" {
+        import "./lib" ( "one" func one() -> u32 )
+        assert one() == 1
+        assert g() == 5
+      }
+      test "e" {
+        import "./lib" (
+          "one" func uno() -> u32
+          "five" global five: u32
+        )
+        assert uno() == 1 && five == 5
+      }
+    `, { 'lib.ents': lib })).toEqual({ ran: ['a', 'b', 'c > x', 'c > y', 'd', 'e'], failed: ['c > y'] })
+  })
+
+  test('the test build exports each test as test: and its name', async () => {
+    const { mkdtemp, writeFile, rm } = await import('fs/promises')
+    const { tmpdir } = await import('os')
+    const { join } = await import('path')
+    const { loadModule } = await import('./loader')
+    const { typecheckProgram } = await import('./checker')
+    const { programToWatWithTests } = await import('./codegen')
+    const dir = await mkdtemp(join(tmpdir(), 'ents-'))
+    try {
+      const file = join(dir, 'names.ents')
+      await writeFile(file, 'export func f() -> u32 => 1\ntest "a square" { assert true }\ntest "rectangles" {\n  test "one row" { assert true }\n}\ntest "a-z" { assert true }\ntest "two\\nlines" { assert true }\ntest "\\u{1F600}" { assert true }\n')
+      const load = await loadModule(file, { includeTests: true })
+      const check = typecheckProgram(load.modules, file, { includeTests: true })
+      const { wat, testExports, testTitles } = programToWatWithTests(load.modules, check.results, file)
+      // A character is a code point, and a line end in a name ends no line of the WAT.
+      expect(testExports).toEqual(['test:a_square', 'test:rectangles__one_row', 'test:a_z', 'test:two_lines', 'test:_'])
+      expect(testTitles).toEqual(['a square', 'rectangles > one row', 'a-z', 'two\nlines', '\u{1F600}'])
+      // A host that runs the tests itself finds them in the order to run them.
+      const { wasmOfWat } = await import('./test-utils')
+      const exported = WebAssembly.Module.exports(await WebAssembly.compile(await wasmOfWat(wat))).map((e) => e.name)
+      expect(exported.filter((name) => name.startsWith('test:'))).toEqual(testExports)
+      expect(exported).toContain('f')
+    } finally {
+      await rm(dir, { recursive: true })
+    }
   })
 })

@@ -4644,3 +4644,112 @@ describe('elif let', () => {
     expect(errs(`${cells}func f(x: u32, p: ?*u32) -> u32 => if x < 9 { 0 } elif let v = p { cells[x] } else { 1 }`)).toEqual([unproven(4)])
   })
 })
+
+describe('the export names of tests', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const both = (first: string, second: string, name: string) =>
+    `tests "${first}" and "${second}" are both exported as 'test:${name}' in the test build: give each test a name of its own`
+
+  test('two tests of one export name are an error at the second', () => {
+    expect(errs('test "same" { assert true }\ntest "same" { assert true }')).toEqual([both('same', 'same', 'same')])
+    // Each character that is not a letter, a digit or _ is _ in the name.
+    expect(errs('test "a b" { assert true }\ntest "a_b" { assert true }\ntest "a-b" { assert true }')).toEqual([
+      both('a b', 'a_b', 'a_b'),
+      both('a b', 'a-b', 'a_b'),
+    ])
+    // A character is a code point: one outside ASCII is one _.
+    expect(errs('test "\u{1F600}" { assert true }\ntest "_" { assert true }\ntest "__" { assert true }')).toEqual([both('\u{1F600}', '_', '_')])
+    // A group and its tests are joined by __.
+    expect(errs('test "a" {\n  test "b" { assert true }\n}\ntest "a__b" { assert true }')).toEqual([both('a > b', 'a__b', 'a__b')])
+    expect(errs('test "g" {\n  test "x" { assert true }\n  test "x" { assert true }\n}')).toEqual([both('g > x', 'g > x', 'g__x')])
+    // A test without a name passes its group's name on to its tests.
+    expect(errs('test "g" {\n  test {\n    test "x" { assert true }\n  }\n  test "x" { assert true }\n}')).toEqual([both('g > x', 'g > x', 'g__x')])
+    // A test that is empty is a test all the same.
+    expect(errs('test "todo" {}\ntest "todo" {}')).toEqual([both('todo', 'todo', 'todo')])
+  })
+
+  test('a test whose name is empty is an error, in source order with the others', () => {
+    const empty = "a test's name is empty: give it one"
+    expect(errs('test "" { assert false }\ntest "g" {\n  test "" { assert false }\n}')).toEqual([empty, empty])
+    expect(errs('test "a" { assert true }\ntest "a" { assert true }\ntest "" {\n  test "x" { assert true }\n}')).toEqual([both('a', 'a', 'a'), empty])
+    // A test without a name is no test whose name is empty.
+    expect(errs('test {\n  test "x" { assert true }\n}')).toEqual([])
+  })
+
+  test('a group is no export: its name may be that of a test', () => {
+    expect(errs('test "g" {\n  test "x" { assert true }\n}\ntest "g" { assert true }\ntest "x" { assert true }')).toEqual([])
+    expect(errs('test "g" {\n  test "x" { assert true }\n}\ntest "h" {\n  test "x" { assert true }\n}')).toEqual([])
+  })
+
+  test('the module names nothing a test is exported as', () => {
+    // A function or an export of the module named test_ and a test's name
+    // are no collision: the test build exports the tests as test:...
+    expect(errs(`
+      func test_xor() -> u32 => 1
+      export func test_and() -> u32 => 2
+      export "test_or" func g() -> u32 => 3
+      export "test" global t: (a: u32, b: u32) = (1, 2)
+      test "xor" { assert test_xor() == 1 }
+      test "and" { assert test_and() == 2 }
+      test "or" { assert g() == 3 }
+      test "a" { assert t.a == 1 }
+    `)).toEqual([])
+    const refused = (name: string) => `export name '${name}' begins with 'test:', which the test build gives its tests: give it another name`
+    expect(errs(`
+      export "test:xor" func f() -> u32 => 1
+      export "test:" global g: u32 = 0
+      export "test:mem" memory 1
+      export "test:id" func id(comptime T: type, x: T) -> T => x
+    `)).toEqual([refused('test:xor'), refused('test:'), refused('test:mem'), refused('test:id')])
+    // Without its tests the module is checked as the program is compiled:
+    // still no export takes a name of the tests.
+    const parsed = parse('export "test:xor" func f() -> u32 => 1\ntest "same" {}\ntest "same" {}').module
+    expect(parsed && typecheck(parsed, { includeTests: false }).errors.map(e => e.message)).toEqual([refused('test:xor')])
+  })
+})
+
+describe('the names a test declares', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const again = (name: string) => `'${name}' is already declared in this test`
+
+  // The test build names what a test declares under the test: two
+  // functions or imports of one name in one test would be one name.
+  test('a test gives a name to one function or import', () => {
+    expect(errs('test "a" {\n  func h(x: u32) -> u32 => x\n  func h(x: u64) -> u64 => x + 1\n  assert h(1:u64) == 2\n}')).toEqual([again('h')])
+    expect(errs(`
+      test "a" {
+        import "env" "f" func f() -> u32
+        func f() -> u32 => 1
+        import "env" "g" global g: u32
+        import "env" "h" global g: u32
+        import "env" "k" func k() -> u32
+        import "env" "k" func k() -> u32
+        assert true
+      }
+    `)).toEqual([again('f'), again('g'), again('k')])
+    // A declaration the module's names refuse is reported once, for that.
+    expect(errs('global x: u32 = 1\ntest "a" {\n  func x() -> u32 => 1\n  import "env" "x" func x() -> u32\n  assert true\n}')).toEqual([
+      "'x' is already declared",
+      "'x' is already declared",
+    ])
+  })
+
+  test('a test and the tests it holds, or two tests, each give a name once', () => {
+    expect(errs(`
+      func f() -> u32 => 0
+      test "a" {
+        func f() -> u32 => 1
+        import "env" "g" func g() -> u32
+        test "x" {
+          func f() -> u32 => 2
+          import "env" "g" func g() -> u32
+          assert f() == 2
+        }
+      }
+      test "b" {
+        import "env" "f" func f() -> u32
+        assert true
+      }
+    `)).toEqual([])
+  })
+})

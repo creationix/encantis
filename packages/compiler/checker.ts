@@ -1311,6 +1311,7 @@ class CheckContext {
     this.resolveForwardRefs()
     this.checkOverloads()
     this.checkExportNames(module)
+    if (this.options.includeTests !== false) this.checkTestNames(module)
 
     // Second pass: check function bodies and expressions
     for (const decl of module.decls) {
@@ -1916,6 +1917,12 @@ class CheckContext {
     const memory = module.decls.find((d) => d.kind === 'MemoryDecl' || (d.kind === 'ExportDecl' && d.item.kind === 'MemoryDecl'))
     for (const decl of module.decls) {
       if (decl.kind !== 'ExportDecl') continue
+      // The names the test build exports its tests under are the tests'. Only
+      // a name written in quotes can begin so: a name of the module's has no
+      // ':', and the parts of a global add to its name.
+      if (decl.name.startsWith(TEST_EXPORT_PREFIX)) {
+        this.error(decl.span.start, `export name '${decl.name}' begins with '${TEST_EXPORT_PREFIX}', which the test build gives its tests: give it another name`)
+      }
       const item = decl.item
       // A generic's export emits nothing, and its name is unique already.
       if (item.kind === 'TypeFuncDecl' || (item.kind === 'FuncDecl' && isGenericDecl(item))) continue
@@ -1936,6 +1943,34 @@ class CheckContext {
       }
       this.error(decl.span.start, `export name '${decl.name}' is used twice: give one an explicit name, as in ${example}`)
     }
+  }
+
+  // Each test the test build runs is a function exported under a name of its
+  // own (testsToRun): two of one name would be one export for two functions.
+  // A name that is empty is no name a test is reported or exported by, and
+  // a test without a name is not run (reference 12.3): such a test would
+  // be left out with nothing said.
+  private checkTestNames(module: AST.Module): void {
+    const found: { offset: number; message: string }[] = []
+    const empty = (items: readonly { kind: string }[]): void => {
+      for (const item of items) {
+        if (item.kind !== 'TestDecl') continue
+        const test = item as AST.TestDecl
+        if (test.name === '') found.push({ offset: test.span.start, message: `a test's name is empty: give it one` })
+        empty(test.children)
+      }
+    }
+    empty(module.decls)
+    const first = new Map<string, string>()
+    for (const { decl, exportName, title } of testsToRun(module.decls)) {
+      const earlier = first.get(exportName)
+      if (earlier === undefined) {
+        first.set(exportName, title)
+        continue
+      }
+      found.push({ offset: decl.span.start, message: `tests "${earlier}" and "${title}" are both exported as '${exportName}' in the test build: give each test a name of its own` })
+    }
+    for (const { offset, message } of found.sort((a, b) => a.offset - b.offset)) this.error(offset, message)
   }
 
   collectTypeDecl(decl: AST.TypeDecl): void {
@@ -2959,15 +2994,29 @@ class CheckContext {
     this.currentScope = testScope
     const prevVariables = this.variables
     this.variables = new Map()
+    // A test gives a name to one function or import: the test build names
+    // each under the test (reference 12.6), and two would be one name. One
+    // the module's names refused already (takenByAnother) takes none.
+    const named = new Set<string>()
+    const once = (name: string | undefined, offset: number, from: number): void => {
+      if (name === undefined || this.errors.slice(from).some((e) => e.offset === offset)) return
+      if (named.has(name)) this.error(offset, `'${name}' is already declared in this test`)
+      named.add(name)
+    }
     for (const item of decl.children) {
       switch (item.kind) {
         case 'TestDecl':
           this.checkTestDecl(item)
           break
         case 'ImportDecl': {
+          const from = this.errors.length
           const known = new Set(this.moduleScope.symbols.keys())
           this.collectImport(item, true)
           for (const name of this.moduleScope.symbols.keys()) if (!known.has(name)) this.testOnly.add(name)
+          for (const imported of item.items) {
+            if (imported.item.kind === 'ImportFunc') once(imported.item.ident ?? imported.name, imported.span.start, from)
+            if (imported.item.kind === 'ImportGlobal') once(imported.item.ident, imported.span.start, from)
+          }
           break
         }
         case 'FuncDecl':
@@ -2982,7 +3031,11 @@ class CheckContext {
             break
           }
           if (item.ident && !this.moduleScope.symbols.has(item.ident)) this.testOnly.add(item.ident)
-          this.collectFunc(item, true)
+          {
+            const from = this.errors.length
+            this.collectFunc(item, true)
+            once(item.ident ?? undefined, item.span.start, from)
+          }
           // Not one that was refused the name: the module's functions keep it.
           if (item.ident && !this.shared(item.ident)) {
             const declared = this.moduleScope.symbols.get(item.ident)
@@ -11187,6 +11240,30 @@ function literalMarks(node: unknown, skip: (call: AST.CallExpr) => boolean, foun
     }
     for (const [key, value] of Object.entries(n)) if (key !== 'span') literalMarks(value, skip, found)
   }
+  return found
+}
+
+// In the test build each test is a function exported as test: and its name,
+// and no export of a module begins with test: (checkExportNames).
+export const TEST_EXPORT_PREFIX = 'test:'
+
+// The tests the test build runs, in the order they are written, each with the
+// name it is exported as and its title, which is how it is reported. These
+// are the tests with a name that hold no tests. Their export name is test:
+// and the names of their groups and their own, joined by __, with each
+// character that is not a letter, a digit or _ made _; a test without a
+// name adds nothing to the names of the tests it holds. Their title is the
+// names joined by ' > '.
+export function testsToRun(items: readonly { kind: string }[]): { decl: AST.TestDecl; exportName: string; title: string }[] {
+  const found: { decl: AST.TestDecl; exportName: string; title: string }[] = []
+  const visit = (decl: AST.TestDecl, path: string, title: string) => {
+    const own = decl.name ? (path ? `${path}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/gu, '_') : path
+    const ownTitle = decl.name ? (title ? `${title} > ${decl.name}` : decl.name) : title
+    const nested = decl.children.filter((c): c is AST.TestDecl => c.kind === 'TestDecl')
+    for (const child of nested) visit(child, own, ownTitle)
+    if (nested.length === 0 && decl.name) found.push({ decl, exportName: `${TEST_EXPORT_PREFIX}${own}`, title: ownTitle })
+  }
+  for (const item of items) if (item.kind === 'TestDecl') visit(item as AST.TestDecl, '', '')
   return found
 }
 

@@ -12,33 +12,39 @@
 // how a Vec at the top of the stack grows in place.
 //
 // The stack is 256 KiB. A program that needs more copies this file and
-// makes `capacity` and `space` larger: zeroed data costs nothing to compile.
+// makes `space` larger, keeping its length a multiple of 8: zeroed data
+// costs nothing to compile.
+//
+// top is never past space.len, so the room left, space.len - top, does not
+// wrap, where top + n can: what does not fit is checked against the room
+// before top moves.
 
-def capacity = 262144:u32
 data space = mut [0:u8; 262144]
 global top: u32 = 0
 
 // The current top, as an address.
 export func mark() -> u32 => (space as u32) + top
 
-// Frees everything allocated since the mark m was taken.
+// Frees everything allocated since the mark m was taken. Traps for an
+// address outside the stack, which no mark is.
 export func reset(m: u32) {
-  top = m - (space as u32)
+  let at = m - (space as u32)
+  assert at <= space.len
+  top = at
 }
 
-// n bytes, 8-byte aligned. Traps when the stack is full.
-export func alloc(n: u32) -> (p: u32) {
+// n bytes, 8-byte aligned. Traps when they do not fit.
+export func alloc(n: u32) -> u32 {
   top = (top + 7) & 0xFFFFFFF8
-  p = (space as u32) + top
-  top += n
-  assert top <= capacity
+  return extend(n)
 }
 
 // n more bytes at the top, directly after what is there (no alignment).
+// Traps when they do not fit.
 export func extend(n: u32) -> (p: u32) {
+  assert n <= space.len - top
   p = (space as u32) + top
   top += n
-  assert top <= capacity
 }
 
 // n bytes, all zero.
@@ -73,6 +79,21 @@ test "extend builds a contiguous array from a mark" {
   assert words[0] == 0
   assert words[4] == 40
   assert mark() == start + 20
+  reset(base)
+}
+
+test "the stack fills to its last byte" {
+  let base = mark()
+  let end = (space as u32) + space.len
+  assert extend(end - base - 1) == base
+  assert extend(1) == end - 1
+  assert mark() == end
+  assert extend(0) == end
+  assert alloc(0) == end
+  reset(end)
+  reset(base)
+  let at = alloc(0)
+  assert alloc(end - at) == at
   reset(base)
 }
 

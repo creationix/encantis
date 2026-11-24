@@ -37,9 +37,10 @@ Source code is shown in `ents` code blocks. The examples that the compiler can p
   1. generic types: what is wrong with their parameters, then any that applies itself to a growing argument ([8.5](#85-generic-types));
   2. `type` declarations;
   3. every other declaration, whatever its kind: imports, `def`s, globals (`global initializer must be a compile-time constant`), `data` (`data value must be a literal ...`), functions' parameter and result types and a generic's comptime parameters (a named result with a comptime parameter's name among them), with the limits on these, such as an array's size or the registers a signature takes ([2.12](#212-limits)); a second function with the same parameter types, and a generic that shares its name with a function, are reported at the one declared second;
-  4. export names used twice;
-  5. the bodies of functions and tests. With a function's body come the checks that tie its signature to it, such as `result 'n' is the parameter 'n', so it has its type: u32, not u64`, and the errors at its calls of generics, such as a comptime function argument of the wrong type ([8.6](#86-comptime-function-parameters));
-  6. the instances of generics, in the order they are made ([8.3](#83-requirements)).
+  4. export names: one used twice, or one that begins with `test:` ([7.2](#72-exports));
+  5. the names of tests: a test whose name is empty, and two tests exported under one name ([12.6](#126-the-test-host));
+  6. the bodies of functions and tests. With a function's body come the checks that tie its signature to it, such as `result 'n' is the parameter 'n', so it has its type: u32, not u64`, and the errors at its calls of generics, such as a comptime function argument of the wrong type ([8.6](#86-comptime-function-parameters));
+  7. the instances of generics, in the order they are made ([8.3](#83-requirements)).
 
   So an error in a later function's parameter type is listed before one in an earlier function's body. A generic type's body is checked where the type is applied, so the body of one never applied is not checked at all ([8.5](#85-generic-types)). An expression that is refused takes a type that fits wherever it is used, so its uses add no error of their own. After a few errors the compiler still reports a second, misleading one at the same place (`cannot assign i32 to u32` after `unknown identifier 'n'` in a function that returns a `u32`: known bugs); the examples here avoid them.
 - A code block marked `ents same-wasm` after an example is a second program that compiles to exactly the same `.wasm` file. This is how the reference shows that a feature costs nothing.
@@ -108,7 +109,7 @@ The compiler implements everything this reference describes except what this tab
 | Assigning a tuple of variables without `set`, `(q, r) = divmod(17, 5)` | A syntax error: write `set (q, r) = divmod(17, 5)` | [4.5](#45-assignment-and-compound-assignment) |
 | Destructuring a global, `global (a, b) = (1, 2)` | Refused: `global destructuring is not supported yet` | [3.3](#33-variables) |
 | Function values: a function held in a variable, parameter or field, called indirectly | Calling one is refused (`calling a function value is not supported yet: ...`). A program that stores or passes one passes the checker and does not assemble. A function given at compile time, a comptime function parameter, works | [3.4](#function-types-and-pointers), [8.6](#86-comptime-function-parameters) |
-| Functions without a name, `func(x: i32) -> i32 => x + 1` at module level, `export "inc" func(x: i32) -> i32 => x + 1` | Accepts one and leaves it out of the module; exported, the module does not assemble (it exports an undefined function), and without an export name it is `Internal parser error: Cannot export anonymous function without explicit name` | [3.4](#34-functions), [7.2](#72-exports) |
+| Functions without a name, `func(x: i32) -> i32 => x + 1` at module level or in a test, `export "inc" func(x: i32) -> i32 => x + 1` | Accepts one and leaves it out of the module; exported, the module does not assemble (it exports an undefined function), and without an export name it is `Internal parser error: Cannot export anonymous function without explicit name` | [3.4](#34-functions), [7.2](#72-exports) |
 | `inline func` | Parses `inline` and ignores it: the function is compiled and called as any other | [3.5](#35-inline-functions) |
 | Saturating arithmetic, `+\|`, `-\|`, `*\|` (and `+\|=`, `-\|=`, `*\|=`) | Accepts them and compiles them as the wrapping `+`, `-`, `*`: do not use them | [4.1](#41-arithmetic-operators) |
 | A type pun that loads or stores, `ptr.u32` as the `u32` at `ptr`, `ptr.u32 = v` | `ptr.u32` is the pointer as a `[*]u32`, so its value is that pointer, and assigning to it is refused: write `ptr.u32[0]` and `ptr.u32[0] = v` | [4.6](#46-pointer-operations) |
@@ -4452,7 +4453,7 @@ cannot assign (u32, u32) to (y: u32, x: u32)
 
 <!-- spec:end -->
 
-**A function has a name.** A module-level `func(x: i32) -> i32 => x + 1` without one is accepted and left out of the module, and `export "inc" func(...)` gives a module that does not assemble: both are known bugs, so name every function. An import item can leave the name out ([7.1](#71-imports)). A function's name starts with a lower-case letter. `func Area(w: u32) -> u32 => w * w` is read as a function without a name whose parameter is the type `Area(w: u32)`, and is reported as `unknown identifier 'w'` (a known bug: the message should say that a function's name is lower-case).
+**A function has a name.** A `func(x: i32) -> i32 => x + 1` without one, at module level or in a test, is accepted and left out of the module, and `export "inc" func(...)` gives a module that does not assemble: both are known bugs, so name every function. An import item can leave the name out ([7.1](#71-imports)). A function's name starts with a lower-case letter. `func Area(w: u32) -> u32 => w * w` is read as a function without a name whose parameter is the type `Area(w: u32)`, and is reported as `unknown identifier 'w'` (a known bug: the message should say that a function's name is lower-case).
 
 A function that takes a type as a parameter, `func larger(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
 
@@ -7845,6 +7846,21 @@ export name 'hash' is used twice: give one an explicit name, as in export "hash_
 
 <!-- spec:end -->
 
+An export name cannot begin with `test:`, which the test build gives the module's tests ([12.6](#126-the-test-host)), so no export of a module is ever named as one of its tests is. Only a name written in quotes can begin so, since a declaration's own name holds no `:`; the rule holds for every `export "..."`, of a function, a generic, a global or the memory, in every module of a program, tests or none. A name that merely starts with `test`, such as `test_xor` or `"test"`, is like any other:
+
+<!-- spec:begin compile -->
+
+```ents
+export func test_xor(a: u32, b: u32) -> u32 => a ^ b
+export "test:xor" func xor(a: u32, b: u32) -> u32 => a ^ b
+```
+
+```errors
+export name 'test:xor' begins with 'test:', which the test build gives its tests: give it another name
+```
+
+<!-- spec:end -->
+
 Only the entry module's exports reach the host. In a module that another imports, `export` makes a name importable and nothing more; the memory is the exception, since a program has one ([7.3](#73-memory-declarations)). An exported function is still an ordinary function of its module, called from it like any other.
 
 A generic function or generic type is never exported to the host, since there is no one function of it (and nothing of a generic type exists at run time): its `export` makes it importable by other source modules, and in an entry module it emits nothing, so a library of generics compiles on its own to a module with none of them. To export an instance, write a wrapper: `export func push_u32(v: *mut Vec(u32), x: u32) { push(v, x) }`.
@@ -10209,7 +10225,7 @@ A `test` block is code that a module runs to check itself. It stands in the modu
 
 ### 12.1 Writing a Test
 
-`test` is followed by the test's name, a string, and a block. The block holds statements, as a function body does, and `assert` states what must hold:
+`test` is followed by the test's name, a string that is not empty, and a block. The block holds statements, as a function body does, and `assert` states what must hold:
 
 <!-- spec:begin compile -->
 
@@ -10295,8 +10311,8 @@ A group holds declarations and tests. Statements written in a group, beside its 
 A test can declare `def`, `data`, functions and imports, and these are the test's own. They are seen in the test from the declaration to its end, and in the tests nested after it. Above the declaration the name is the module's, or unknown (`unknown identifier 'f'`) where the module has none. Module code cannot use them.
 
 - A `def` or a `data` block declared in a test replaces a module name of the same name inside that test only, below its declaration. The rest of the module reads the name as if the test were not there.
-- A function declared in a test is called by its name in the test, below its declaration, and there it replaces a module function of that name. Module code, a generic's instances included, calls the module's function. The compiler gets this wrong in three ways (known bugs). In the test build a `data` block or a function declared in a test is what its name means in the whole test, above its declaration too, where the checker took the name for the module's. It gives the test's function to the tests that come after it in the file: a call written in one of them calls the test's function, while module code they call still calls the module's. And in the test build it gives the module's function of that name the test function's parameters: if their types differ, the test build does not assemble, and if their names differ, the compiler stops with an internal error. Two tests can each declare a function of one name: with the same parameter types each test calls its own, and with different parameter types the test build does not assemble (`type mismatch in call`, the same known bugs). What is safe: give each function and `data` a test declares a name no module declaration has, declare it at the top of the test, and give functions of one name in different tests the same parameter types.
-- An import declared in a test is part of the test build only: a host function, a host global or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. A host global imported there gets the stand-in of [12.6](#126-the-test-host), so a test can take a plain host reference to pass to the code it tests. As for functions, the compiler gives an import to the later tests too.
+- A function declared in a test is called by its name in the test, below its declaration, and there it replaces a module function of that name. Module code, a generic's instances included, calls the module's function. The compiler gets this wrong in three ways (known bugs). In the test build a `data` block or a function declared in a test is what its name means in the whole test, above its declaration too, where the checker took the name for the module's. It gives the test's function to the tests that come after it in the file: a call written in one of them calls the test's function, while module code they call still calls the module's. And in the test build it gives the module's function of that name the test function's parameters: if their types differ, the test build does not assemble, and if their names differ, the compiler stops with an internal error. Two tests can each declare a function of one name: with the same parameter types each test calls its own, and with different parameter types the test build does not assemble (`type mismatch in call`, the same known bugs). What is safe: give each function and `data` a test declares a name no module declaration has, declare it at the top of the test, and give functions of one name in different tests the same parameter types, and the functions a test imports the signatures of the functions of their names elsewhere in the module.
+- An import declared in a test is part of the test build only: a host function, a host global or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. A host global imported there gets the stand-in of [12.6](#126-the-test-host), so a test can take a plain host reference to pass to the code it tests. The compiler gets an import wrong as it does a function (known bugs): in the test build an import is what its name means in the whole test, above its declaration too, and it is given to the tests that come after it in the file. And in the test build the signature of a function a test imports is given to the module's function of that name and to the function of that name an earlier test imports: where the two differ, the test build does not assemble.
 
 <!-- spec:begin compile -->
 
@@ -10314,7 +10330,7 @@ test "a test's def is seen from its declaration on" {
 <!-- spec:end -->
 
 
-A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)):
+A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)). Nor do two functions or imports of one test share a name, whatever their parameters: the functions of a test do not share a name as the module's do. A test nested in it can declare its own of the name, and so can another test.
 
 <!-- spec:begin compile -->
 
@@ -10328,6 +10344,9 @@ test "what a test cannot declare" {
   func hash(k: u32) -> u32 => 0
   func pick(comptime T: type, a: T) -> T => a
   func Box(comptime T: type) -> type => (v: T)
+  func twice(x: u32) -> u32 => x * 2
+  func twice(x: u64) -> u64 => x * 2
+  import "env" "twice" func twice(x: f64) -> f64
   assert size == 4
 }
 ```
@@ -10337,6 +10356,8 @@ test "what a test cannot declare" {
 'hash' is the name of several functions of the module: a function declared in a test cannot take it over
 a generic function is declared at module level, not inside a test
 a generic type is declared at module level, not inside a test
+'twice' is already declared in this test
+'twice' is already declared in this test
 ```
 
 <!-- spec:end -->
@@ -10367,7 +10388,79 @@ Tests run without the program's host. `encantis test` gives each import of the m
 - Any other imported function throws when it is called, which fails the test that called it. The functions that do not reach it are tested as usual.
 - An imported global is the zero of its type: 0 for a number, none for an optional host reference. One of a plain host type, which is never null, is a stand-in object ([2.13](#213-host-references)).
 
-In the test build each test is a function exported as `test_` followed by its name, the names of a group and its tests joined by `__`, and each character that is not a letter, a digit or `_` replaced by `_`. Two tests whose names are the same, or become the same this way, make a module that does not assemble (a known bug): give each test a name of its own.
+In the test build each test that is run, one with a name that holds no tests, is a function exported as `test:` followed by its name: the names of its groups and its own joined by `__`, with each character that is not an ASCII letter, an ASCII digit or `_` replaced by `_`. A character is a code point, so `é`, `😀` and the Arabic digit `٣` are one `_` each. The test `rectangles > one row` of [12.5](#125-running-tests) is exported as `test:rectangles__one_row`. A test without a name adds nothing to the names of the tests it holds; a test whose name is empty, `test "" { ... }`, is an error (`a test's name is empty: give it one`), so that no test is left out of the build with nothing said. A group is not exported, so a group and a test beside it can share a name. Two tests exported under one name are an error at the second, whether their names are the same or become the same this way (`tests "a b" and "a_b" are both exported as 'test:a_b' in the test build: give each test a name of its own`). As any error in a test, these are reported where the tests are checked, by `encantis check` and `encantis test`, and not by `encantis compile`. The exports of the tests come in the order the tests run, so a host can run the tests itself: it calls each export whose name begins with `test:`, in turn.
+
+No export of the module begins with `test:` ([7.2](#72-exports)). In the WAT, each test's function, and each function the test declares and each function and global it imports from the host, has a name of the test's own, which no declaration of the module or of another test can have. A function or a global a test imports from another source module is that module's, in the program once whatever names the tests give it. So the module names its functions and exports as it likes, and each test what it declares and imports: a function `test_xor` and an export `"test_and"` stand beside the tests `"xor"` and `"and"`, and two tests each import the host's `f` and `level` beside the module's function `f`:
+
+<!-- spec:begin compile -->
+
+```ents
+export func test_xor(a: u32, b: u32) -> u32 => a ^ b
+export "test_and" func both(a: u32, b: u32) -> u32 => a & b
+export func f() -> u32 => 1
+
+test "xor" {
+  assert test_xor(5, 3) == 6
+}
+test "and" {
+  assert both(5, 3) == 1
+}
+test "imports" {
+  import "env" "f" func f() -> u32
+  import "env" "level" global level: u32
+  assert level == 0
+}
+test "a group's imports" {
+  import "env" "f" func f() -> u32
+  import "env" "level" global level: u32
+  test "seen by its tests" { assert level == 0 }
+}
+```
+
+```ents
+test "a b" { assert true }
+test "a_b" { assert true }
+test "rectangles" {
+  test "one row" { assert true }
+}
+test "rectangles__one_row" { assert true }
+test "rectangles" { assert true }
+test "" { assert false }
+test "group" {
+  test "" { assert false }
+}
+```
+
+```errors
+tests "a b" and "a_b" are both exported as 'test:a_b' in the test build: give each test a name of its own
+tests "rectangles > one row" and "rectangles__one_row" are both exported as 'test:rectangles__one_row' in the test build: give each test a name of its own
+a test's name is empty: give it one
+a test's name is empty: give it one
+```
+
+<!-- spec:end -->
+
+The names of the tests are checked after the export names of the module and before any body, as the passes listed in [Examples](#examples) say:
+
+<!-- spec:begin compile -->
+
+```ents
+func f() -> u32 => true
+test "a" { assert true }
+test "a" { assert true }
+export "test:x" func g() -> u32 => 1
+export "h" func h() -> u32 => 1
+export "h" func k() -> u32 => 1
+```
+
+```errors
+export name 'test:x' begins with 'test:'
+export name 'h' is used twice
+tests "a" and "a" are both exported as 'test:a'
+cannot assign bool to u32
+```
+
+<!-- spec:end -->
 
 A test that holds neither statements nor tests, `test "todo" {}` or one that only declares, fails (`fn is not a function`), and a test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives: both are known bugs.
 
@@ -10505,12 +10598,14 @@ A stack of 256 KiB in the module's memory. Allocating moves its top up; nothing 
 | Function | What it does |
 |---|---|
 | `mark() -> u32` | The top of the stack, as an address |
-| `reset(m: u32)` | Frees everything allocated since the mark `m` was taken |
-| `alloc(n: u32) -> u32` | The address of `n` bytes, aligned to 8. Traps when the stack is full, but an `n` near 2^32 wraps its check and is not caught (a known bug). The 8 is counted from the start of the stack, not from address 0, so the address is a multiple of 8 only when the stack starts at one, which data laid out before it, such as a `*[!]T` anywhere in the program, can prevent (a known bug) |
+| `reset(m: u32)` | Frees everything allocated since the mark `m` was taken. Traps for an address outside the stack, below it or past its end, which no mark is |
+| `alloc(n: u32) -> u32` | The address of `n` bytes, aligned to 8. Traps when they do not fit in the room left, for any `n`: an `n` near 2^32 traps too, and the stack is left as it was, but for the padding to 8. The 8 is counted from the start of the stack, not from address 0, so the address is a multiple of 8 only when the stack starts at one, which data laid out before it, such as a `*[!]T` anywhere in the program, can prevent (a known bug) |
 | `zeroed(n: u32) -> u32` | The same, the bytes set to zero |
-| `extend(n: u32) -> u32` | `n` more bytes right after the top, not aligned: grows the topmost allocation in place |
+| `extend(n: u32) -> u32` | `n` more bytes right after the top, not aligned: grows the topmost allocation in place. Traps when they do not fit, as `alloc` does |
 
-An address is cast to the pointer it is used as: `alloc(sizeof(Pt) * 4) as [*]mut Pt`. A program that needs a larger stack copies the file and makes its `capacity` and `space` larger.
+An address is cast to the pointer it is used as: `alloc(sizeof(Pt) * 4) as [*]mut Pt`. A program that needs a larger stack copies the file and makes its `space` larger, keeping its length a multiple of 8.
+
+`n` is checked against the room left, the length of the stack less its top, which does not wrap, since the top is never past the end; the top plus `n` could. A size that a caller works out, such as a count times `sizeof(T)`, can wrap before `alloc` sees it: `alloc` then gets the wrapped size, which may fit, so it is for the caller to check the count. The containers of the library do not (a known bug): `vec(u64, 0x20000000)` asks for 2^32 bytes, which is 0 bytes, and its first `push` writes where the next allocation goes; a set or a map whose table, 2^`bits` slots times the size of a slot, is 2^32 bytes or more asks for that size wrapped, and where the size is a multiple of 2^32 (2^28 slots of 16 bytes) that is a table of no bytes, past which it writes its entries. `1 << bits` takes `bits` mod 32, so a `bits` of 32 is a table of one slot.
 
 ### 13.5 `vec`: A Growable Array
 

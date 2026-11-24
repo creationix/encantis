@@ -229,22 +229,22 @@ describe('generics across modules', () => {
   async function failingTests(entry: string): Promise<string[]> {
     const { load, check } = await program(entry, true)
     expect(check.errors).toEqual([])
-    const { wat, testNames } = programToWatWithTests(load.modules, check.results, entry)
+    const { wat, testExports } = programToWatWithTests(load.modules, check.results, entry)
     const w = await wabt()
     const parsed = w.parseWat('test.wat', wat, { simd: true, multi_value: true, bulk_memory: true })
     parsed.validate()
     const mod = await WebAssembly.compile(parsed.toBinary({}).buffer)
     parsed.destroy()
-    expect(testNames.length).toBeGreaterThan(0)
+    expect(testExports.length).toBeGreaterThan(0)
     const failed: string[] = []
-    for (const name of testNames) {
+    for (const name of testExports) {
       let failedAt = -1
       const host = createTestHost(mod, (offset) => {
         failedAt = offset
       })
       const instance = await WebAssembly.instantiate(mod, host.imports)
       host.attach(instance)
-      ;(instance.exports[`test_${name}`] as () => void)()
+      ;(instance.exports[name] as () => void)()
       if (failedAt >= 0) failed.push(name)
     }
     return failed
@@ -725,6 +725,53 @@ test "laid over a struct of the same shape, and over the type itself" {
       "no function 'hash' accepts ((x: u32)), in bucket(K = (x: u32))",
       "bucket(K = (x: u32)) cannot be instantiated: no function 'hash' accepts ((x: u32)) (lib.ents:1:54)",
     ])
+  })
+
+  // An allocation that does not fit traps, and leaves the stack as it was:
+  // also one whose size would wrap the top past 2^32, which was checked
+  // after it was added (#39) and handed out the stack itself. A reset to an
+  // address outside the stack traps too, so the top is never past the end,
+  // which the check of the room left counts on.
+  test('lib/stack traps on what does not fit, a size near 2^32 too', async () => {
+    const { instance } = await WebAssembly.instantiate(await compileToWasm(join(lib, 'stack.ents')), {})
+    const { mark, reset, alloc, extend, zeroed } = instance.exports as Record<string, (n?: number) => number>
+    const capacity = 262144
+    const base = mark()
+    expect(alloc(16)).toBe(base)
+    for (const call of [() => alloc(0xfffffff0), () => extend(0xfffffff8), () => zeroed(0xffffffff), () => alloc(capacity - 15), () => extend(capacity - 15)]) {
+      expect(call).toThrow(/unreachable/)
+      expect(mark()).toBe(base + 16)
+    }
+    // What is left fits exactly, and then nothing more does.
+    expect(extend(capacity - 17)).toBe(base + 16)
+    expect(extend(1)).toBe(base + capacity - 1)
+    expect(() => extend(1)).toThrow(/unreachable/)
+    expect(() => alloc(1)).toThrow(/unreachable/)
+    expect(extend(0)).toBe(base + capacity)
+    expect(alloc(0)).toBe(base + capacity)
+    for (const m of [base - 1, base + capacity + 1, 0]) {
+      expect(() => reset(m)).toThrow(/unreachable/)
+      expect(mark()).toBe(base + capacity)
+    }
+    reset(base + capacity)
+    reset(base)
+    expect(alloc(capacity)).toBe(base)
+  })
+
+  // The stack the generics fixtures use checks as lib/stack does.
+  test("the generics fixtures' stack traps on a size near 2^32 too", async () => {
+    const fixture = resolve(import.meta.dir, 'tests/fixtures/generics/stack.ents')
+    const { instance } = await WebAssembly.instantiate(await compileToWasm(fixture), {})
+    const { mark, reset, alloc, extend } = instance.exports as Record<string, (n?: number) => number>
+    const base = mark()
+    expect(alloc(16)).toBe(base)
+    for (const call of [() => alloc(0xfffffff0), () => extend(0xfffffff8), () => reset(0)]) {
+      expect(call).toThrow(/unreachable/)
+      expect(mark()).toBe(base + 16)
+    }
+    expect(extend(65536 - 16)).toBe(base + 16)
+    expect(() => extend(1)).toThrow(/unreachable/)
+    reset(base)
   })
 
   test('a library file compiled alone emits no generic, and exports none', async () => {
