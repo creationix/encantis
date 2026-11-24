@@ -5315,16 +5315,31 @@ func f(n: u32) -> u32 {
 export is written at module level: a function declared in a body cannot be exported
 ```
 
+```ents
+func first(xs: []u32) -> u32 {
+  for x in xs {
+    return x
+  }
+  return 0
+
+func second(xs: []u32) -> u32 => xs[1] ?? 0
+```
+
+```errors
+Expected "}": the body that starts at line 1 does not end before this declaration
+```
+
 <!-- spec:end -->
 
 (`count` need not exist: a syntax error stops the file before any name is looked up.) Exactly, where the first syntax error is at the position `pos`, these rules are tried in this order, and every other syntax error keeps the parser's list of what it expected:
 
-1. `fn` (the whole word) stands on the line, at or before `pos`, as the first token of the line, right after `{`, `;`, `(` or `,`, and is followed by `(` or by whitespace, a name and `(`: `a function is declared with func`.
+0. `pos` is at the end of the input (nothing but whitespace after it), or at the first character of a line that starts with one of the keywords `func`, `inline`, `export`, `import`, `global`, `type`, `def`, `data`, `memory`, `enum` or `test`; and a line at or before `pos` starts, at its first character, with the whole word `func`, `inline` or `export` inside a `{` that is not closed before that line (braces counted outside comments, string literals and the text of template literals). The error is then reported at the first such line, as `Expected "}": the body that starts at line L does not end before this declaration`, where L is the line of the outermost `{` open there. A body left open would otherwise take in the functions after it as nested ones, and the error would stand at the end of the file.
+1. `fn` (the whole word) stands on the line, at or before `pos`, as the first token of the line, right after `{`, `;`, `(` or `,`, and is followed by `(` or by whitespace, a name and `(`, in a file that declares no function named `fn` (`func fn(`, where `fn(x)` is a call): `a function is declared with func`.
 2. Where `"=>"` is not among what was expected there: at `||`, or at a `|` that begins a parameter list closed by `|`, one or more names, each with an optional `: Type`, separated by commas (the regular expression `^\|\s*[a-z_]\w*(\s*:\s*[^|,\n]+)?(\s*,\s*[a-z_]\w*(\s*:\s*[^|,\n]+)?)*\s*\|` on the text from `pos`): `there are no lambdas`. A match arm `1 | 2 => ...` expects `"=>"` there, and keeps the parser's message.
 3. At `=>`, right after `)` or after a name, whitespace between allowed: `there are no lambdas`.
 4. At a `>` right after a `-` (the `>` of `->`, where the `-` was read as a minus: `(x: u32) -> u32 => ...`): `there are no lambdas`.
 5. At the keyword `func`, where an expression was wanted: `a function is not a value`.
-6. At the keyword `export`, where `"}"` is among what was expected (inside a body or a test): `export is written at module level`.
+6. At the keyword `export` followed by a function (`func` or `inline func`, with or without a quoted export name before it), where `"}"` is among what was expected (inside a body or a test): `export is written at module level`. An `export` before anything else there keeps the parser's list.
 
 A function declared in a `test`'s block, and one at the top of a test that uses the test's variables, is a nested function of the test ([12.4](#124-declarations-in-a-test)). A nested function given for a comptime function parameter takes its captures into the instance ([8.6](#86-comptime-function-parameters)). In a generic, each instance has its own nested functions ([8.4](#84-instances)).
 

@@ -669,11 +669,43 @@ describe('unsupported function syntax', () => {
     ['a match arm a | b =>', `func f(a: u32, b: u32) -> u32 => match a { a | b => 3 }`],
     ['export export at module level', `export export func f() {}`],
     ['a missing parenthesis', `func main( {`],
+    ['export of something that is not a function in a body', `func f(x: u32) -> u32 {\n  let y = x\n  export y\n}`],
+    ['a call of the file\'s function fn after (', `func fn(x: u32) -> u32 => x\nfunc g(x: u32) -> u32 => x\nfunc f(x: u32) -> u32 => g(fn(x) + )`],
+    ['a call of the file\'s function fn as a statement', `func fn(x: u32) -> u32 => x\nfunc f(x: u32) -> u32 {\n  fn(x) +* 2\n}`],
   ]
   for (const [name, source] of kept) {
     test(`${name} keeps the parser's message`, () => {
       const error = first(source)
       expect(error?.message).toContain('Expected')
+      expect(error?.message).not.toContain('function')
     })
   }
+
+  describe('a body that is not closed (rule 0)', () => {
+    const missing = (line: number) => `Expected "}": the body that starts at line ${line} does not end before this declaration`
+    test('the functions after it would be nested ones: at the first of them', () => {
+      const error = first(`func a() -> u32 {\n  let x: u32 = 1\n  return x\n\nfunc b() -> u32 => 1\nfunc c() -> u32 => 2\n`)
+      expect(error?.shortMessage).toBe(missing(1))
+      expect(error?.span.start).toBe(`func a() -> u32 {\n  let x: u32 = 1\n  return x\n\n`.length)
+      expect(error?.message).toBe(`Line 5, col 1:\n  4 | \n> 5 | func b() -> u32 => 1\n      ^\n  6 | func c() -> u32 => 2\n${missing(1)}`)
+    })
+
+    test('at an export at the start of a line, and at an inline function', () => {
+      expect(first(`func a() -> u32 {\n  return 1\n\nexport func b() -> u32 => 1\n`)?.shortMessage).toBe(missing(1))
+      const source = `// a\nfunc a(x: u32) -> u32 {\n  if x > 1 {\n    return 2\n  }\n  return x\ninline func b() -> u32 => 1\nexport func c() -> u32 => b()\n`
+      const error = first(source)
+      expect(error?.shortMessage).toBe(missing(2))
+      expect(error?.span.start).toBe(source.indexOf('inline'))
+    })
+
+    test('braces in comments, strings and template text do not count', () => {
+      const source = `func a() -> u32 {\n  // }\n  let s = "}"\n  let t = \`{ \${s}\`\n  return 1\nfunc b() -> u32 => 1\n`
+      expect(first(source)?.shortMessage).toBe(missing(1))
+    })
+
+    test('not where the error is inside the body, or the line is indented', () => {
+      expect(first(`func a() -> u32 {\nfunc b() -> u32 => 1\nreturn b(\n}\n`)?.message).not.toContain('does not end')
+      expect(first(`func a() -> u32 {\n  func b() -> u32 => 1\n  return b()\n`)?.message).not.toContain('does not end')
+    })
+  })
 })
