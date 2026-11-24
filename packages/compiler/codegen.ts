@@ -3896,7 +3896,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   // Collect function declarations
   const exported = hostExports(module)
   const hostEntries: HostEntry[] = []
-  for (const fn of funcsInOrder(module.decls, checkResult)) {
+  for (const fn of funcsInOrder(module.decls, checkResult, untestedInstances(new Map([['', checkResult]]), new Set()).get(''))) {
     if (exported.has(fn)) {
       const watName = checkResult.funcNames.get(fn) ?? fn.ident ?? 'anonymous'
       const entry = hostEntry(fn, checkResult, watName, parts.length, () => funcToWat(fn, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize))
@@ -3949,12 +3949,11 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
 // order is what lets a generic program and the same program written out by
 // hand be the same file. A generic nobody called has no instances, and
 // nothing is emitted for it.
-// `tested`: the modules whose tests are in the build (none by default). An
-// instance given a function of a test of another module is left out.
-function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult, path?: string, tested: ReadonlySet<string> = new Set()): AST.FuncDecl[] {
+// `left`: the instances left out of the build (see untestedInstances).
+function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult, left: ReadonlySet<string> = new Set()): AST.FuncDecl[] {
   const instancesOf = new Map<AST.FuncDecl, AST.FuncDecl[]>()
   for (const inst of checkResult.instances) {
-    if (givenUntestedTest(inst.args, checkResult, path, tested)) continue
+    if (left.has(inst.name)) continue
     instancesOf.set(inst.of, [...(instancesOf.get(inst.of) ?? []), inst.decl])
   }
   const funcs: AST.FuncDecl[] = []
@@ -3971,19 +3970,39 @@ function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult, pa
   return funcs
 }
 
-// Whether an instance is given a function of a test whose tests are not in
-// the build: a function the test declares or imports, or a nested function
-// of it, named under the test, __test<n> (testIds), in the module `path` or,
-// given from another module, in that one (externs). Such an instance is
-// called from that test alone, and neither is there: an imported module's
-// tests are checked with the program's and not built (12.4, 12.5).
-function givenUntestedTest(args: readonly ComptimeValue[], checkResult: TypeCheckResult, path: string | undefined, tested: ReadonlySet<string>): boolean {
-  return args.some((arg) => {
+// The instances of each module (by path) that are left out of the build:
+// those given a function of a test whose tests are not in it (`tested`), a
+// function the test declares or imports from the host, or a nested function
+// of it, named under the test, __test<n> (testIds), and those given a
+// nested function of an instance left out (apply<__test1.add>.g), to a
+// fixed point. A function given from another module is named as it is in
+// that one (externs). Such an instance is called from that test alone, and
+// neither is there: an imported module's tests are checked with the
+// program's and not built (12.4, 12.5).
+function untestedInstances(checkResults: ReadonlyMap<string, TypeCheckResult>, tested: ReadonlySet<string>): Map<string, Set<string>> {
+  const left = new Map<string, Set<string>>([...checkResults.keys()].map((path) => [path, new Set<string>()]))
+  const untested = (path: string, arg: ComptimeValue): boolean => {
     if (arg.kind !== 'func') return false
-    const extern = checkResult.externs.get(arg.name)
+    const extern = checkResults.get(path)?.externs.get(arg.name)
     const module = extern?.module ?? path
-    return /^__test\d/.test(extern?.name ?? arg.name) && (module === undefined || !tested.has(module))
-  })
+    const name = extern?.name ?? arg.name
+    if (tested.has(module)) return false
+    if (/^__test\d/.test(name)) return true
+    for (const inst of left.get(module) ?? []) if (name.startsWith(`${inst}.`)) return true
+    return false
+  }
+  for (let grown = true; grown; ) {
+    grown = false
+    for (const [path, result] of checkResults) {
+      const own = left.get(path) as Set<string>
+      for (const inst of result.instances) {
+        if (own.has(inst.name) || !inst.args.some((arg) => untested(path, arg))) continue
+        own.add(inst.name)
+        grown = true
+      }
+    }
+  }
+  return left
 }
 
 // A generic is never exported to the host: there is no one function to
@@ -4107,11 +4126,16 @@ function emitTestDecl(
 ): void {
   const watId = names.ids.get(decl) as string
 
-  // Process defs and data decls first so they're available to functions and statements
+  // Process defs and data decls first so they're available to functions and
+  // statements: in this test and the tests it holds alone, so what the name
+  // was is put back after it (another test's function of the name is found
+  // by it, funcToWat)
+  const shadowed = new Map<string, CheckSymbol | undefined>()
   for (const item of decl.children) {
     if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       const defKey = `${item.ident}$${item.span.start}`
       const sym = checkResult.symbols.get(defKey) ?? checkResult.symbols.get(item.ident)
+      if (!shadowed.has(item.ident)) shadowed.set(item.ident, ctx.symbols.get(item.ident))
       if (sym) ctx.symbols.set(item.ident, sym)
     }
   }
@@ -4187,6 +4211,10 @@ function emitTestDecl(
   // group's and an anonymous test's are emitted too, though their statements
   // never run: an instance may have been given one (N36, N37).
   parts.push(...nestedToWat(decl, checkResult, literalRefs, ctx.nameMap, ctx.dataSectionSize, ctx.symbols))
+  for (const [name, sym] of shadowed) {
+    if (sym) ctx.symbols.set(name, sym)
+    else ctx.symbols.delete(name)
+  }
 }
 
 function collectTestLocals(
@@ -4567,6 +4595,7 @@ export function programToWat(
   }
 
   const testNames = testBuildNames(tested, modules, checkResults, sourceImportNames, globals, (path) => prefixes.get(path) ?? '')
+  const left = untestedInstances(checkResults, tested)
   // A function a test imports, by the name the checker gives it as it does
   // a function the test declares (testIds), which an instance given it
   // calls: the import's name in the WAT, from the host or another module
@@ -4681,7 +4710,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    for (const fn of funcsInOrder(loaded.module.decls, result, path, tested)) {
+    for (const fn of funcsInOrder(loaded.module.decls, result, left.get(path))) {
       if (!fn.ident) continue
       const known = result.funcNames.get(fn) ?? fn.ident
       const watName = modNameMap.get(known) ?? known

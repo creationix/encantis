@@ -891,6 +891,27 @@ test "group" {
     expect(await runTestsOfSource(fine)).toEqual({ ran: ['plain', 'imports', 'capturing'], failed: [] })
   })
 
+  // codegen put a test's def or data in place of the name for the tests
+  // after it, and found it for another test's function of the name
+  test('a test\'s function may have the name of another test\'s data or def', async () => {
+    expect(await runTestsOfSource(`
+test "a" {
+  data buf = [1:u8, 2]
+  def dd = 4
+  assert buf[0] == 1 && dd == 4
+}
+test "b" {
+  let k: u32 = 7
+  func dd() -> u32 => k + 3
+  assert dd() == 10
+}
+test "c" {
+  func buf() -> u32 => 2
+  func dd() -> u32 => 3
+  assert buf() == 2 && dd() == 3
+}`)).toEqual({ ran: ['a', 'b', 'c'], failed: [] })
+  })
+
   test('a group\'s variables: not at its top, not in its nested tests', () => {
     expect(errorsOf(`
 test "rectangles" {
@@ -1970,6 +1991,35 @@ test "main's" {
     expect(wat).toContain('(func $lib$apply<double>')
     // Built by itself, the module's own tests pass
     expect(await runTestsOfSource(lib, { 'other.ents': other })).toEqual({ ran: ["lib's plain", "lib's capturing", "lib's import"], failed: [] })
+  })
+
+  // An instance left out takes with it those given its nested functions,
+  // in its module and in a third one, to a fixed point
+  test('across modules: an instance given a nested function of one left out is left out too', async () => {
+    const third = `export func run(comptime h: (u32) -> u32, x: u32) -> u32 {
+  func twice(y: u32) -> u32 => h(h(y))
+  return pass(twice, x)
+}
+export func pass(comptime p: (u32) -> u32, x: u32) -> u32 => p(x)`
+    const lib = `import "./third.ents" ("run" func run(comptime h: (u32) -> u32, x: u32) -> u32)
+export func apply(comptime f: (u32) -> u32, x: u32) -> u32 {
+  func g(y: u32) -> u32 => f(y) + 1
+  return run(g, x) + again(g, x)
+}
+export func again(comptime h: (u32) -> u32, x: u32) -> u32 => h(x)
+test "lib's" {
+  func add(x: u32) -> u32 => x + 1
+  assert apply(add, 1) == 8
+}`
+    const main = `import "./lib.ents" ("apply" func apply(comptime f: (u32) -> u32, x: u32) -> u32)
+func inc(x: u32) -> u32 => x + 1
+test "main's" { assert apply(inc, 1) == 8 }`
+    const { ran, failed, wat } = await runProgram({ 'main.ents': main, 'lib.ents': lib, 'third.ents': third })
+    expect(ran).toEqual(["main's"])
+    expect(failed).toEqual([])
+    expect(wat).not.toContain('__test1.add')
+    expect(wat).toContain('(func $third$pass<run<apply<inc@main>.g@lib>.twice>')
+    expect(await runTestsOfSource(lib, { 'third.ents': third })).toEqual({ ran: ["lib's"], failed: [] })
   })
 })
 
