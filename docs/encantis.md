@@ -10997,7 +10997,7 @@ A float truncates toward zero, and the `trunc` instructions trap on NaN, an infi
 
 | Encantis | WASM |
 |----------|------|
-| `if`/`elif`/`else` | `if`/`else`, an `elif` as an `if` in the `else` (an `elif let` as the test of an `if let` there); `(if (result T) ...)` where it gives a value |
+| `if`/`elif`/`else` | `if`/`else`, an `elif` as an `if` in the `else` (an `elif let` as the test of an `if let` there); `(if (result T) ...)` where it gives a value. A chain of about 150 `elif` or `elif let` branches nests deeper than wabt reads, and the command line cannot assemble it (a known bug) |
 | `match` | one comparison per arm in the order written, as nested `if`/`else`; with no `_` arm the last `else` is `unreachable`. More than 64 comparisons are flat instead: one `block` holds an `if` for each, whose `then` leaves the block with its value (`br`), and then what the last `else` would be. A text tool (wabt, which the command line assembles with) reads nested code to a depth of only about 150, and the tests of an enum's load and store are written the same way |
 | `while c { ... }` | `(block $break (loop $continue (br_if $break (i32.eqz c)) ... (br $continue)))` |
 | `loop { ... }` | `(block $break (loop $continue ... (br $continue)))` |
