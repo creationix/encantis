@@ -2685,4 +2685,21 @@ test "later" {
     const meta = buildMeta(module, src, { checkResult: result })
     expect(meta.symbols.filter((s) => s.name === 'f').map((s) => s.refs.length)).toEqual([3, 1])
   })
+
+  // A function or an import declared in a test cannot take the name of an
+  // import of the module (12.4), unless it imports the same function again
+  test('a test\'s function or import cannot take the name of an import of the module', () => {
+    expect(testErrorsOf(`import "env" "e" func e() -> u32
+import "env" "f" func f() -> u32
+test "function" {
+  func e() -> u32 => 9
+}
+test "another host function" {
+  import "env" "e2" func e() -> u32
+}
+test "the same import again" {
+  import "env" "f" func f() -> u32
+  assert f() == f()
+}`)).toEqual(["'e' is already declared", "'e' is already declared"])
+  })
 })

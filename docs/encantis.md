@@ -11329,9 +11329,12 @@ A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax 
 def size = 4
 func hash(k: u32) -> u32 => k
 func hash(k: u64) -> u32 => 1
+import "env" "log" func log(x: u32)
 
 test "what a test cannot declare" {
   func size() -> u32 => 4
+  func log(x: u32) { }
+  import "env" "warn" func log(x: u32)
   func hash(k: u32) -> u32 => 0
   func pick(comptime T: type, a: T) -> T => a
   func Box(comptime T: type) -> type => (v: T)
@@ -11344,6 +11347,8 @@ test "what a test cannot declare" {
 
 ```errors
 'size' is already declared
+'log' is already declared
+'log' is already declared
 'hash' is the name of several functions of the module: a function declared in a test cannot take it over
 a generic function is declared at module level, not inside a test
 a generic type is declared at module level, not inside a test

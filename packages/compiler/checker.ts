@@ -1716,6 +1716,12 @@ class CheckContext {
           const name = item.item.ident ?? item.name
           if (this.takenByGeneric(name, item.span.start)) break
           if (this.takenByAnother(name, item.span.start, 'func', inTest)) break
+          const imported = `${isSource && this.filePath ? resolveModulePath(decl.module, this.filePath) : decl.module}\n${item.name}`
+          if (inTest && (this.importedFuncs.get(name) ?? imported) !== imported) {
+            this.error(item.span.start, `'${name}' is already declared`)
+            break
+          }
+          if (!inTest && !this.importedFuncs.has(name)) this.importedFuncs.set(name, imported)
           if (!isSource && isGenericSignature(item.item.signature)) {
             this.error(item.span.start, `a host import cannot have comptime parameters`)
             break
@@ -1969,6 +1975,11 @@ class CheckContext {
   // The module and the name a global imported from another module is
   // exported under, by the name it is imported as.
   private readonly globalOrigins = new Map<string, string>()
+  // What each function the module imports is, by the name it is imported
+  // as: the source file or host module and the name it is imported by
+  // there. A function or an import a test declares cannot take the name
+  // (12.4), unless it imports the same function again.
+  private readonly importedFuncs = new Map<string, string>()
   private takenByAnother(name: string, offset: number, kind: 'func' | 'value', inTest = false): boolean {
     const first = this.topLevel.get(name)
     if (first === undefined) {
@@ -1988,6 +1999,10 @@ class CheckContext {
     if (!decl.ident) return // Anonymous function
     if (this.takenByGeneric(decl.ident, decl.span.start)) return
     if (this.takenByAnother(decl.ident, decl.span.start, 'func', inTest)) return
+    if (inTest && this.importedFuncs.has(decl.ident)) {
+      this.error(decl.span.start, `'${decl.ident}' is already declared`)
+      return
+    }
     for (const { at, message } of this.defNamedFields(decl)) this.error(at, message)
     const sig = this.resolveSignature(decl.signature)
     this.declareFunc(decl, decl.ident, { kind: 'func', type: sig, inline: decl.inline }, inTest)
