@@ -337,6 +337,33 @@ export func f() -> u32 => take(pair(3))
     await expect(rename()).rejects.toThrow('main.ents, which uses this module, would not check')
   })
 
+  test('a field is not renamed where a module that may use it cannot be checked', async () => {
+    const lib = 'file:///ws/lib.ents'
+    const main = 'file:///ws/main.ents'
+    const other = 'file:///ws/other.ents'
+    const libText = 'export func pair(n: u32) -> (count: u32, clipped: bool) => (count: n, clipped: n > 9)\n'
+    const uses = 'import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)\nexport func f() -> u32 => pair(3).count\n'
+    const files = new Map<string, string | null>([[pathOf(lib) as string, libText], [pathOf(other) as string, 'func unfinished(\n']])
+    const s = server({ findFiles: async () => [lib, main, other], readFile: async (path) => files.get(path) ?? null })
+    await s.open(lib, libText)
+    const rename = () => s.at<Promise<WorkspaceEdit>>('onRenameRequest', lib, libText, libText.indexOf('count:'), { newName: 'total' })
+    // A file that is listed and cannot be read may be one that uses it
+    await expect(rename()).rejects.toThrow(`${pathOf(main)} could not be read, so whether it uses this module could not be checked`)
+    // One that uses it and does not parse, for a declaration that has
+    // nothing to do with it: what parses of it imports lib. (other.ents does
+    // not parse either, and imports nothing.)
+    files.set(pathOf(main) as string, `${uses}func unfinished(\n`)
+    await expect(rename()).rejects.toThrow('main.ents, which uses this module, does not parse yet, so it could not be checked')
+    // One that imports it, and whose program does not load
+    files.set(pathOf(main) as string, `import "./gone" "g" func g() -> u32\n${uses}`)
+    await expect(rename()).rejects.toThrow('main.ents, which imports this module, could not be checked: its program does not load')
+    // Once it parses and loads, it is checked
+    files.set(pathOf(main) as string, uses)
+    await expect(rename()).rejects.toThrow("main.ents, which uses this module, would not check: no field 'count'")
+    files.set(pathOf(main) as string, 'export func f() -> u32 => 1\n')
+    expect(applied(libText, await rename(), lib)).toContain('-> (total: u32, clipped: bool) => (total: n,')
+  })
+
   test('a field is not renamed where the workspace is listed in part, and a search shows the part', async () => {
     const lib = 'file:///ws/lib.ents'
     const libText = 'export func pair(n: u32) -> (count: u32, clipped: bool) => (count: n, clipped: n > 9)\n'

@@ -991,30 +991,55 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // renamed text in its place, has an error it does not have now. A field is
   // named by the modules that import its struct or the function whose results
   // it is, also where none of them writes its name: a value of the struct given
-  // to another struct of those fields needs them all. The files are listed
-  // afresh; where they cannot be, that is said, as nothing could be checked.
+  // to another struct of those fields needs them all. A module that may hold
+  // the document and cannot be checked is a reason too: one that cannot be
+  // read, one that does not parse and imports it (as far as it parses), one
+  // that imports it whose program does not load. The files are listed afresh;
+  // where they cannot all be, that is said, as nothing could be checked.
   async function dependentProblem(uri: string, renamed: string, name: string): Promise<string | null> {
     const own = pathFor(uri);
     if (!own) return null;
+    const file = (path: string) => path.replace(/^.*[\\/]/, '');
+    const ownName = file(own).replace(/\.ents$/, '');
     const others = new Set([...documents.all().map((d) => d.uri), ...(await workspaceFiles(true))]);
     for (const other of others) {
       const path = pathFor(other);
       if (!path || path === own || !sameFileSystem(other, uri)) continue;
       const text = await textOf(other);
-      if (text === null) continue;
-      // Only a module that imports another source file, a test's import
-      // included, can hold this one. One that does not parse holds nothing yet.
-      const parsed = parse(text).module;
-      if (!parsed || getSourceImports(parsed, true).length === 0) continue;
+      if (text === null) return `${path} could not be read, so whether it uses this module could not be checked`;
+      // The module as far as it parses: its source imports, a test's
+      // included, say whether it can hold this one
+      const parsed = parse(text);
+      const recovered = parsed.module ? null : recoverParse(text, parse, parsed);
+      const module = parsed.module ?? recovered?.module;
+      if (!module) {
+        // Nothing of it parses: whether it imports this module is not known
+        if (new RegExp(`"[^"]*\\b${ownName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\.ents)?"`).test(text)) {
+          return `${file(path)} may use this module and does not parse, so it could not be checked`;
+        }
+        continue;
+      }
+      const imports = getSourceImports(module, true);
+      if (imports.length === 0) continue;
+      const direct = imports.some((decl) => resolveModulePath(decl.module, path) === own);
+      if (recovered) {
+        const holds = direct || (await programOf(other, recovered.text))?.sources?.has(own);
+        if (holds) return `${file(path)}, which uses this module, does not parse yet, so it could not be checked`;
+        continue;
+      }
       const now = await programOf(other, text);
-      if (!now?.sources?.has(own)) continue;
+      if (!now) {
+        if (direct) return `${file(path)}, which imports this module, could not be checked: its program does not load`;
+        continue;
+      }
+      if (!now.sources?.has(own)) continue;
       const then = await programOf(other, text, new Map([[own, renamed]]));
       const errors = (program: ProgramCheckResult) => [...program.results.values()].flatMap((r) => r.errors.map((e) => e.message));
       const before = errors(now.program);
       const after = then ? errors(then.program) : ['the renamed program does not load'];
       const added = after.filter((message) => !before.includes(message));
       if (after.length > before.length || added.length > 0) {
-        return `renamed to '${name}', ${path.replace(/^.*[\\/]/, '')}, which uses this module, would not check: ${added[0] ?? after[0]}`;
+        return `renamed to '${name}', ${file(path)}, which uses this module, would not check: ${added[0] ?? after[0]}`;
       }
     }
     return null;
