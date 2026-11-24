@@ -55,11 +55,20 @@ export function outline(module: Module, text: string, positionAt: (offset: numbe
     return { name, kind: SymbolKind.Module, range: range(decl.span.start, decl.span.end), selectionRange: selection, ...(items.length > 0 ? { children: items } : {}) };
   }
 
+  // The functions declared in a body, each with its own (reference 3.4)
+  function nested(node: unknown): DocumentSymbol[] {
+    if (Array.isArray(node)) return node.flatMap(nested);
+    if (!node || typeof node !== 'object' || ArrayBuffer.isView(node)) return [];
+    const n = node as { kind?: string };
+    if (n.kind === 'FuncDecl') return symbolsOf(node as Declaration);
+    return Object.entries(node).flatMap(([k, v]) => (k === 'span' || k === 'type' || k === 'signature' ? [] : nested(v)));
+  }
+
   function symbolsOf(decl: Declaration | TestItem, exported?: { name: string; span: Span }): DocumentSymbol[] {
     switch (decl.kind) {
       case 'FuncDecl': {
         if (!decl.ident) return [];
-        const symbol = named(decl.ident, SymbolKind.Function, exported?.span ?? decl.span, decl.span.start);
+        const symbol = named(decl.ident, SymbolKind.Function, exported?.span ?? decl.span, decl.span.start, undefined, nested(decl.body));
         return [label(symbol, exported, decl.ident, decl.inline ? 'inline' : undefined)];
       }
       case 'TypeFuncDecl': {

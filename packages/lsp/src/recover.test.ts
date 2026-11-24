@@ -40,6 +40,9 @@ describe('text that does not parse', () => {
 
   test('a declaration that does not end, or is broken inside, is left out', () => {
     expect(recovered(`func a() -> u32 {\n  let x = 1\n\n${b}${f}`)).toEqual({ declared: ['b', 'f'], leftOut: ['func a() -> u32 {\n  let x = 1\n\n'] })
+    // The functions after one that does not end parse as nested functions
+    // in its body, and the parser stops at the end of the text.
+    expect(recovered(`func a() -> u32 {\n  let x = 1\n\n${b}`)).toEqual({ declared: ['b'], leftOut: ['func a() -> u32 {\n  let x = 1\n\n'] })
     expect(recovered(`func a() -> u32 {\n  let x = \n  return 1\n}\n${b}${f}`)).toEqual({ declared: ['b', 'f'], leftOut: ['func a() -> u32 {\n  let x = \n  return 1\n}\n'] })
     expect(recovered(`func a( -> u32 => 1\n${b}`)).toEqual({ declared: ['b'], leftOut: ['func a( -> u32 => 1\n'] })
     expect(recovered(`func a() -> u32 => 1\nexport func f() -> u32 {\n  return a(\n}\n${b}`)).toEqual({ declared: ['a', 'b'], leftOut: ['export func f() -> u32 {\n  return a(\n}\n'] })

@@ -2,8 +2,8 @@
 // Used by both the LSP server and the CLI.
 
 import type * as AST from './ast'
-import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName } from './checker'
+import type { NestedFunc, TypeCheckResult, Symbol as CheckSymbol } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, INSTANCE_STRIDE } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap, isValueArray } from './types'
 import { typeToWasm } from './codegen'
@@ -49,6 +49,13 @@ export interface HoverResult {
   // are listed together, and `more` counts those past the ones listed.
   instances?: PerInstance[]
   more?: number
+  // A nested function: the function whose body declares it, and what it
+  // captures, with what of that it writes (reference 3.4)
+  nestedIn?: string
+  captures?: string
+  // A variable a nested function uses, where it is used there: the function
+  // that declares it
+  capturedFrom?: string
 }
 
 // A hover as one line of text, as the CLI prints it:
@@ -56,6 +63,9 @@ export interface HoverResult {
 export function hoverText(r: HoverResult): string {
   const head = `${r.kind} ${r.name}: ${r.type}${r.value !== undefined ? ` = ${r.value}` : ''}`
   const parts = [
+    ...(r.nestedIn !== undefined ? [`nested in ${r.nestedIn}`] : []),
+    ...(r.captures !== undefined ? [`captures ${r.captures}`] : []),
+    ...(r.capturedFrom !== undefined ? [`captured from ${r.capturedFrom}`] : []),
     ...(r.as !== undefined ? [r.as] : []),
     ...(r.calls !== undefined ? [`calls ${r.calls}`] : []),
     ...(r.instances ?? []).map((i) => `in ${i.in.join(', ')}: ${i.type}`),
@@ -286,6 +296,57 @@ function calledType(module: AST.Module, checkResult: TypeCheckResult, offset: nu
   return type?.kind === 'func' ? type : undefined
 }
 
+// The nested function defined where its name is written at `defined`. In a
+// generic's body, the first instance's stands for the generic's, as its
+// names do in the editor.
+function nestedDefinedAt(checkResult: TypeCheckResult, defined: number): NestedFunc | undefined {
+  for (const nested of checkResult.nested.values()) {
+    if (nested.nameAt % INSTANCE_STRIDE === defined) return nested
+  }
+  return undefined
+}
+
+// The innermost nested function whose declaration holds `offset`, of those
+// outside a generic's body
+function nestedAround(checkResult: TypeCheckResult, offset: number): NestedFunc | undefined {
+  let found: NestedFunc | undefined
+  for (const nested of checkResult.nested.values()) {
+    const { start, end } = nested.decl.span
+    if (offset < start || offset >= end || start >= INSTANCE_STRIDE) continue
+    if (!found || start >= found.decl.span.start) found = nested
+  }
+  return found
+}
+
+// The function a nested function is declared in, as its path names it
+function nestedParent(nested: NestedFunc): string {
+  return nested.shown.slice(0, nested.shown.length - nested.name.length - 1)
+}
+
+// What a nested function captures, as hover shows it: `center, compared
+// (writes compared)`
+function capturesText(nested: NestedFunc): string | undefined {
+  if (nested.captures.length === 0) return undefined
+  const names = nested.captures.map((v) => v.name).join(', ')
+  return nested.writes.length > 0 ? `${names} (writes ${nested.writes.map((v) => v.name).join(', ')})` : names
+}
+
+// The function or test whose code holds `offset`, as messages name it
+function functionAround(module: AST.Module, checkResult: TypeCheckResult, offset: number): string | undefined {
+  const nested = nestedAround(checkResult, offset)
+  if (nested) return nested.shown
+  const find = (items: readonly (AST.Declaration | AST.TestItem)[]): string | undefined => {
+    for (const item of items) {
+      const decl = item.kind === 'ExportDecl' ? item.item : item
+      if (offset < decl.span.start || offset >= decl.span.end) continue
+      if (decl.kind === 'FuncDecl') return decl.ident ?? undefined
+      if (decl.kind === 'TestDecl') return find(decl.children) ?? `test "${decl.name ?? ''}"`
+    }
+    return undefined
+  }
+  return find(module.decls)
+}
+
 export function hover(
   source: string,
   module: AST.Module,
@@ -319,9 +380,18 @@ export function hover(
   // and never a name of the module spelled the same (a global the parameter
   // is named like).
   const defined = checkResult.symbolRefs.get(start) ?? (checkResult.references.has(start) ? start : undefined)
+  // A nested function, where it is declared, called or given
+  const nested = defined === undefined ? undefined : nestedDefinedAt(checkResult, defined)
+  if (nested) {
+    const captures = capturesText(nested)
+    return { name, type: typeToString(nested.type), kind: 'func', nestedIn: nestedParent(nested), ...(captures ? { captures } : {}) }
+  }
   if (defined !== undefined && localDefinedAt(checkResult, defined)) {
     const type = localType(checkResult, start) ?? localType(checkResult, defined)
-    return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
+    // Used in a nested function that does not declare it: captured
+    const user = nestedAround(checkResult, start)
+    const from = user && (defined < user.decl.span.start || defined >= user.decl.span.end) ? functionAround(module, checkResult, defined) : undefined
+    return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local', ...(from ? { capturedFrom: from } : {}) } : null
   }
 
   // A field is not the module's name spelled like it: it is shown after a
@@ -527,6 +597,40 @@ function nameFrom(source: string, name: string, from: number): number {
   return pattern.exec(source)?.index ?? from
 }
 
+// The nested functions a function's body declares, each followed by its own
+// (pre-order), named by their path. Found by syntax, so that a generic's
+// are listed too, with the type of its first instance's where it has one.
+function nestedSymbols(source: string, checkResult: TypeCheckResult, decl: AST.FuncDecl, path: string): SymbolInfo[] {
+  const found: SymbolInfo[] = []
+  const typed = new Map<number, NestedFunc>()
+  for (const nested of checkResult.nested.values()) {
+    const at = nested.decl.span.start % INSTANCE_STRIDE
+    if (!typed.has(at)) typed.set(at, nested)
+  }
+  const walk = (node: unknown, within: string): void => {
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n, within)
+      return
+    }
+    if (!node || typeof node !== 'object' || ArrayBuffer.isView(node)) return
+    const n = node as { kind?: string }
+    if (n.kind === 'FuncDecl') {
+      const inner = node as AST.FuncDecl
+      if (!inner.ident) return
+      const nested = typed.get(inner.span.start)
+      const keyword = /^(?:inline\s+)?func\s+/.exec(source.slice(inner.span.start, inner.span.start + 200))
+      const at = keyword ? inner.span.start + keyword[0].length : inner.span.start
+      const name = `${within}.${inner.ident}`
+      found.push({ name, kind: 'func', type: nested ? typeToString(nested.type) : '', offset: at, length: inner.ident.length, exported: false })
+      walk(inner.body, name)
+      return
+    }
+    for (const [k, v] of Object.entries(node)) if (k !== 'span' && k !== 'type' && k !== 'signature') walk(v, within)
+  }
+  walk(decl.body, path)
+  return found
+}
+
 export function documentSymbols(
   source: string,
   module: AST.Module,
@@ -547,6 +651,7 @@ export function documentSymbols(
             length: decl.ident.length,
             exported: false,
           })
+          symbols.push(...nestedSymbols(source, checkResult, decl, decl.ident))
         }
         break
       case 'TypeDecl':
@@ -609,6 +714,7 @@ export function documentSymbols(
             length: item.ident.length,
             exported: true,
           })
+          symbols.push(...nestedSymbols(source, checkResult, item, item.ident))
         } else if (item.kind === 'TypeFuncDecl') {
           const sym = checkResult.symbols.get(item.ident)
           symbols.push({

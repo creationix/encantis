@@ -9,6 +9,8 @@ import { typecheck, typecheckProgram, type TypeCheckResult } from './checker'
 import { programToWatWithTests } from './codegen'
 import { loadModule } from './loader'
 import { createTestHost } from './test-host'
+import { buildMeta } from './meta'
+import { documentSymbols, findReferences, gotoDefinition, hover, hoverText, rename } from './queries'
 import { parse } from './parser'
 import { runTestsOfSource, wasmOfWat, watOfSource } from './test-utils'
 
@@ -1396,5 +1398,77 @@ test "t" { assert over_limit([1, 5, 9], 4) == 5 }`,
     })
     expect(failed).toEqual([])
     expect(signatureOf(wat, 'lib$count_seen<u32|over_limit.big@main>.k2')).toBe('(func $lib$count_seen<u32|over_limit.big@main>.k2 (param $x i32) (param $seen i32) (param $limit i32) (result i32 i32)')
+  })
+})
+
+describe('nested functions: the editor (N42)', () => {
+  const source = `${SORT}
+export func by_distance(xs: []mut i32, center: i32) -> u32 {
+  let compared: u32 = 0
+  func closer(a: i32, b: i32) -> bool {
+    compared += 1
+    return abs(a - center) < abs(b - center)
+  }
+  func plain(a: i32) -> i32 => a
+  xs.sort(closer)
+  return compared + plain(1) as u32
+}
+`
+  const at = (text: string, nth = 0) => {
+    let i = -1
+    for (let k = 0; k <= nth; k++) i = source.indexOf(text, i + 1)
+    return i
+  }
+  const setup = () => {
+    const parsed = parse(source)
+    const module = parsed.module!
+    return { module, result: typecheck(module, { source }) }
+  }
+
+  test('hover on its name, a call and a comptime argument', () => {
+    const { module, result } = setup()
+    for (const offset of [at('closer(a'), at('closer)')]) {
+      const h = hover(source, module, result, offset)!
+      expect(hoverText(h)).toBe('func closer: func(a: i32, b: i32) -> bool — nested in by_distance; captures center, compared (writes compared)')
+      expect(h.captures).toBe('center, compared (writes compared)')
+    }
+    expect(hoverText(hover(source, module, result, at('plain(1)'))!)).toBe('func plain: func(a: i32) -> i32 — nested in by_distance')
+  })
+
+  test('hover on a captured variable inside it', () => {
+    const { module, result } = setup()
+    expect(hoverText(hover(source, module, result, at('compared += 1'))!)).toBe('local compared: u32 — captured from by_distance')
+    expect(hoverText(hover(source, module, result, at('compared + plain'))!)).toBe('local compared: u32')
+  })
+
+  test('definition, references and rename', () => {
+    const { module, result } = setup()
+    const def = at('closer(a')
+    expect(gotoDefinition(source, module, result, at('closer)'))?.location.offset).toBe(def)
+    expect(findReferences(source, module, result, def)?.references.map((r) => r.offset)).toEqual([at('closer)')])
+    expect(rename(source, module, result, at('closer)'))?.locations.map((l) => l.offset)).toEqual([def, at('closer)')])
+    // A captured variable's uses inside the nested function are its uses
+    const compared = at('compared: u32')
+    expect(gotoDefinition(source, module, result, at('compared += 1'))?.location.offset).toBe(compared)
+    expect(rename(source, module, result, compared)?.locations.map((l) => l.offset)).toEqual([compared, at('compared += 1'), at('compared + plain')])
+  })
+
+  test('document symbols list it after its function, by its path', () => {
+    const { module, result } = setup()
+    expect(documentSymbols(source, module, result).map((s) => `${s.name}: ${s.type}`)).toEqual([
+      'sort: generic func(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)',
+      'by_distance: func(xs: []mut i32, center: i32) -> u32',
+      'by_distance.closer: func(a: i32, b: i32) -> bool',
+      'by_distance.plain: func(a: i32) -> i32',
+    ])
+  })
+
+  test('meta: a symbol of its own, with its uses and its parameters', () => {
+    const { module, result } = setup()
+    const meta = buildMeta(module, source, { checkResult: result })
+    const closer = meta.symbols.find((s) => s.name === 'closer')!
+    expect(closer.kind).toBe('func')
+    expect(closer.refs.length).toBe(1)
+    expect(meta.symbols.some((s) => s.name === 'a' && s.kind === 'param')).toBe(true)
   })
 })

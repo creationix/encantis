@@ -104,6 +104,25 @@ describe('the outline', () => {
     expect(area.detail).toBe('export (p:(x:i32, y:i32), k:i32) -> i32')
   })
 
+  test('lists the functions declared in a body inside the function', async () => {
+    const s = server()
+    const text = `export func f(n: u32) -> u32 {
+  func g(x: u32) -> u32 {
+    func h() -> u32 => n
+    return x + h()
+  }
+  if n > 1 {
+    func k() -> u32 => 2
+    return k()
+  }
+  return g(n)
+}
+`
+    await s.open(uri, text)
+    const symbols = s.ask<DocumentSymbol[]>('onDocumentSymbol', { textDocument: { uri } })
+    expect(names(symbols)).toEqual([['f', [['g', ['h']], 'k']]])
+  })
+
   test('keeps a declaration that does not parse while it is written', async () => {
     const s = server()
     await s.open(uri, SHAPES)

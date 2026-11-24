@@ -428,6 +428,12 @@ class MetaBuilder {
   }
 
   private collectFunc(decl: AST.FuncDecl): void {
+    // A function at the top of a test that uses its variables is a nested
+    // function of the test's function (reference 3.4)
+    if (this.checkResult.nested.has(this.checked(decl))) {
+      this.collectNested(decl)
+      return
+    }
     if (decl.ident) {
       const known = this.checkResult.funcNames.get(decl) ?? decl.ident
       const sym = this.checkResult.symbols.get(known)
@@ -565,8 +571,34 @@ class MetaBuilder {
     }
   }
 
+  // A nested function: a symbol of its own, defined at its name, with its
+  // parameters, results and locals (reference 3.4). Its body's hints come
+  // with the body around it (generateHintsForNested).
+  private collectNested(decl: AST.FuncDecl): void {
+    const nested = this.checkResult.nested.get(this.checked(decl))
+    if (!nested || !decl.ident) return
+    const offset = this.findFuncIdentOffset(decl)
+    const index = this.addSymbol(decl.ident, 'func', nested.type, offset, undefined, decl.inline, nested.path, offset)
+    this.collectFuncBody(decl, index)
+  }
+
+  private generateHintsForNested(decl: AST.FuncDecl): void {
+    if (!decl.ident || !this.checkResult.nested.has(this.checked(decl))) return
+    const offset = this.findFuncIdentOffset(decl)
+    const index = this.symbolIndexByDef.get(offset)
+    if (index !== undefined) this.addHint(offset, decl.ident.length, this.symbols[index].type, index)
+    this.generateHintsForTypeExpr(decl.signature.input)
+    this.generateHintsForTypeExpr(decl.signature.output)
+    if (decl.body.kind === 'Block') this.generateHintsForBlock(decl.body)
+    else this.generateHintsForExpr(decl.body.expr)
+  }
+
   private collectLocalsFromBlock(block: AST.Block): void {
     for (const stmt of block.stmts) {
+      if (stmt.kind === 'FuncDecl') {
+        this.collectNested(stmt)
+        continue
+      }
       if (stmt.kind === 'LetStmt') {
         this.collectLocal(stmt.pattern)
       }
@@ -1005,7 +1037,7 @@ class MetaBuilder {
         this.collectLocal(item.pattern)
       }
       if (item.kind === 'ForStmt') this.collectForBinding(item.binding)
-      if ('body' in item && item.body.kind === 'Block') {
+      if (item.kind !== 'FuncDecl' && 'body' in item && item.body.kind === 'Block') {
         this.collectLocalsFromBlock(item.body)
       }
     }
@@ -1015,7 +1047,8 @@ class MetaBuilder {
           this.generateHintsForTestDecl(item)
           break
         case 'FuncDecl':
-          this.generateHintsForFunc(item)
+          if (this.checkResult.nested.has(item)) this.generateHintsForNested(item)
+          else this.generateHintsForFunc(item)
           break
         case 'DataDecl':
           this.generateHintsForData(item)
@@ -1083,6 +1116,9 @@ class MetaBuilder {
 
   private generateHintsForStmt(stmt: AST.Statement): void {
     switch (stmt.kind) {
+      case 'FuncDecl':
+        this.generateHintsForNested(stmt)
+        break
       case 'LetStmt':
         this.generateHintsForLetPattern(stmt.pattern, stmt.value ?? null)
         if (stmt.type) this.generateHintsForTypeExpr(stmt.type)
