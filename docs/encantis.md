@@ -7516,7 +7516,7 @@ if let only supports simple bindings
 if let requires an optional expression or bounds-checked index
 ```
 
-An `elif let` is checked as an `if let` is, and its binding is seen in its own branch only, not in the branches after it nor after the `if`:
+An `elif let` is checked as an `if let` is, and its binding is seen in its own branch only, not in the branches after it nor after the `if`. Its binding cannot take the name of a variable seen there, as an `if let`'s cannot, and the error is the `if let` binding's, which ends with where the name was first declared ([3.3](#33-variables)):
 
 ```ents
 data cells = [7:u32, 8, 9]
@@ -7533,12 +7533,23 @@ func a(c: bool, p: ?*u32) -> u32 {
 func b(c: bool, n: u32) -> u32 => if c { 1 } elif let m = n { m } else { 0 }
 
 func d(c: bool, i: u32) -> i32 => if c { 1 } elif let v = cells[i] { 2 } else { v }
+
+func e(c: bool, p: ?*u32) -> u32 {
+  let t: u32 = 4
+  if c {
+    return 1
+  } elif let t = p {
+    return t.*
+  }
+  return t
+}
 ```
 
 ```errors
 if let only supports simple bindings
 if let requires an optional expression or bounds-checked index
 unknown identifier 'v'
+'t' is already declared: an if let binding cannot reuse the name of a variable in scope (first declared at 17:7)
 ```
 
 <!-- spec:end -->
