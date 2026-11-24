@@ -3918,11 +3918,11 @@ function emitTestDecl(
         if (local !== undefined && wat !== undefined) ctx.nameMap.set(local, wat)
       }
     } else if (item.kind === 'FuncDecl') {
-      // Emit shared helper function
-      const watName = `${watId}.${item.ident ?? 'anon'}`
-      if (item.ident) {
-        ctx.nameMap.set(item.ident, watName)
-      }
+      // A function without a name is left out, as at module level (Not
+      // implemented, reference 3.4): nothing can call it.
+      if (!item.ident) continue
+      const watName = `${watId}.${item.ident}`
+      ctx.nameMap.set(item.ident, watName)
       parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName, ctx.symbols, ctx.dataSectionSize))
     } else if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       // Already processed above

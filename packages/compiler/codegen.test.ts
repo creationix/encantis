@@ -4431,6 +4431,14 @@ describe('the functions and exports of tests', () => {
         assert h() == 3
       }
     `)).toEqual({ ran: ['a', 'a_b', 'g > x', 'g'], failed: [] })
+    // A function without a name is left out, as at module level.
+    expect(await runTests(`
+      test "a" {
+        func(x: u32) -> u32 => x
+        func(x: u32) -> u32 => x + 1
+        assert true
+      }
+    `)).toEqual({ ran: ['a'], failed: [] })
   })
 
   test('what tests import is told apart from the module and from other tests', async () => {
