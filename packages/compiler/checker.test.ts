@@ -4204,6 +4204,53 @@ describe('a function named where a value is', () => {
   })
 })
 
+// #38, #138: a def's name is read as the def wherever it is written, so a
+// parameter or a named result of the name was written to and never read.
+describe('a parameter or a named result cannot have a def\'s name', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const param = (name: string) => `'${name}' is already declared: a parameter cannot reuse the name of a def`
+  const result = (name: string) => `'${name}' is already declared: a named result cannot reuse the name of a def`
+
+  test('in a function, said at the name', () => {
+    const src = 'def k = 3\nfunc g(x: u32, k: u32) -> u32 => k'
+    const found = checkModule(src).errors
+    expect(found.map(e => e.message)).toEqual([param('k')])
+    expect(found[0].offset).toBe(src.indexOf('k: u32'))
+    expect(errs('def limit = 10\nfunc f() -> (limit: u32) {\n limit = 3\n return limit * 2\n}')).toEqual([result('limit')])
+    // An arrow body, an export, a result that is the parameter (both names
+    // are written), a def declared after the function.
+    expect(errs('def k = 3\nfunc f(x: u32) -> (k: u32) => x')).toEqual([result('k')])
+    expect(errs('def k = 3\nexport func f(k: u32) -> (k: u32) => k')).toEqual([param('k'), result('k')])
+    expect(errs('func f(k: u32) -> u32 => k\ndef k = 3')).toEqual([param('k')])
+    // A typed def, one whose value is an expression
+    expect(errs('def k: u8 = 3\ndef m = k + 1\nfunc f(k: u32, m: u32) -> u32 => k + m')).toEqual([param('k'), param('m')])
+  })
+
+  test('in a generic, once where it is declared, called or not', () => {
+    expect(errs('def k = 3\nfunc h(comptime T: type, k: T) -> T => k')).toEqual([param('k')])
+    expect(errs('def k = 3\nfunc h(comptime T: type, x: T) -> (k: T) => x\nfunc use() -> u32 => h(u32, 5) + h(u32, 6)')).toEqual([result('k')])
+    // A comptime value parameter has its own message.
+    expect(errs('def n = 3\nfunc h(comptime n: u32, x: u32) -> u32 => x')).toEqual(["comptime parameter 'n' has the name of a def declared in this module"])
+  })
+
+  test('in a test, the test\'s defs as well', () => {
+    expect(errs('test "t" {\n def z = 4\n func inner(z: u32) -> u32 => z\n assert inner(9) == 9\n}')).toEqual([param('z')])
+    // A def a test declares is not the rest of the module's.
+    expect(errs('test "t" {\n def z = 4\n assert z == 4\n}\nfunc outer(z: u32) -> u32 => z')).toEqual([])
+  })
+
+  test('a data block, a global, a function and an import are names a parameter can hide', () => {
+    expect(errs(`
+      data s = [1:u8, 2]
+      global g: u32 = 1
+      func f() -> u32 => 1
+      import "env" "log" func log(k: u32)
+      def k = 3
+      func a(s: []u8, g: u32, f: u32, log: u32) -> (n: u32) => s.len + g + f + log
+    `)).toEqual([])
+  })
+})
+
 describe('the variables of a for, an if let or a match arm', () => {
   const errs = (src: string) => checkModule(src).errors.map(e => e.message)
   const loop = (name: string, what: string) => `'${name}' is already declared: a loop variable cannot reuse the name of ${what}`

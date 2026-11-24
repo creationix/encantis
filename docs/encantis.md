@@ -3717,7 +3717,7 @@ The compiler refuses two values these rules allow (known bugs): a value written 
 
 A `def` can stand wherever a constant can: in an expression, as the length in a type (`[n]u8`), the bound of a ranged integer (`u32#n`), the count of a repeat literal (`[0; n]`) or of a loop (`for i in n`), a comptime value argument ([8.7](#87-comptime-value-parameters)), a global's initializer and the values of `data`.
 
-A `def` is no variable: assigning it is an error (`cannot assign to 'k': it is not a variable`, [4.5](#45-assignment-and-compound-assignment)). A `let`, a loop variable and a match binding cannot take a def's name (`'k' is already declared in this scope`, `'k' is already declared: a loop variable cannot reuse the name of a def`). A parameter or a named result must not take one either. The compiler accepts both (known bugs): an assignment to one writes the variable, but every other read of the name gives the def's value, so a parameter's argument is never read ([3.4](#34-functions)).
+A `def` is no variable: assigning it is an error (`cannot assign to 'k': it is not a variable`, [4.5](#45-assignment-and-compound-assignment)). A `let`, a loop variable, a match binding, a parameter and a named result cannot take a def's name (`'k' is already declared in this scope`, `'k' is already declared: a loop variable cannot reuse the name of a def`, `'k' is already declared: a parameter cannot reuse the name of a def`, [3.4](#34-functions)).
 
 A `def` declared in a `test` block is that test's: it replaces the name inside that test only, and the rest of the module reads the name as if the test were not there.
 
@@ -4189,7 +4189,36 @@ test "a value is copied, a pointer is shared" {
 
 <!-- spec:end -->
 
-A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. Neither a parameter nor a named result may have a def's name. The compiler accepts both (known bugs): an assignment to one (`limit = 3`, `limit += 1`) writes the variable, but every other read of the name gives the def's value. So beside `def limit = 10`, `func f() -> (limit: u32) { limit = 3  return limit * 2 }` returns 20, and `=> limit` returns 10.
+A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. Neither a parameter nor a named result may have a def's name: the name of a `def` of the module, or, for a function declared in a test, of a `def` the test declares before it. Each is an error at the name (`'k' is already declared: a parameter cannot reuse the name of a def`, `'limit' is already declared: a named result cannot reuse the name of a def`), in a generic function too, where it is reported once, with the declarations, whether or not anything calls it. (A comptime value parameter's is `comptime parameter 'n' has the name of a def declared in this module`, [8.7](#87-comptime-value-parameters).) The parameter names an import writes are no variables, and are not checked.
+
+<!-- spec:begin compile -->
+
+```ents
+def limit = 10
+def k = 3
+
+func f() -> (limit: u32) {
+  limit = 3
+  return limit * 2
+}
+func g(k: u32) -> u32 => k
+func h(comptime T: type, k: T) -> T => k
+
+test "a def in a test" {
+  def z = 4
+  func inner(z: u32) -> u32 => z
+  assert inner(9) == 9
+}
+```
+
+```errors
+'limit' is already declared: a named result cannot reuse the name of a def
+'k' is already declared: a parameter cannot reuse the name of a def
+'k' is already declared: a parameter cannot reuse the name of a def
+'z' is already declared: a parameter cannot reuse the name of a def
+```
+
+<!-- spec:end -->
 
 **Returning.** An expression body is the function's result, so a function with no result has a block body, or an expression body that gives nothing (`=> ()`, or an `if` with an `else` whose branches end in a statement, `=> if c { n += 1 } else { n = 0 }`): `func f() => id(3)` is `cannot assign u32 to ()`. `func f() => bump()`, where `bump` has no result either, is refused too, and so are an `if` whose branch ends in such a call and an `if` without an `else`, `func f(c: bool) => if c { n += 1 }` (`cannot assign () to ()`, known bugs). A block body gives an unnamed result with `return value`, and every way out of the block must be one. The compiler decides this by the block's last statement, which must be:
 
@@ -7703,7 +7732,7 @@ Rules:
 2. `comptime` is only written in the parameter list of a named function declared with `func` at module level, and in the signature a source import writes for such a function ([7.1](#71-imports)). Every parameter of such a function has a name.
 3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host (`generic function 'larger' must be called`). It can only be called. Its name is unique in its module.
 4. A type parameter's name is its own: it is not the name of a type the module declares, before or after the function, and no two parameters of the function share a name.
-5. A generic function's parameter list is checked where it is declared, whether or not anything calls it: the rules above, what a comptime parameter may be (a type, an integer type or a function type, [8.9](#89-not-implemented)), the case of each comptime parameter's name ([8.6](#86-comptime-function-parameters), [8.7](#87-comptime-value-parameters)), and that a comptime parameter does not have a def's name. Everything else is checked when the function is instantiated, with its comptime arguments filled in, and not before: its body, and the types its signature names. One that is never called is checked for its parameter list only, and nothing is emitted for it; any other mistake in it, such as an unknown type in its signature (`x: Nope`) or an unknown name in its body, is reported once something calls it, in that instance ([8.3](#83-requirements)).
+5. A generic function's parameter list is checked where it is declared, whether or not anything calls it: the rules above, what a comptime parameter may be (a type, an integer type or a function type, [8.9](#89-not-implemented)), the case of each comptime parameter's name ([8.6](#86-comptime-function-parameters), [8.7](#87-comptime-value-parameters)), and that no parameter or named result has a def's name ([3.4](#34-functions)). Everything else is checked when the function is instantiated, with its comptime arguments filled in, and not before: its body, and the types its signature names. One that is never called is checked for its parameter list only, and nothing is emitted for it; any other mistake in it, such as an unknown type in its signature (`x: Nope`) or an unknown name in its body, is reported once something calls it, in that instance ([8.3](#83-requirements)).
 
 `comptime` is a reserved word.
 

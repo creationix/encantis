@@ -814,7 +814,7 @@ func other(p: ?*u32) -> f64 {
   return q
 }
 
-func arm(n: u32, k: u32) -> u32 => match k {
+func arm(n: u32, m: u32) -> u32 => match m {
   0 => 1
   n => n + 1
 }

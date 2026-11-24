@@ -1650,8 +1650,27 @@ class CheckContext {
     if (!decl.ident) return // Anonymous function
     if (this.takenByGeneric(decl.ident, decl.span.start)) return
     if (this.takenByAnother(decl.ident, decl.span.start, 'func', inTest)) return
+    for (const { at, message } of this.defNamedFields(decl)) this.error(at, message)
     const sig = this.resolveSignature(decl.signature)
     this.declareFunc(decl, decl.ident, { kind: 'func', type: sig, inline: decl.inline }, inTest)
+  }
+
+  // A parameter and a named result are variables of the body, where a def's
+  // name is read as the def (3.1): neither may take one. Said at the name,
+  // as a let is (a comptime value parameter has its own message).
+  private defNamedFields(decl: AST.FuncDecl): { at: number; message: string }[] {
+    const found: { at: number; message: string }[] = []
+    const sides: [AST.Type, string][] = [[decl.signature.input, 'a parameter'], [decl.signature.output, 'a named result']]
+    for (const [type, what] of sides) {
+      if (type.kind !== 'CompositeType') continue
+      for (const field of type.fields) {
+        if (!field.ident || field.comptime) continue
+        const sym = this.lookup(field.ident)
+        const def = this.defNames.has(field.ident) || (sym !== undefined && takenName(sym) === 'a def')
+        if (def) found.push({ at: field.span.start, message: `'${field.ident}' is already declared: ${what} cannot reuse the name of a def` })
+      }
+    }
+    return found
   }
 
   // Enters a function of the module, declared or imported, under its name.
@@ -8553,6 +8572,7 @@ class CheckContext {
       this.error(offset, message)
     }
     if (!decl.ident) reject(decl.span.start, `a generic function needs a name`)
+    for (const { at, message } of this.defNamedFields(decl)) reject(at, message)
     const params = genericParams(decl)
     const unnamed = params.find((p) => !p.ident)
     if (unnamed) reject(unnamed.span.start, `a generic function's parameters need names`)
