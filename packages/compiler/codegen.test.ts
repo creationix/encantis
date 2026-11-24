@@ -1005,6 +1005,87 @@ describe('counted loops', () => {
     expect([unsigned(3), unsigned(0), unsigned(-1)]).toEqual([3, 0, 1001])
   })
 
+  // Issue #257: a signed count was compared signed, so an i given 2^31 or
+  // more was below it, and the loop did not end.
+  test('the variable of a signed count is a u32, compared unsigned with it', async () => {
+    const code = `
+      func five() -> i32 => 5
+      global g: i32 = 5
+      type L = (n: i8, m: u32)
+      export func c_assign_signed(n: i32) -> u32 {
+        let t: u32 = 0
+        for i in n { t += 1  if t == 1 { i = 0x80000000 }  break when t > 10 }
+        return t
+      }
+      export func call() -> u32 {
+        let t: u32 = 0
+        for i in five() { t += 1  if t == 1 { i = 0x80000000 }  break when t > 10 }
+        return t
+      }
+      export func changed(n: i32) -> u32 {
+        let t: u32 = 0
+        for i in n { n = -1  t += 1  if t == 1 { i = 0x80000000 }  break when t > 10 }
+        return t
+      }
+      export func glob() -> u32 {
+        let t: u32 = 0
+        for i in g { t += 1  if t == 1 { i = 0x80000000 }  break when t > 10 }
+        return t
+      }
+      export func field(n: i32) -> u32 {
+        let l = L(n as i8, 0)
+        let t: u32 = 0
+        for i in l.n { t += 1  if t == 1 { i = 200 }  break when t > 10 }
+        return t
+      }
+      export func steps(n: i32) -> u32 {
+        let t: u32 = 0
+        for i in n { t += i }
+        return t
+      }
+    `
+    const { c_assign_signed, call, changed, glob, field, steps } = await run(code)
+    expect([c_assign_signed(5), call(), changed(5), glob(), field(5)]).toEqual([1, 1, 1, 1, 1])
+    // A negative count still runs no pass, and one that isn't runs as many.
+    expect([c_assign_signed(-1), c_assign_signed(0), changed(-5), field(-3), steps(4), steps(-4), steps(-2147483648)]).toEqual([0, 0, 0, 0, 6, 0, 0])
+    // The count is tested for being negative once, before the loop, and i is compared unsigned.
+    expect(bodyOf('func steps(n: i32) -> u32 {\n let t: u32 = 0\n for i in n { t += i }\n return t\n}', 'steps')).toEqual([
+      '(local.set $t (i32.const 0))',
+      '(local.set $i (i32.const 0))',
+      '(block $break',
+      '(br_if $break (i32.lt_s (local.get $n) (i32.const 0)))',
+      '(loop $next',
+      '(br_if $break (i32.ge_u (local.get $i) (local.get $n)))',
+      '(block $continue',
+      '(local.set $t (i32.add (local.get $t) (local.get $i)))',
+      ')',
+      '(local.set $i (i32.add (local.get $i) (i32.const 1)))',
+      '(br $next)',
+      ')',
+      ')',
+      '(local.get $t) (return)',
+      '(unreachable)',
+    ])
+  })
+
+  test('an unsigned or constant count is compared as it was', () => {
+    const wat = modWat(`
+      def k = -3
+      export func f(n: u32) -> u32 {
+        let t: u32 = 0
+        for i in n { t += 1 }
+        for i in 4 { t += 1 }
+        for i in -3 { t += 1 }
+        for i in k { t += 1 }
+        return t
+      }
+    `)
+    expect(wat).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $n)))')
+    expect(wat).toContain('(br_if $break (i32.ge_u (local.get $i) (i32.const 4)))')
+    expect(wat.match(/\(br_if \$break \(i32\.ge_s \(local\.get \$i\) \(i32\.const -3\)\)\)/g)?.length).toBe(2)
+    expect(wat).not.toContain('i32.lt_s')
+  })
+
   test('the count is evaluated once, before the loop', async () => {
     const code = `
       global calls: i32 = 0

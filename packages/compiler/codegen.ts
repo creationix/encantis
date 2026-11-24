@@ -2913,18 +2913,21 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
     // The body sits in its own $continue block so that continue still reaches
     // the increment. The count is evaluated once, before the loop: a constant,
     // or a variable the body doesn't change, is read where it is compared.
-    // A signed count is compared signed, so a negative one runs the loop zero
-    // times; value counts up from 0 and stops at the count, so it never
-    // reaches the values where the two comparisons differ.
+    // value is a u32, compared unsigned with the count. A signed variable
+    // count is first tested once, before the first pass: a negative one runs
+    // no pass, and one that isn't is the same number as a u32. (A negative
+    // constant is compared signed, and 0 is past it before the first pass.)
     const constant = /^\(i32\.const (-?\d+)\)$/.exec(iterWat)
     const steady = constant !== null || steadyRead(stmt, iterWat)
     const count = steady ? iterWat : scratchLocal(ctx, 'i32')
-    const negative = iterType.kind === 'primitive' && RT.isSigned(iterType) && !(constant && Number(constant[1]) >= 0)
-    const compare = negative ? 'i32.ge_s' : 'i32.ge_u'
+    const read = steady ? count : `(local.get ${count})`
+    const signed = iterType.kind === 'primitive' && RT.isSigned(iterType)
+    const compare = signed && constant && Number(constant[1]) < 0 ? 'i32.ge_s' : 'i32.ge_u'
+    const negative = signed && !constant ? `\n    (br_if $break (i32.lt_s ${read} (i32.const 0)))` : ''
     return `${steady ? '' : `(local.set ${count} ${iterWat})\n`}(local.set $${valueName} (i32.const 0))
-(block $break
+(block $break${negative}
     (loop $next
-      (br_if $break (${compare} (local.get $${valueName}) ${steady ? count : `(local.get ${count})`}))
+      (br_if $break (${compare} (local.get $${valueName}) ${read}))
       (block $continue
         ${body}
       )
