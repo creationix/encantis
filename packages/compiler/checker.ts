@@ -685,6 +685,12 @@ export function typecheckProgram(
 
 const MEMORY_TWICE = 'memory is already declared: a program has one memory declaration at most'
 
+// A message of another module, told in this one: the place it says the
+// first declaration of a name is (see firstDeclared) is that module's.
+function inFile(message: string, path: string | undefined): string {
+  return path ? message.replace(/\(first declared at (\d+:\d+)\)/g, `(first declared at ${fileName(path)}:$1)`) : message
+}
+
 // A path's last part, the name of the file
 function fileName(path: string): string {
   return path.replace(/^.*[\\/]/, '')
@@ -1023,6 +1029,10 @@ class CheckContext {
   // of a generic's first instance. Kept apart from symbolDefOffsets, which
   // holds the one definition of each of the module's names.
   localDefs = new Map<Symbol, number>()
+  // Where each variable of a function or a test was declared, in every
+  // instance too (localDefs keeps the generic's own only): what a message
+  // refusing a second declaration of its name says (see declaredFirst).
+  declaredAt = new Map<Symbol, number>()
   // Functions and imports declared inside test blocks. They are registered in
   // module scope, and exist in test builds only.
   testOnly = new Set<string>()
@@ -1386,15 +1396,37 @@ class CheckContext {
     this.error(at, `${MEMORY_TWICE}${this.firstDeclared(this.memoryAt)}`)
   }
 
+  // Where the declaration a name was found as is, said after a message that
+  // refuses another declaration of the name: a variable's where it was bound,
+  // a name of the module's where it is declared (an import where it is
+  // imported). Nothing where that is not known.
+  declaredFirst(name: string, sym: Symbol): string {
+    const at = this.declaredAt.get(sym) ?? this.localDefs.get(sym) ??
+      (this.moduleScope.symbols.get(name) === sym ? this.symbolDefOffsets.get(name) : undefined)
+    if (at !== undefined) return this.firstDeclared(at)
+    // A name another module declares, for an instance it asked this one for
+    for (const [path, other] of this.program ?? []) {
+      if (other === this) continue
+      const there = other.declaredAt.get(sym) ?? other.localDefs.get(sym) ??
+        (other.moduleScope.symbols.get(name) === sym ? other.symbolDefOffsets.get(name) : undefined)
+      if (there !== undefined) return other.firstDeclared(there, fileName(path))
+    }
+    return ''
+  }
+
   // Where the first declaration of a name is, said after a message that
   // refuses a second one: ` (first declared at 3:5)`, as line:column of this
   // module, or of `file`, the module that has it, ` (... at lib.ents:3:5)`.
   // An instance's offsets are the generic's own. Without the module's text
   // only the other module's name is said, and nothing for this one.
+  // The place is where the name is written: a declaration that starts with
+  // its keywords (`def k`, `export func f`) is said at the name after them.
   firstDeclared(offset: number, file?: string): string {
-    const at = offset % INSTANCE_STRIDE
-    if (this.source) return ` (first declared at ${file ? `${file}:` : ''}${lineAndColumn(this.source, at)})`
-    return file ? ` (first declared in ${file})` : ''
+    let at = offset % INSTANCE_STRIDE
+    if (!this.source) return file ? ` (first declared in ${file})` : ''
+    const keywords = /^(?:(?:export|inline|func|def|data|global|memory)\s+)+/.exec(this.source.slice(at, at + 64))
+    if (keywords && /^[A-Za-z_]/.test(this.source.slice(at + keywords[0].length))) at += keywords[0].length
+    return ` (first declared at ${file ? `${file}:` : ''}${lineAndColumn(this.source, at)})`
   }
 
   collectImport(decl: AST.ImportDecl, inTest = false): void {
@@ -1701,8 +1733,12 @@ class CheckContext {
       for (const field of type.fields) {
         if (!field.ident || field.comptime) continue
         const sym = this.lookup(field.ident)
-        const def = this.defNames.has(field.ident) || (sym !== undefined && takenName(sym) === 'a def')
-        if (def) found.push({ at: field.span.start, message: `'${field.ident}' is already declared: ${what} cannot reuse the name of a def` })
+        const ofTest = sym !== undefined && takenName(sym) === 'a def'
+        if (!ofTest && !this.defNames.has(field.ident)) continue
+        // A def of the module declared after the function is not in scope
+        // yet: it is found by its declaration.
+        const where = ofTest ? this.declaredFirst(field.ident, sym) : this.firstDeclared(this.defDecls.get(field.ident)?.span.start ?? 0)
+        found.push({ at: field.span.start, message: `'${field.ident}' is already declared: ${what} cannot reuse the name of a def${where}` })
       }
     }
     return found
@@ -3687,7 +3723,7 @@ class CheckContext {
     const taken = existing && takenName(existing)
     if (taken && !this.declared.has(node)) {
       const what = kind === 'loop' ? 'a loop variable' : kind === 'if let' ? 'an if let binding' : 'a match binding'
-      this.error(at, `'${name}' is already declared: ${what} cannot reuse the name of ${taken}`)
+      this.error(at, `'${name}' is already declared: ${what} cannot reuse the name of ${taken}${this.declaredFirst(name, existing)}`)
     }
     if (!type) return
     const sym: Symbol = { kind: 'local', type, binding: kind }
@@ -3702,7 +3738,7 @@ class CheckContext {
       case 'IdentPattern': {
         const existing = this.lookup(pattern.name)
         if (existing && !this.declared.has(pattern)) {
-          this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
+          this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope${this.declaredFirst(pattern.name, existing)}`)
         }
         this.declare(pattern)
         const sym: Symbol = { kind: 'local', type }
@@ -3765,8 +3801,9 @@ class CheckContext {
     const varName = element.binding ?? element.field
     // Its name is its own, as a plain let's is: taking a variable's
     // would change that variable (a loop's counter, say).
-    if (this.lookup(varName) && !this.declared.has(element)) {
-      this.error(pattern.span.start, `'${varName}' is already declared in this scope`)
+    const existing = this.lookup(varName)
+    if (existing && !this.declared.has(element)) {
+      this.error(pattern.span.start, `'${varName}' is already declared in this scope${this.declaredFirst(varName, existing)}`)
     }
     this.declare(element)
     const sym: Symbol = { kind: 'local', type }
@@ -8994,7 +9031,7 @@ class CheckContext {
       // of an instance it asked for (reportToRequesters)
       if (owner !== this && bodyError) {
         const where = owner.source && owner.filePath ? ` (${fileName(owner.filePath)}:${lineAndColumn(owner.source, bodyError.offset)})` : ''
-        this.error(at, `${shown} cannot be applied: ${bodyError.message}${where}`)
+        this.error(at, `${shown} cannot be applied: ${inFile(bodyError.message, owner.filePath)}${where}`)
       }
       return this.applicationFailed(owner)
     }
@@ -9819,7 +9856,9 @@ class CheckContext {
       if (value.kind !== 'int') return
       const name = param.ident as string
       // Its uses, numbers in the copy, are the generic's (see skipGenericBody).
-      scope.symbols.set(name, { kind: 'def', type: comptimeInt(value.value), value, valueParam: true })
+      const sym: Symbol = { kind: 'def', type: comptimeInt(value.value), value, valueParam: true }
+      scope.symbols.set(name, sym)
+      if (param.identSpan) this.declaredAt.set(sym, inst.index * INSTANCE_STRIDE + param.identSpan.start)
     })
   }
 
@@ -10156,7 +10195,7 @@ class CheckContext {
       if (owner === this) continue
       const where = owner.source && owner.filePath ? ` (${fileName(owner.filePath)}:${lineAndColumn(owner.source, found.error.offset)})` : ''
       const inner = found.inst === asked ? '' : `, in ${found.inst.label}`
-      this.error(request.at, `${asked.label} cannot be instantiated: ${found.message}${inner}${where}`)
+      this.error(request.at, `${asked.label} cannot be instantiated: ${inFile(found.message, owner.filePath)}${inner}${where}`)
     }
   }
 
@@ -10192,6 +10231,7 @@ class CheckContext {
   // name, and by name each of them would be the last one, and a parameter
   // would take over a global it is spelled like.
   recordDefinition(name: string, offset: number, local?: Symbol): void {
+    if (local) this.declaredAt.set(local, offset)
     if (offset >= INSTANCE_STRIDE) {
       // An instance's parameters and locals are copies of the generic's. The
       // first instance stands for the generic where the editor asks what a

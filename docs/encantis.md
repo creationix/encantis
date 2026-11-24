@@ -3977,7 +3977,7 @@ test "a let without a value starts at zero and is never reset" {
 
 `counts` shows the rule; it is no way to write a loop. A value carried from one pass to the next is declared before the loop (`let seen: u32 = 0` above the `for`), where a reader sees that it lives across passes.
 
-A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The first branch of an `if let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in an `elif` or `else` branch of an `if let`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
+A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The first branch of an `if let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in an `elif` or `else` branch of an `if let`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The error ends with where the first declaration of the name is, as the line and column of the name there (the name a `let`, a parameter or a binding declares; the name after the keywords of a declaration of the module, the `k` of `def k`; an import's local name): `'t' is already declared in this scope (first declared at 3:9)`, also where that declaration is in a block that has ended, as in `pick` below. So do the errors of a loop variable, an `if let` binding and a match binding that take a name already seen ([5.2](#52-loops)), and of a parameter or a named result with a def's name ([3.4](#34-functions)). In an instance of a generic the place is in the generic's source; told in another module, as the error of an instance of an imported generic is told at the call that asked for it ([8.8](#88-generics-across-modules)), it names its file, `(first declared at lib.ents:3:7)`. The variables of a loop, an `if let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
 
 <!-- spec:begin compile -->
 
@@ -4021,8 +4021,8 @@ func widest(xs: []u32, ys: []u32) -> u32 {
 ```
 
 ```errors
-'t' is already declared in this scope
-'d' is already declared in this scope
+'t' is already declared in this scope (first declared at 3:9)
+'d' is already declared in this scope (first declared at 12:9)
 ```
 
 <!-- spec:end -->
@@ -4212,10 +4212,10 @@ test "a def in a test" {
 ```
 
 ```errors
-'limit' is already declared: a named result cannot reuse the name of a def
-'k' is already declared: a parameter cannot reuse the name of a def
-'k' is already declared: a parameter cannot reuse the name of a def
-'z' is already declared: a parameter cannot reuse the name of a def
+'limit' is already declared: a named result cannot reuse the name of a def (first declared at 1:5)
+'k' is already declared: a parameter cannot reuse the name of a def (first declared at 2:5)
+'k' is already declared: a parameter cannot reuse the name of a def (first declared at 2:5)
+'z' is already declared: a parameter cannot reuse the name of a def (first declared at 12:7)
 ```
 
 <!-- spec:end -->
@@ -5750,8 +5750,8 @@ func pick(i: u32) -> u32 {
 ```
 
 ```errors
-'p' is already declared: an if let binding cannot reuse the name of a parameter
-'v' is already declared: an if let binding cannot reuse the name of a variable in scope
+'p' is already declared: an if let binding cannot reuse the name of a parameter (first declared at 3:10)
+'v' is already declared: an if let binding cannot reuse the name of a variable in scope (first declared at 11:7)
 ```
 
 After the branch the name is free again: another `if let` can bind it, to a value of another type, and so can a `let`.
@@ -6594,13 +6594,13 @@ func res() -> (t: u32) {
 ```
 
 ```errors
-'n' is already declared: a loop variable cannot reuse the name of a parameter
-'c' is already declared: a loop variable cannot reuse the name of a variable in scope
-'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope
-'total' is already declared: a loop variable cannot reuse the name of a global
-'bytes' is already declared: a loop variable cannot reuse the name of a data block
-'v' is already declared: a loop variable cannot reuse the name of an if let binding in scope
-'t' is already declared: a loop variable cannot reuse the name of a named result
+'n' is already declared: a loop variable cannot reuse the name of a parameter (first declared at 1:12)
+'c' is already declared: a loop variable cannot reuse the name of a variable in scope (first declared at 10:7)
+'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope (first declared at 18:7)
+'total' is already declared: a loop variable cannot reuse the name of a global (first declared at 26:8)
+'bytes' is already declared: a loop variable cannot reuse the name of a data block (first declared at 27:6)
+'v' is already declared: a loop variable cannot reuse the name of an if let binding in scope (first declared at 42:10)
+'t' is already declared: a loop variable cannot reuse the name of a named result (first declared at 50:16)
 ```
 
 After the loop its names are free again. A later loop can use them, for elements of another type, and a `let` after the loop declares a variable of its own. A function of the module has no value: a loop variable of its name hides it in the body.
@@ -6978,7 +6978,7 @@ func d(p: *u32) -> u32 => match p {
 ```errors
 cannot match u8 against int(300)
 cannot match []u8 against a string
-'size' is already declared: a match binding cannot reuse the name of a def
+'size' is already declared: a match binding cannot reuse the name of a def (first declared at 1:5)
 cannot match *u32 against int(0)
 ```
 
@@ -7115,7 +7115,7 @@ func next(n: u32, k: u32) -> u32 => match k {
 ```
 
 ```errors
-'n' is already declared: a match binding cannot reuse the name of a parameter
+'n' is already declared: a match binding cannot reuse the name of a parameter (first declared at 1:11)
 ```
 
 <!-- spec:end -->

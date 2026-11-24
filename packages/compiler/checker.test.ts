@@ -4305,6 +4305,77 @@ describe('a parameter or a named result cannot have a def\'s name', () => {
   })
 })
 
+// #170: a name clash said nothing of where the first declaration is.
+describe('a name declared again says where the first declaration is', () => {
+  // With the module's text, as the command line and the editor check it
+  const errs = (src: string) => typecheck(parse(src).module!, { source: src }).errors.map(e => e.message)
+
+  test('a let, at the name of the variable, the parameter or the module\'s declaration', () => {
+    expect(errs('func f(c: bool) -> u32 {\n  if c {\n    let t: u32 = 1\n  } else {\n    let t: u32 = 2\n  }\n  return t\n}'))
+      .toEqual(["'t' is already declared in this scope (first declared at 3:9)"])
+    expect(errs('func f(n: u32) -> u32 {\n  let n: u32 = 2\n  return n\n}')).toEqual(["'n' is already declared in this scope (first declared at 1:8)"])
+    expect(errs('func f() -> (r: u32) {\n  let r: u32 = 2\n}')).toEqual(["'r' is already declared in this scope (first declared at 1:14)"])
+    // Names of the module: at the name after the keywords
+    const module = 'global g: u32 = 1\ndef k = 30\ndata xs = [1:u8]\nexport func helper() -> u32 => 1\nimport "env" "log" func log(x: u32)\n'
+    expect(errs(`${module}func f() {\n  let g = 1\n  let k = 2\n  let xs = 3\n  let helper = 4\n  let log = 5\n}`)).toEqual([
+      "'g' is already declared in this scope (first declared at 1:8)",
+      "'k' is already declared in this scope (first declared at 2:5)",
+      "'xs' is already declared in this scope (first declared at 3:6)",
+      "'helper' is already declared in this scope (first declared at 4:13)",
+      "'log' is already declared in this scope (first declared at 5:25)",
+    ])
+    // A let that takes its names from fields
+    expect(errs('type P = (x: u32, y: u32)\nfunc f(p: P, x: u32) -> u32 {\n  let (x:, y:) = p\n  return y\n}'))
+      .toEqual(["'x' is already declared in this scope (first declared at 2:14)"])
+  })
+
+  test('a loop variable, an if let binding and a match binding', () => {
+    expect(errs('func f(n: u32) -> u32 {\n  for n in 3 { }\n  return 0\n}'))
+      .toEqual(["'n' is already declared: a loop variable cannot reuse the name of a parameter (first declared at 1:8)"])
+    expect(errs('func f() {\n  for i in 3 {\n    for i in 4 { }\n  }\n}'))
+      .toEqual(["'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope (first declared at 2:7)"])
+    expect(errs('func f(p: ?*u32) -> u32 {\n  if let p = p { return 1 }\n  return 0\n}'))
+      .toEqual(["'p' is already declared: an if let binding cannot reuse the name of a parameter (first declared at 1:8)"])
+    expect(errs('def size = 4\nfunc f(m: u32) -> u32 => match m {\n  size => 1\n  _ => 0\n}'))
+      .toEqual(["'size' is already declared: a match binding cannot reuse the name of a def (first declared at 1:5)"])
+  })
+
+  test('a parameter with a def\'s name, declared before or after the function, or in its test', () => {
+    expect(errs('def k = 3\nfunc f(k: u32) -> u32 => k')).toEqual(["'k' is already declared: a parameter cannot reuse the name of a def (first declared at 1:5)"])
+    expect(errs('func f(k: u32) -> u32 => k\n\ndef k = 3')).toEqual(["'k' is already declared: a parameter cannot reuse the name of a def (first declared at 3:5)"])
+    expect(errs('test "t" {\n  def z = 4\n  func inner(z: u32) -> u32 => z\n  assert inner(9) == 9\n}'))
+      .toEqual(["'z' is already declared: a parameter cannot reuse the name of a def (first declared at 2:7)"])
+  })
+
+  test('in a test, and in an instance of a generic, in the generic\'s source', () => {
+    expect(errs('global count: u32 = 0\ntest "t" {\n  let count = 7\n}')).toEqual(["'count' is already declared in this scope (first declared at 1:8)"])
+    expect(errs('test "t" {\n  func inner() -> u32 => 1\n  let inner = 6\n}')).toEqual(["'inner' is already declared in this scope (first declared at 2:8)"])
+    const generic = 'func f(comptime T: type, x: T) -> u32 {\n  let x = 2\n  return 0\n}\nfunc g(comptime n: u32, y: u32) -> u32 {\n  for n in 3 { }\n  return y\n}\n'
+    // Each instance says it, at the same place
+    expect(errs(`${generic}export func use() -> u32 => f(u32, 1) + f(i32, 2) + g(4, 1)`)).toEqual([
+      "'x' is already declared in this scope (first declared at 1:26), in f(T = u32)",
+      "'x' is already declared in this scope (first declared at 1:26), in f(T = i32)",
+      "'n' is already declared: a loop variable cannot reuse the name of a comptime value parameter (first declared at 5:17), in g(n = 4)",
+    ])
+  })
+
+  test('told in another module, the place names its file', () => {
+    const [lib, main] = [resolve('/p/lib.ents'), resolve('/p/main.ents')]
+    const modules = new Map([
+      [lib, 'export func each(comptime T: type, xs: []T) -> u32 {\n  let t: u32 = 0\n  for x in xs {\n    let t: u32 = 1\n  }\n  return t\n}\n'],
+      [main, 'import "./lib" "each" func each(comptime T: type, xs: []T) -> u32\nexport func f(xs: []u8) -> u32 => each(xs)\n'],
+    ].map(([path, src]) => [path, { module: parse(src).module!, source: src }]))
+    const program = typecheckProgram(modules, main)
+    expect(program.results.get(lib)!.errors.map((e) => e.message)).toEqual(["'t' is already declared in this scope (first declared at 2:7), in each(T = u8)"])
+    expect(program.results.get(main)!.errors.map((e) => e.message))
+      .toEqual(["each(T = u8) cannot be instantiated: 't' is already declared in this scope (first declared at lib.ents:2:7) (lib.ents:4:9)"])
+  })
+
+  test('without the module\'s text it is not said', () => {
+    expect(checkModule('func f(n: u32) -> u32 {\n  let n: u32 = 2\n  return n\n}').errors.map(e => e.message)).toEqual(["'n' is already declared in this scope"])
+  })
+})
+
 describe('the variables of a for, an if let or a match arm', () => {
   const errs = (src: string) => checkModule(src).errors.map(e => e.message)
   const loop = (name: string, what: string) => `'${name}' is already declared: a loop variable cannot reuse the name of ${what}`
