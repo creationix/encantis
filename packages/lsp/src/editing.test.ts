@@ -754,8 +754,9 @@ export func f(n: *Node, e: *Even) -> u32 {
 describe('refused values, clashes and left-out declarations in the editor', () => {
   const hoverAt = (s: ReturnType<typeof server>, file: string, text: string, offset: number) =>
     s.at<{ contents: { value: string } } | null>('onHover', file, text, offset)?.contents.value.replace(/```\w*\n?/g, '').trim() ?? null
-  // The semantic tokens of a document, each as line:col and its type
-  const tokensOf = async (s: ReturnType<typeof server>, file: string) => {
+  // The semantic tokens of a document, each as line:col and its type (or,
+  // with field 4, its modifiers)
+  const tokensOf = async (s: ReturnType<typeof server>, file: string, field = 3) => {
     const { data } = (await s.ask<Promise<{ data: number[] }> | { data: number[] }>('tokens', { textDocument: { uri: file } })) as { data: number[] }
     const out = new Map<string, number>()
     let line = 0
@@ -763,7 +764,7 @@ describe('refused values, clashes and left-out declarations in the editor', () =
     for (let i = 0; i < data.length; i += 5) {
       line += data[i]
       col = data[i] === 0 ? col + data[i + 1] : data[i + 1]
-      out.set(`${line + 1}:${col + 1}`, data[i + 3])
+      out.set(`${line + 1}:${col + 1}`, data[i + field])
     }
     return out
   }
@@ -800,6 +801,9 @@ describe('refused values, clashes and left-out declarations in the editor', () =
     const red = text.indexOf('Red(r: u8)')
     expect(hoverAt(s, file, text, red)).toBe('variant Red:(r:u8) -> B = 1')
     expect((await tokensOf(s, file)).get('2:23')).toBe((await tokensOf(s, file)).get('2:10'))
+    // a declaration, as Blue's is; Red in the pattern is not one
+    const modifiers = await tokensOf(s, file, 4)
+    expect([modifiers.get('2:23'), modifiers.get('2:10'), modifiers.get('4:3')]).toEqual([1, 1, 0])
     const symbols = s.ask<DocumentSymbol[]>('onDocumentSymbol', { textDocument: { uri: file } })
     const b = symbols.find((d) => d.name === 'B')
     expect(b?.children?.map((c) => [c.name, c.detail])).toEqual([['Blue', '(x:u8) -> B'], ['Red', '(r:u8) -> B']])

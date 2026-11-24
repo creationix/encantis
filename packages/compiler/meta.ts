@@ -133,6 +133,9 @@ export interface MetaHint {
   exprStart?: number // Column where full expression starts (for highlight range)
   parentKind?: MetaSymbol['kind'] // For member access: kind of the base object's symbol
   inputParam?: boolean // True if this hint is for a function input parameter position
+  // A declaration that has no symbol of the module: the name of a variant
+  // whose name an earlier declaration has, where its enum declares it
+  declares?: boolean
   // The function a call at this name calls, where the name alone does not
   // say it: an instance of a generic (index_of(T = u32)), the function a
   // comptime function parameter stands for
@@ -689,6 +692,8 @@ class MetaBuilder {
       if (this.checkResult.leftOut.has(v) && e.kind === 'enum' && e.variants[index]) {
         const shown = variantSignature(e.variants[index], decl.ident)
         this.addHint(v.span.start, v.name.length, this.typeRegistry.registerText(shown), undefined, String(index), undefined, 'variant')
+        const hint = this.hints[this.lineMap.positionKey(v.span.start)]
+        if (hint) hint.declares = true
         continue
       }
       if (variant?.kind !== 'variant' || this.checkResult.symbolDefOffsets.get(v.name) !== v.span.start) continue

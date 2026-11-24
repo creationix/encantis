@@ -1474,7 +1474,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         // A variant of an enum the module does not declare, which has no
         // symbol here, is a variant all the same
         tokenType = symbolKindToTokenType('variant');
-        modifiers = symbolKindToModifiers('variant', false);
+        modifiers = symbolKindToModifiers('variant', hint.declares === true);
       } else {
         // No symbol - check the type to determine token type
         const typeStr = meta.types[hint.type]?.type ?? '';
