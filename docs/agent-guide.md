@@ -46,7 +46,11 @@ encantis rename src/sha512.ents:12:compress --json   # structured for automated 
 
 Returns every location (definition + all references) so you can do a precise rename without regex search-and-replace.
 
-Each parameter, local, loop variable and `if let` binding is its own name, found from where it is defined and from each use: two loops that both use `i`, and a parameter named like a global, are renamed apart. A parameter that is also a named result (`acc` in `func round(acc: u64, v: u64) -> (acc: u64)`) is one name with that result, and a `data` or `def` a test declares is that test's own. Fields are not followed: on a field's name (in a `type`, after a point, or naming an argument as in `Pt(x: 1)`) `definition`, `references` and `rename` find nothing, and `hover` after a point shows the member's type.
+Each parameter, local, loop variable and `if let` binding is its own name, found from where it is defined and from each use: two loops that both use `i`, and a parameter named like a global, are renamed apart. A parameter that is also a named result (`acc` in `func round(acc: u64, v: u64) -> (acc: u64)`) is one name with that result, and a `data` or `def` a test declares is that test's own.
+
+A struct's field is renamed too, from where its struct declares it (a `type`, a generic type, a function's named results) or from any place that names it: `p.x`, `p.x = v`, `Pt(x: 1)`, a literal given for `Pt`, `let (x: a) = p`. Rename lists the declaration and the places where a value of *that* struct names the field. Another struct with the same fields is another struct: where a value of one is given to the other, renaming the field of one leaves the program unchecked, so check after renaming. A named result is a field of what its function returns, so its rename also lists the places that take the result apart (`pair(n).count`, `let (count:) = pair(n)`).
+
+With `--json`, those places are marked `"field": true`. At such a place a shorthand `x:` (followed by `,` or `)`) stands for the field and a variable of its name: write it out as `left: x`, so that the variable keeps its name. From a shorthand itself, rename renames the variable; then write `x: left`. A field of a struct another module declares is refused: rename it in that module, and in each module that names it. On a field's name `definition` and `references` find nothing, and `hover` after a point shows the member's type.
 
 ## Queries inside generics
 
@@ -147,5 +151,6 @@ import "./sha512" (
 | `signature <file>:<line>:<name>` | Function signature |
 | `fmt <files...> [--check]` | Auto-format |
 | `ast <file> [-o out]` | Dump AST as JSON |
+| `lsp` | Language server on stdin and stdout (for an editor or an agent's LSP client) |
 
 All query commands support `--json` for structured output.

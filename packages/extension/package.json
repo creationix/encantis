@@ -42,25 +42,29 @@
     "bundle:node": "bun scripts/bundle.ts node",
     "bundle:web": "bun scripts/bundle.ts web",
     "watch": "tsc -watch -p ./",
-    "watch:node": "bun scripts/bundle.ts node && bun build src/extension.ts src/server/lsp.ts --root src --outdir dist/node --target node --format cjs --sourcemap=inline --external vscode --external binaryen --watch",
+    "watch:node": "bun scripts/bundle.ts node && bun build src/extension.ts src/server.ts --root src --outdir dist/node --target node --format cjs --sourcemap=inline --external vscode --external binaryen --watch",
     "watch:web": "bun scripts/bundle.ts web && bun build src/web/extension.ts --outdir dist/web --target browser --format cjs --sourcemap=inline --external vscode --watch",
     "typecheck": "tsc -p ./ --noEmit",
-    "package": "bun vsce package --no-dependencies"
+    "package": "bun vsce package --no-dependencies",
+    "test:vscode": "node test/run.mjs"
   },
   "dependencies": {
     "@encantis/cli": "workspace:*",
     "@encantis/compiler": "workspace:*",
+    "@encantis/lsp": "workspace:*",
     "binaryen": "129.0.0",
     "vscode-languageclient": "^9.0.1",
     "vscode-languageserver": "^9.0.1",
-    "vscode-languageserver-textdocument": "^1.0.11",
     "wabt": "^1.0.36"
   },
   "devDependencies": {
+    "@types/bun": "^1.3.6",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.82.0",
-    "@types/bun": "^1.3.6",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/test-web": "0.0.81",
     "@vscode/vsce": "^3.0.0",
+    "playwright": "1.63.0",
     "typescript": "^5.0.0"
   },
   "contributes": {
