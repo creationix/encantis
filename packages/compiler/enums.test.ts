@@ -5,6 +5,8 @@
 import { describe, expect, test } from 'bun:test'
 import { typecheck, type TypeCheckResult } from './checker'
 import { moduleToWat } from './codegen'
+import { buildMeta } from './meta'
+import { documentSymbols, findReferences, gotoDefinition, hover, hoverText, rename } from './queries'
 import { parse } from './parser'
 import { canonicalKey, byteSize, enumLayout, enumSlots, type EnumRT, type ResolvedType, typeEquals, typeParts, typeRegisters, typeToString, unwrap, wasmTypes } from './types'
 
@@ -1004,5 +1006,72 @@ export memory 1
     expect([call('is-red-at', 200), call('light', 4, 1, 2, 30)]).toEqual([0, 30])
     memory.set([3, 10, 40, 20, 0], 220)
     expect(call('light', 6, 220, 0, 0)).toBe(20)
+  })
+})
+
+describe('the editor (6.7)', () => {
+  const SOURCE = `enum Color { Red, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8) }
+func light(c: Color) -> u8 => match c {
+  Red => 128
+  Rgb(r, _, _) => r
+  Hsl(l:) => l
+}
+func f() -> u8 => light(Hsl(l: 3, h: 1, s: 2))
+func g() -> Color => Red
+`
+  const parsed = parse(SOURCE)
+  const result = typecheck(parsed.module!, { source: SOURCE })
+  // The offset of the n-th `word` (from 0) as a whole name
+  const at = (word: string, n = 0) => {
+    const re = new RegExp(`(?<![A-Za-z0-9_-])${word}(?![A-Za-z0-9_-])`, 'g')
+    let m: RegExpExecArray | null = null
+    for (let i = 0; i <= n; i++) m = re.exec(SOURCE)
+    if (!m) throw new Error(`no ${word} ${n}`)
+    return m.index
+  }
+  const shown = (offset: number) => {
+    const r = hover(SOURCE, parsed.module!, result, offset)
+    return r ? hoverText(r) : null
+  }
+
+  test('hover', () => {
+    expect(shown(at('Color'))).toBe('type Color: enum { Red, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8) }')
+    expect(shown(at('Color', 1))).toBe('type Color: enum { Red, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8) }')
+    expect(shown(at('Red'))).toBe('variant Red: Color = 0')
+    expect(shown(at('Red', 1))).toBe('variant Red: Color = 0')
+    expect(shown(at('Rgb'))).toBe('variant Rgb: (r: u8, g: u8, b: u8) -> Color = 1')
+    expect(shown(at('Hsl', 2))).toBe('variant Hsl: (h: u8, s: u8, l: u8) -> Color = 2')
+    expect(shown(at('r', 1))).toBe('local r: u8')
+    expect(shown(at('l'))).toBe('field l: u8')
+    expect(shown(at('l', 3))).toBe('field l: u8')
+  })
+
+  test('definition and references', () => {
+    const def = (offset: number) => gotoDefinition(SOURCE, parsed.module!, result, offset)?.location.offset
+    expect(def(at('Red', 2))).toBe(at('Red'))
+    expect(def(at('Hsl', 2))).toBe(at('Hsl'))
+    expect(def(at('Color', 1))).toBe(at('Color'))
+    expect(def(at('r', 2))).toBe(at('r', 1))
+    expect(def(at('l', 3))).toBe(at('l'))
+    const refs = (offset: number) => findReferences(SOURCE, parsed.module!, result, offset)?.references.map((r) => r.offset)
+    expect(refs(at('Red'))).toEqual([at('Red', 1), at('Red', 2)])
+    expect(refs(at('l'))).toEqual([at('l', 1), at('l', 3)])
+  })
+
+  test('rename finds an enum, a variant and a payload field everywhere the module names it', () => {
+    const places = (offset: number) => rename(SOURCE, parsed.module!, result, offset)?.locations.map((l) => l.offset)
+    expect(places(at('Color'))).toEqual([at('Color'), at('Color', 1), at('Color', 2)])
+    expect(places(at('Hsl'))).toEqual([at('Hsl'), at('Hsl', 1), at('Hsl', 2)])
+    expect(places(at('l'))).toEqual([at('l'), at('l', 1), at('l', 3)])
+  })
+
+  test('the outline and the metadata list the enum and its variants', () => {
+    expect(documentSymbols(SOURCE, parsed.module!, result).map((s) => `${s.kind} ${s.name}`).slice(0, 4)).toEqual(['type Color', 'variant Red', 'variant Rgb', 'variant Hsl'])
+    const meta = buildMeta(parsed.module!, SOURCE, { checkResult: result })
+    const variant = meta.symbols.find((s) => s.name === 'Rgb')
+    expect(variant?.kind).toBe('variant')
+    expect(variant?.value).toBe('1')
+    expect(meta.types[variant?.type ?? -1]?.type).toBe('(r: u8, g: u8, b: u8) -> Color')
+    expect(meta.symbols.find((s) => s.name === 'r' && s.kind === 'local')).toBeDefined()
   })
 })

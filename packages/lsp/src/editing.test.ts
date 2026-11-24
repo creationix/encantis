@@ -132,6 +132,34 @@ describe('rename', () => {
     throw new Error('not refused')
   }
 
+  const PAINT = `enum Color { Red, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8) }
+func light(c: Color) -> u8 => match c {
+  Red => 128
+  Rgb(r, _, _) => r
+  Hsl(l:) => l
+}
+func pick(comptime T: type, x: T) -> u32 => match x {
+  Red => 1
+  _ => 0
+}
+func f() -> u32 => light(Hsl(l: 3, h: 1, s: 2)) + pick(Red)
+`
+
+  test('an enum, a variant and a payload field', async () => {
+    const enumRenamed = await renamed(PAINT, PAINT.indexOf('Color'), 'Paint')
+    expect(enumRenamed).toContain('enum Paint {')
+    expect(enumRenamed).toContain('func light(c: Paint)')
+    const variant = await renamed(PAINT, PAINT.indexOf('Red'), 'Crimson')
+    expect(variant.match(/Crimson/g)?.length).toBe(4)
+    expect(variant).not.toContain('Red')
+    // A shorthand is written out where only the field is renamed
+    const field = await renamed(PAINT, PAINT.indexOf('l: u8'), 'light')
+    expect(field).toContain('Hsl(h: u8, s: u8, light: u8)')
+    expect(field).toContain('Hsl(light: l) => l')
+    expect(field).toContain('Hsl(light: 3, h: 1, s: 2)')
+    expect(await refused(PAINT, PAINT.indexOf('Red'), 'red')).toContain("'red' is not a type's name")
+  })
+
   test('a local, at its declaration and at its uses', async () => {
     const out = await renamed(SHAPES, SHAPES.indexOf('w * h'), 'width')
     expect(out).toContain('let width = p.x * k')

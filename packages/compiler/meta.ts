@@ -4,7 +4,7 @@
 import type * as AST from './ast'
 import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, type TypeCheckResult } from './checker'
 import { ownName, callOf, memberIn, instancesListed, applicationsListed, genericAround, type GenericInfo } from './instances'
-import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow } from './types'
+import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow, enumText } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
 import { buildDataSection, type DataRef } from './data-pack'
@@ -109,7 +109,8 @@ export interface MetaSymbol {
   name: string
   // typeparam: a generic's `comptime T: type`; comptime: a generic
   // function's comptime function parameter, `comptime before: (T, T) -> bool`
-  kind: 'func' | 'type' | 'unique' | 'global' | 'local' | 'param' | 'return' | 'data' | 'def' | 'typeparam' | 'comptime'
+  // variant: a variant of an enum, whose value is its tag
+  kind: 'func' | 'type' | 'unique' | 'global' | 'local' | 'param' | 'return' | 'data' | 'def' | 'typeparam' | 'comptime' | 'variant'
   type: number // Index into types array
   def: string // "line:col" (0-indexed)
   refs: string[] // ["line:col", ...]
@@ -297,6 +298,9 @@ class MetaBuilder {
         break
       case 'TypeDecl':
         this.collectTypeDecl(decl)
+        break
+      case 'EnumDecl':
+        this.collectEnumDecl(decl)
         break
       case 'DataDecl':
         this.collectData(decl)
@@ -655,6 +659,25 @@ class MetaBuilder {
     this.typeRegistry.registerWithSymbol(sym.type, symbolIndex)
   }
 
+  // An enum is a type; each of its variants a name of the module, a value
+  // of the enum whose value is its tag
+  private collectEnumDecl(decl: AST.EnumDecl): void {
+    const sym = this.checkResult.symbols.get(decl.ident)
+    if (!sym || sym.kind !== 'type') return
+    // Shown written out: enum { Red, Rgb(r: u8, g: u8, b: u8) }
+    const e = unwrap(sym.type)
+    const symbolIndex = this.addSymbol(decl.ident, 'type', e.kind === 'enum' ? enumText(e) : sym.type, decl.identSpan.start)
+    this.typeRegistry.registerWithSymbol(sym.type, symbolIndex)
+    for (const v of decl.variants) {
+      const variant = this.checkResult.symbols.get(v.name)
+      if (variant?.kind !== 'variant' || this.checkResult.symbolDefOffsets.get(v.name) !== v.span.start) continue
+      // A payload variant as what it is constructed from: (r: u8) -> Color
+      const fields = e.kind === 'enum' ? e.variants[variant.index]?.fields : null
+      const shown = fields ? `(${fields.map((f) => (f.name ? `${f.name}: ${typeToString(f.type)}` : typeToString(f.type))).join(', ')}) -> ${decl.ident}` : variant.type
+      this.addSymbol(v.name, 'variant', shown, v.span.start, String(variant.index))
+    }
+  }
+
   private collectDef(decl: AST.DefDecl): void {
     const mangledKey = `${decl.ident}$${decl.span.start}`
     const sym = this.checkResult.symbols.get(decl.ident) ?? this.checkResult.symbols.get(mangledKey)
@@ -792,7 +815,7 @@ class MetaBuilder {
 
     // Get doc comment - only for module-level declarations
     let doc: string | null = null
-    if (kind === 'func' || kind === 'type' || kind === 'unique' || kind === 'global' || kind === 'data' || kind === 'def') {
+    if (kind === 'func' || kind === 'type' || kind === 'unique' || kind === 'global' || kind === 'data' || kind === 'def' || kind === 'variant') {
       const declLine = this.lineMap.offsetToPosition(offset).line
       doc = findDocComment(this.comments, declLine)
     }
@@ -1181,8 +1204,29 @@ class MetaBuilder {
     }
   }
 
+  // A variant pattern names its variant, and each name it binds is a local,
+  // defined where it is written, of its field's type
+  private generateHintsForVariantPattern(pattern: AST.MatchPattern): void {
+    if (pattern.kind !== 'variant' && pattern.kind !== 'constructor') return
+    const variant = this.usedSymbol({ kind: 'IdentExpr', name: pattern.type, span: pattern.span })
+    if (variant !== undefined && this.checkResult.symbolRefs.has(pattern.span.start)) {
+      this.addHint(pattern.span.start, pattern.type.length, this.symbols[variant].type, variant)
+    }
+    if (pattern.kind !== 'constructor') return
+    for (const part of pattern.elements) {
+      const at = part.kind === 'namedShort' ? part.span.start : part.pattern.kind === 'binding' ? part.pattern.span.start : null
+      const name = part.kind === 'namedShort' ? part.field : part.pattern.kind === 'binding' ? part.pattern.name : null
+      if (at === null || name === null) continue
+      const type = this.bindingType(at, 'Binding')
+      if (!type) continue
+      const symbolIndex = this.symbolIndexByDef.get(at) ?? this.addSymbol(name, 'local', type, at)
+      this.addHint(at, name.length, this.typeRegistry.register(type), symbolIndex)
+    }
+  }
+
   // The binding of an if let or elif let is a local, defined where its name stands
   private generateHintsForIfLetBinding(arm: AST.IfExpr | AST.ElifBranch): void {
+    if (arm.pattern) this.generateHintsForVariantPattern(arm.pattern)
     if (arm.pattern?.kind !== 'binding') return
     const at = arm.pattern.span.start
     const type = this.bindingType(at, 'Binding')
@@ -1442,6 +1486,7 @@ class MetaBuilder {
       case 'MatchExpr':
         this.generateHintsForExpr(expr.subject)
         for (const arm of expr.arms) {
+          for (const pattern of arm.patterns) this.generateHintsForVariantPattern(pattern)
           if (arm.body.kind === 'Block') {
             this.generateHintsForBlock(arm.body)
           } else if (arm.body.kind === 'ArrowBody') {

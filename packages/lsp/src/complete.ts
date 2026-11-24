@@ -26,7 +26,7 @@ export interface Source {
   meta: MetaOutput;
 }
 
-const MODULE_KINDS: MetaSymbol['kind'][] = ['func', 'type', 'unique', 'global', 'data', 'def'];
+const MODULE_KINDS: MetaSymbol['kind'][] = ['func', 'type', 'unique', 'global', 'data', 'def', 'variant'];
 const OWN_KINDS: MetaSymbol['kind'][] = ['param', 'local', 'return', 'typeparam', 'comptime'];
 
 const ITEM_KIND: Record<MetaSymbol['kind'], CompletionItemKind> = {
@@ -41,6 +41,7 @@ const ITEM_KIND: Record<MetaSymbol['kind'], CompletionItemKind> = {
   def: CompletionItemKind.Constant,
   typeparam: CompletionItemKind.TypeParameter,
   comptime: CompletionItemKind.Function,
+  variant: CompletionItemKind.EnumMember,
 };
 
 function offsetOf(text: string, pos: string): number {

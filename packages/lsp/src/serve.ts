@@ -77,6 +77,7 @@ function kindToPrefix(kind: MetaSymbol['kind']): string {
     case 'type': return 'type';
     case 'typeparam':
     case 'comptime': return 'comptime';
+    case 'variant': return 'variant';
     default: return '';
   }
 }
@@ -125,6 +126,9 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
     case 'typeparam':
     case 'comptime':
       return `comptime ${symbol.name}: ${typeStr}`;
+    // A variant, with its tag
+    case 'variant':
+      return `variant ${symbol.name}: ${typeStr}${symbol.value !== undefined ? ` = ${symbol.value}` : ''}`;
     default:
       return `${symbol.name}: ${typeStr}`;
   }
@@ -243,7 +247,8 @@ function symbolKindToTokenType(kind: MetaSymbol['kind']): number {
     case 'data':
       return 7; // macro (data section allocation)
     case 'def':
-      return 7; // macro (compile-time constant)
+    case 'variant':
+      return 7; // macro (compile-time constant; a variant is a constant of its enum)
     default:
       return 3; // variable
   }
