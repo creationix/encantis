@@ -4398,3 +4398,49 @@ describe('the export names of tests', () => {
     expect(parsed && typecheck(parsed, { includeTests: false }).errors.map(e => e.message)).toEqual([refused('test:xor')])
   })
 })
+
+describe('the names a test declares', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const again = (name: string) => `'${name}' is already declared in this test`
+
+  // The test build names what a test declares under the test: two
+  // functions or imports of one name in one test would be one name.
+  test('a test gives a name to one function or import', () => {
+    expect(errs('test "a" {\n  func h(x: u32) -> u32 => x\n  func h(x: u64) -> u64 => x + 1\n  assert h(1:u64) == 2\n}')).toEqual([again('h')])
+    expect(errs(`
+      test "a" {
+        import "env" "f" func f() -> u32
+        func f() -> u32 => 1
+        import "env" "g" global g: u32
+        import "env" "h" global g: u32
+        import "env" "k" func k() -> u32
+        import "env" "k" func k() -> u32
+        assert true
+      }
+    `)).toEqual([again('f'), again('g'), again('k')])
+    // A declaration the module's names refuse is reported once, for that.
+    expect(errs('global x: u32 = 1\ntest "a" {\n  func x() -> u32 => 1\n  import "env" "x" func x() -> u32\n  assert true\n}')).toEqual([
+      "'x' is already declared",
+      "'x' is already declared",
+    ])
+  })
+
+  test('a test and the tests it holds, or two tests, each give a name once', () => {
+    expect(errs(`
+      func f() -> u32 => 0
+      test "a" {
+        func f() -> u32 => 1
+        import "env" "g" func g() -> u32
+        test "x" {
+          func f() -> u32 => 2
+          import "env" "g" func g() -> u32
+          assert f() == 2
+        }
+      }
+      test "b" {
+        import "env" "f" func f() -> u32
+        assert true
+      }
+    `)).toEqual([])
+  })
+})

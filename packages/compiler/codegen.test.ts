@@ -4386,7 +4386,7 @@ describe('the functions and exports of tests', () => {
   // Each test is a function exported as test: and its name, which no export
   // of the module can begin with, and its function and those it declares
   // have names in the WAT that no function of the module can have.
-  const runTests = async (source: string) => (await import('./test-utils')).runTestsOfSource(source)
+  const runTests = async (source: string, others?: Record<string, string>) => (await import('./test-utils')).runTestsOfSource(source, others)
 
   test('a module function or export named as the test build names a test', async () => {
     expect(await runTests(`
@@ -4431,6 +4431,50 @@ describe('the functions and exports of tests', () => {
         assert h() == 3
       }
     `)).toEqual({ ran: ['a', 'a_b', 'g > x', 'g'], failed: [] })
+  })
+
+  test('what tests import is told apart from the module and from other tests', async () => {
+    // A host function or global a test imports is named in the WAT under
+    // the test, beside a module function of its name and the same import in
+    // another test or group; a global's parts are named apart, as a module
+    // global's are. A function a test imports from another module is that
+    // module's, whatever the test calls it, and leaves the module's function
+    // of that name to the module.
+    const lib = 'export func one() -> u32 => 1\nexport global five: u32 = 5\n'
+    expect(await runTests(`
+      func f() -> u32 => 2
+      func one() -> u32 => 3
+      export func g() -> u32 => f() + one()
+      test "a" {
+        import "env" "f" func f() -> u32
+        import "env" "p" global p: (x: u32, y: u32)
+        import "env" "p_x" global p_x: u32
+        assert g() == 5
+        assert p.x == 0 && p_x == 0
+      }
+      test "b" {
+        import "env" "f" func f() -> u32
+        import "env" "p" global p: (x: u32, y: u32)
+        assert p.y == 0
+      }
+      test "c" {
+        import "env" "f" func f() -> u32
+        test "x" { assert true }
+        test "y" { assert f() == 0 }
+      }
+      test "d" {
+        import "./lib" ( "one" func one() -> u32 )
+        assert one() == 1
+        assert g() == 5
+      }
+      test "e" {
+        import "./lib" (
+          "one" func uno() -> u32
+          "five" global five: u32
+        )
+        assert uno() == 1 && five == 5
+      }
+    `, { 'lib.ents': lib })).toEqual({ ran: ['a', 'b', 'c > x', 'c > y', 'd', 'e'], failed: ['c > y'] })
   })
 
   test('the test build exports each test as test: and its name', async () => {

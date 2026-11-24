@@ -2835,15 +2835,29 @@ class CheckContext {
     this.currentScope = testScope
     const prevVariables = this.variables
     this.variables = new Map()
+    // A test gives a name to one function or import: the test build names
+    // each under the test (reference 12.6), and two would be one name. One
+    // the module's names refused already (takenByAnother) takes none.
+    const named = new Set<string>()
+    const once = (name: string | undefined, offset: number, from: number): void => {
+      if (name === undefined || this.errors.slice(from).some((e) => e.offset === offset)) return
+      if (named.has(name)) this.error(offset, `'${name}' is already declared in this test`)
+      named.add(name)
+    }
     for (const item of decl.children) {
       switch (item.kind) {
         case 'TestDecl':
           this.checkTestDecl(item)
           break
         case 'ImportDecl': {
+          const from = this.errors.length
           const known = new Set(this.moduleScope.symbols.keys())
           this.collectImport(item, true)
           for (const name of this.moduleScope.symbols.keys()) if (!known.has(name)) this.testOnly.add(name)
+          for (const imported of item.items) {
+            if (imported.item.kind === 'ImportFunc') once(imported.item.ident ?? imported.name, imported.span.start, from)
+            if (imported.item.kind === 'ImportGlobal') once(imported.item.ident, imported.span.start, from)
+          }
           break
         }
         case 'FuncDecl':
@@ -2858,7 +2872,11 @@ class CheckContext {
             break
           }
           if (item.ident && !this.moduleScope.symbols.has(item.ident)) this.testOnly.add(item.ident)
-          this.collectFunc(item, true)
+          {
+            const from = this.errors.length
+            this.collectFunc(item, true)
+            once(item.ident ?? undefined, item.span.start, from)
+          }
           // Not one that was refused the name: the module's functions keep it.
           if (item.ident && !this.shared(item.ident)) {
             const declared = this.moduleScope.symbols.get(item.ident)

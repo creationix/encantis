@@ -9951,8 +9951,8 @@ A group holds declarations and tests. Statements written in a group, beside its 
 A test can declare `def`, `data`, functions and imports, and these are the test's own. They are seen in the test from the declaration to its end, and in the tests nested after it. Above the declaration the name is the module's, or unknown (`unknown identifier 'f'`) where the module has none. Module code cannot use them.
 
 - A `def` or a `data` block declared in a test replaces a module name of the same name inside that test only, below its declaration. The rest of the module reads the name as if the test were not there.
-- A function declared in a test is called by its name in the test, below its declaration, and there it replaces a module function of that name. Module code, a generic's instances included, calls the module's function. The compiler gets this wrong in three ways (known bugs). In the test build a `data` block or a function declared in a test is what its name means in the whole test, above its declaration too, where the checker took the name for the module's. It gives the test's function to the tests that come after it in the file: a call written in one of them calls the test's function, while module code they call still calls the module's. And in the test build it gives the module's function of that name the test function's parameters: if their types differ, the test build does not assemble, and if their names differ, the compiler stops with an internal error. Two tests can each declare a function of one name: with the same parameter types each test calls its own, and with different parameter types the test build does not assemble (`type mismatch in call`, the same known bugs). What is safe: give each function and `data` a test declares a name no module declaration has, declare it at the top of the test, and give functions of one name in different tests the same parameter types.
-- An import declared in a test is part of the test build only: a host function, a host global or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. A host global imported there gets the stand-in of [12.6](#126-the-test-host), so a test can take a plain host reference to pass to the code it tests. As for functions, the compiler gives an import to the later tests too.
+- A function declared in a test is called by its name in the test, below its declaration, and there it replaces a module function of that name. Module code, a generic's instances included, calls the module's function. The compiler gets this wrong in three ways (known bugs). In the test build a `data` block or a function declared in a test is what its name means in the whole test, above its declaration too, where the checker took the name for the module's. It gives the test's function to the tests that come after it in the file: a call written in one of them calls the test's function, while module code they call still calls the module's. And in the test build it gives the module's function of that name the test function's parameters: if their types differ, the test build does not assemble, and if their names differ, the compiler stops with an internal error. Two tests can each declare a function of one name: with the same parameter types each test calls its own, and with different parameter types the test build does not assemble (`type mismatch in call`, the same known bugs). What is safe: give each function and `data` a test declares a name no module declaration has, declare it at the top of the test, and give functions of one name in different tests the same parameter types, and the functions a test imports the signatures of the functions of their names elsewhere in the module.
+- An import declared in a test is part of the test build only: a host function, a host global or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. A host global imported there gets the stand-in of [12.6](#126-the-test-host), so a test can take a plain host reference to pass to the code it tests. The compiler gets an import wrong as it does a function (known bugs): in the test build an import is what its name means in the whole test, above its declaration too, and it is given to the tests that come after it in the file. And in the test build the signature of a function a test imports is given to the module's function of that name and to the function of that name an earlier test imports: where the two differ, the test build does not assemble.
 
 <!-- spec:begin compile -->
 
@@ -9970,7 +9970,7 @@ test "a test's def is seen from its declaration on" {
 <!-- spec:end -->
 
 
-A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)):
+A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)). Nor do two functions or imports of one test share a name, whatever their parameters: the functions of a test do not share a name as the module's do. A test nested in it can declare its own of the name, and so can another test.
 
 <!-- spec:begin compile -->
 
@@ -9984,6 +9984,9 @@ test "what a test cannot declare" {
   func hash(k: u32) -> u32 => 0
   func pick(comptime T: type, a: T) -> T => a
   func Box(comptime T: type) -> type => (v: T)
+  func twice(x: u32) -> u32 => x * 2
+  func twice(x: u64) -> u64 => x * 2
+  import "env" "twice" func twice(x: f64) -> f64
   assert size == 4
 }
 ```
@@ -9993,6 +9996,8 @@ test "what a test cannot declare" {
 'hash' is the name of several functions of the module: a function declared in a test cannot take it over
 a generic function is declared at module level, not inside a test
 a generic type is declared at module level, not inside a test
+'twice' is already declared in this test
+'twice' is already declared in this test
 ```
 
 <!-- spec:end -->
@@ -10025,19 +10030,30 @@ Tests run without the program's host. `encantis test` gives each import of the m
 
 In the test build each test that is run, one with a name that holds no tests, is a function exported as `test:` followed by its name: the names of its groups and its own joined by `__`, with each character that is not an ASCII letter, a digit or `_` replaced by `_`. A character is a code point, so `é` and `😀` are one `_` each. The test `rectangles > one row` of [12.5](#125-running-tests) is exported as `test:rectangles__one_row`. A test without a name adds nothing to the names of the tests it holds. A group is not exported, so a group and a test beside it can share a name. Two tests exported under one name are an error at the second, whether their names are the same or become the same this way (`tests "a b" and "a_b" are both exported as 'test:a_b' in the test build: give each test a name of its own`). As any error in a test, it is reported where the tests are checked, by `encantis check` and `encantis test`, and not by `encantis compile`. The exports of the tests come in the order the tests run, so a host can run the tests itself: it calls each export whose name begins with `test:`, in turn.
 
-No export of the module begins with `test:` ([7.2](#72-exports)), and in the WAT the functions of the tests, and those the tests declare, have names that no function of the module can have. So the module names its functions and exports as it likes: a function `test_xor` and an export `"test_and"` stand beside the tests `"xor"` and `"and"`:
+No export of the module begins with `test:` ([7.2](#72-exports)). In the WAT, each test's function, and each function the test declares and each function and global it imports from the host, has a name of the test's own, which no declaration of the module or of another test can have. A function or a global a test imports from another source module is that module's, in the program once whatever names the tests give it. So the module names its functions and exports as it likes, and each test what it declares and imports: a function `test_xor` and an export `"test_and"` stand beside the tests `"xor"` and `"and"`, and two tests each import the host's `f` and `level` beside the module's function `f`:
 
 <!-- spec:begin compile -->
 
 ```ents
 export func test_xor(a: u32, b: u32) -> u32 => a ^ b
 export "test_and" func both(a: u32, b: u32) -> u32 => a & b
+export func f() -> u32 => 1
 
 test "xor" {
   assert test_xor(5, 3) == 6
 }
 test "and" {
   assert both(5, 3) == 1
+}
+test "imports" {
+  import "env" "f" func f() -> u32
+  import "env" "level" global level: u32
+  assert level == 0
+}
+test "a group's imports" {
+  import "env" "f" func f() -> u32
+  import "env" "level" global level: u32
+  test "seen by its tests" { assert level == 0 }
 }
 ```
 
