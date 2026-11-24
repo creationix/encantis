@@ -3740,6 +3740,8 @@ describe('the address of an element, where a pointer is expected', () => {
       func k(p: P) -> P => &p
       func l(c: bool, p: *i32, q: *i32) -> *i32 => &(if c { p } else { q })
       func m(p: ?*i32, q: *i32) -> *i32 => &(p ?? q)
+      func o() -> u32 => (&(4096:*u32)) as u32
+      func q() -> u32 => (&(0:?*u32)) as u32
       func n() -> u32 {
         let s: []u8 = "ab"
         let t = &s
@@ -3760,6 +3762,8 @@ describe('the address of an element, where a pointer is expected', () => {
       "'p' is already a pointer (P): drop the &",
       "this value is already a pointer (*i32): drop the &",
       "this value is already a pointer (*i32): drop the &",
+      "this value is already a pointer (*u32): drop the &",
+      "this value is already a pointer (?*u32): drop the &",
       "'s' is already a pointer ([]u8): drop the &",
     ])
   })
@@ -3795,12 +3799,37 @@ describe('the address of an element, where a pointer is expected', () => {
     expect(errs).toEqual(["'x' is already a pointer (*i32): drop the &, in g(T = *i32)"])
   })
 
-  test('of a cast that already failed says nothing more', () => {
+  // A cast binds tighter than &: `&x as T` is `&(x as T)`. What was meant
+  // is said where x has an address, and only there.
+  test('of a cast says what was meant where what is cast has an address', () => {
     const errs = typecheck(parse(`
       type Pt = (x: i32, y: i32)
-      func f(base: [*]Pt, k: u32) -> [*]Pt => &base[k] as [*]Pt
+      func a(base: [*]Pt, k: u32) -> [*]Pt => &base[k] as [*]Pt
+      func b(base: [*]Pt, k: u32) -> u32 => &base[k] as u32
+      func c(p: [*]u32) -> u32 => &p[1] as u32
+      func d(pp: **i32) -> u32 => &pp.* as u32
+      func e(p: *Pt) -> *u8 => &p.x as *u8
+      func f(m: *[3x4]u8) -> [*]u8 => &m[1] as [*]u8
+      func g(a: i32) -> u32 {
+        let s: Pt = (a, 2)
+        return (&s.x as *u8) as u32
+      }
+      func h(a: [4]u32) -> u32 => (&a[1] as *u8) as u32
+      func i(p: *Pt) -> *u8 => &(p.x as *u8)
+      func j(z: *[!]u8) -> [*]u8 => &z[0] as [*]u8
     `).module as AST.Module).errors.map((e) => e.message)
-    expect(errs).toEqual(['cannot cast Pt to [*]Pt'])
+    expect(errs).toEqual([
+      'cannot cast Pt to [*]Pt (a cast binds tighter than &: for the address of base[k], write (&base[k]) as [*]Pt)',
+      'cannot cast Pt to u32 (a cast binds tighter than &: for the address of base[k], write (&base[k]) as u32)',
+      '& requires a literal, a value in memory, or an element of an array, slice or many-pointer (a cast binds tighter than &: for the address of p[1], write (&p[1]) as u32)',
+      '& requires a literal, a value in memory, or an element of an array, slice or many-pointer (a cast binds tighter than &: for the address of pp.*, write (&pp.*) as u32)',
+      "'p.x as *u8' is already a pointer (*u8): drop the & (a cast binds tighter than &: for the address of p.x, write (&p.x) as *u8)",
+      "'m[1] as [*]u8' is already a pointer ([*]u8): drop the & (a cast binds tighter than &: for the address of m[1], write (&m[1]) as [*]u8)",
+      "'s.x as *u8' is already a pointer (*u8): drop the &",
+      "'a[1] as *u8' is already a pointer (*u8): drop the &",
+      "'(p.x as *u8)' is already a pointer (*u8): drop the &",
+      "index 0 on *[!]u8 requires 'if let' or '??': its length is only found at run time, by a scan (no optional type for u8)",
+    ])
   })
 
   test('of a string, an array or a tuple literal is as before', () => {
@@ -3825,6 +3854,41 @@ describe('the address of an element, where a pointer is expected', () => {
       "cannot take the address of an element of *[!]u8: make a slice of it first, (z.ptr, z.len), and take the address of the slice's element",
       "cannot take the address of an element of *[!]*u8: make a slice of it first, (z.ptr, z.len), and take the address of the slice's element",
     ])
+  })
+
+  // At d4bce9e such an address was taken a second time where the operand
+  // was inferred again: `&b.id` given to a function of a shared name was a
+  // **u32, and refused.
+  test('of a place inferred again is taken once', async () => {
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      type Node = (id: u32, pos: Pt, next: ?*Node, row: [4]u8)
+      memory 1
+      func pick(p: *i32) -> u32 => 1
+      func pick(p: *u32) -> u32 => 2
+      func pick(p: *?*Node) -> u32 => 3
+      func pick(p: *Pt) -> u32 => 4
+      func pick(p: *[4]u8) -> u32 => 5
+      func id(comptime T: type, x: T) -> T => x
+      func len2(p: *Pt) -> i32 => p.x * p.x + p.y * p.y
+      export func shared(n: u32) -> u32 {
+        let b = n as *mut Node
+        return pick(&b.pos.x) + pick(&b.id) * 10 + pick(&b.next) * 100 + pick(&b.pos) * 1000 +
+          pick(&b.row) * 10000 + pick(&(b as *u32).*) * 100000
+      }
+      export func generic(n: u32) -> u32 {
+        let b = n as *Node
+        return ((id(&b.pos.y) as u32) - n) + ((id(&b.next) as u32) - n) * 100 + ((id(&b.row) as u32) - n) * 10000
+      }
+      export func method(n: u32) -> i32 {
+        let b = n as *mut Node
+        b.pos = Pt(3, 4)
+        return (&b.pos).len2()
+      }
+    `)
+    expect(x.shared(64)).toBe(254321)
+    expect(x.generic(64)).toBe(161208)
+    expect(x.method(64)).toBe(25)
   })
 
   test('of a pointer or a slice that lies in memory is where it is', async () => {

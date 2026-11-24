@@ -919,6 +919,8 @@ class CheckContext {
   // TypeCheckResult.addressed). Whether one is depends only on its own
   // types, so a look that marks one leaves it as the check would.
   addressed = new Set<AST.Expr>()
+  // The casts written right after &, `&p[k] as T` (see castPrecedence)
+  underAddress = new WeakSet<AST.CastExpr>()
   // Range assignments that fill (see TypeCheckResult.fills)
   fills = new Set<AST.SliceExpr>()
   // The element an assignment writes to, while its target is inferred: an
@@ -5446,7 +5448,8 @@ class CheckContext {
         const from = this.inferExpr(expr.expr)
         const to = this.resolveType(expr.type)
         const problem = this.castProblemOf(expr.expr, from, to)
-        if (problem) this.error(expr.span.start, problem)
+        // The cast & is before, `&p[k] as T`, says what was meant.
+        if (problem) this.error(expr.span.start, `${problem}${this.underAddress.has(expr) ? this.castPrecedence(expr) : ''}`)
         return to
       }
 
@@ -7210,6 +7213,7 @@ class CheckContext {
       }
     }
     const said = this.errorsReported
+    if (expr.op === '&' && expr.operand.kind === 'CastExpr') this.underAddress.add(expr.operand)
     const operandType = this.inferExpr(expr.operand)
     const operand = unwrap(operandType)
 
@@ -7237,6 +7241,14 @@ class CheckContext {
           const addr = this.addressOfIndex(expr.operand)
           if (addr) return addr
         }
+        // Inferred again (the argument of a call of a shared name, of a
+        // generic, a method's receiver), a place & gave the address of has
+        // that address as its type already: it is not taken twice.
+        if (this.addressed.has(expr.operand)) return operandType
+        // `&x as T` is `&(x as T)`: where the cast was refused and its
+        // message said what was meant (see castPrecedence), the & is taken
+        // as meant, its value the cast's type, and nothing more is said.
+        if (expr.operand.kind === 'CastExpr' && this.errorsReported !== said && this.castPrecedence(expr.operand)) return operandType
         // A value that lies in memory (a field of a struct a pointer points
         // to, and what is in it, a pointer or a slice too): where it is, as
         // a pointer as mutable as the place.
@@ -7251,16 +7263,20 @@ class CheckContext {
         const litExpr = addressedLiteral(innerExpr)
         const literal = litExpr.kind === 'LiteralExpr' || litExpr.kind === 'ArrayExpr' ||
           litExpr.kind === 'RepeatExpr' || litExpr.kind === 'TupleExpr'
+        // A number written as a pointer, (4096:*u32) or (0:?*u32), is no
+        // literal laid out in a cell: it is the address itself.
+        const numeral = litExpr.kind === 'LiteralExpr' && litExpr.value.kind !== 'string'
         // A string literal is its own address, as it is without the &.
-        if (literal && (operandType.kind === 'pointer' || operandType.kind === 'slice')) return operandType
+        if (literal && !numeral && (operandType.kind === 'pointer' || operandType.kind === 'slice')) return operandType
         // A row of a packed array, *[NxM]T, is a place, and the *[M]T it is
         // read as is its address: &m.tiles[0], &p[1].
         if (this.packedRow(expr.operand)) return operandType
         // A pointer, a slice or a many-pointer that has no place in memory
-        // (a variable, a call's result, a cast) has no address to give, and
-        // it is no cell's: & before one is refused, not read as the pointer.
+        // (a variable, a call's result, a cast, a number) has no address to
+        // give, and it is no cell's: & before one is refused, not read as
+        // the pointer.
         const pointerLike = unwrap(operandType)
-        if (!literal && (pointerLike.kind === 'pointer' || pointerLike.kind === 'slice')) {
+        if ((!literal || numeral) && (pointerLike.kind === 'pointer' || pointerLike.kind === 'slice')) {
           if (!unresolved(operandType) && this.errorsReported === said) this.error(expr.span.start, this.alreadyPointer(expr.operand, operandType))
           return operandType
         }
@@ -7306,7 +7322,11 @@ class CheckContext {
             ? `'${name}' has no address: a variable is held in registers`
             : `'${exprText(held) ?? name}' has no address: it is part of '${name}', a variable held in registers`)
         } else {
-          this.error(expr.span.start, `& requires a literal, a value in memory, or an element of an array, slice or many-pointer`)
+          // `&p[1] as u32` is `&(p[1] as u32)`: where that is said (see
+          // castPrecedence), the & is taken as meant, its value the cast's.
+          const hint = this.castPrecedence(innerExpr)
+          this.error(expr.span.start, `& requires a literal, a value in memory, or an element of an array, slice or many-pointer${hint}`)
+          if (hint) return operandType
         }
         return pointer(operandType, false, true)
       }
@@ -7324,32 +7344,41 @@ class CheckContext {
   }
 
   // What & before a pointer, slice or many-pointer that has no place in
-  // memory is told. A cast binds tighter than &, so `&p[1] as [*]u8` is
-  // the cast's &: where the cast is of something & takes the address of,
-  // the parentheses that mean that are said.
+  // memory is told, with what was meant where it is a cast's (see
+  // castPrecedence).
   private alreadyPointer(operand: AST.Expr, type: ResolvedType): string {
-    // (Without the source, a cast is said as the syntax tree has it.)
-    const castText = (e: AST.Expr): string | null => {
-      const grouped = groupedExpr(e)
-      if (grouped) {
-        const inner = castText(grouped)
-        return inner === null ? null : `(${inner})`
-      }
-      if (e.kind !== 'CastExpr') return exprText(e)
-      const inner = exprText(e.expr)
-      return inner === null ? null : `${inner} as ${typeText(e.type)}`
-    }
     const text = this.textOf(operand) ?? castText(operand)
     const what = text === null ? 'this value' : `'${text}'`
-    let hint = ''
-    if (operand.kind === 'CastExpr') {
-      const inner = ungrouped(operand.expr)
-      const innerText = this.textOf(operand.expr) ?? exprText(operand.expr)
-      if (text !== null && innerText !== null && text.startsWith(innerText) && (inner.kind === 'IndexExpr' || inner.kind === 'MemberExpr')) {
-        hint = ` (a cast binds tighter than &: for the address of ${innerText}, write (&${innerText}) ${text.slice(innerText.length).trim()})`
-      }
+    return `${what} is already a pointer (${typeToString(type)}): drop the &${this.castPrecedence(operand)}`
+  }
+
+  // A cast binds tighter than &, so `&p[1] as [*]u8` is `&(p[1] as [*]u8)`,
+  // the & of the cast. Where it is written so (not in parentheses) and what
+  // is cast has an address, what that means is said after the message that
+  // refuses the & or the cast: ` (a cast binds tighter than &: for the
+  // address of p[1], write (&p[1]) as [*]u8)`. Nothing for anything else.
+  castPrecedence(operand: AST.Expr): string {
+    if (operand.kind !== 'CastExpr' || !this.hasAddress(operand.expr)) return ''
+    const text = this.textOf(operand) ?? castText(operand)
+    const innerText = this.textOf(operand.expr) ?? exprText(operand.expr)
+    if (text === null || innerText === null || !text.startsWith(innerText)) return ''
+    return ` (a cast binds tighter than &: for the address of ${innerText}, write (&${innerText}) ${text.slice(innerText.length).trim()})`
+  }
+
+  // Whether & gives an address for an expression already inferred, said
+  // without checking it again: an element of a slice, an array pointer or a
+  // many-pointer, a row of a packed array, or a value that lies in memory.
+  private hasAddress(expr: AST.Expr): boolean {
+    const e = ungrouped(expr)
+    if (e.kind !== 'IndexExpr' && e.kind !== 'MemberExpr') return false
+    if (this.packedRow(e)) return true
+    if (e.kind === 'IndexExpr') {
+      const object = this.exprTypes.get(e.object)
+      const framed = object && pointeeArray(object)
+      if (framed && framed.sizes?.length === 1 && framed.sizes[0] === '!') return false
     }
-    return `${what} is already a pointer (${typeToString(type)}): drop the &${hint}`
+    const type = this.exprTypes.get(e)
+    return !!type && this.placeAddress(e, type) !== null
   }
 
   // .len of a *[!]T is found by a scan; a *[?]T's length prefix is not read
@@ -10434,6 +10463,19 @@ function hasMember(type: ResolvedType, name: string): boolean {
 // An expression written out from the syntax tree, for a message: the usual
 // forms only (names, members, indexing, calls, parentheses and decimal
 // integers), null for anything else.
+// A cast as the syntax tree has it, in the parentheses it is written in:
+// what is said of one where the module's text is not known.
+function castText(e: AST.Expr): string | null {
+  const grouped = groupedExpr(e)
+  if (grouped) {
+    const inner = castText(grouped)
+    return inner === null ? null : `(${inner})`
+  }
+  if (e.kind !== 'CastExpr') return exprText(e)
+  const inner = exprText(e.expr)
+  return inner === null ? null : `${inner} as ${typeText(e.type)}`
+}
+
 function exprText(expr: AST.Expr): string | null {
   const all = (parts: (string | null)[]) => (parts.every((p) => p !== null) ? parts.join('') : null)
   switch (expr.kind) {
