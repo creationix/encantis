@@ -9,7 +9,7 @@ The plugin runs `encantis lsp`, the same language server as the [VS Code extensi
 
 ## Install
 
-1. Get the `encantis` binary for your platform from the [latest release](https://github.com/creationix/encantis/releases/latest) and put it on your `PATH`. Check with `which encantis` in the shell you start `claude` from. `encantis lsp` is in the releases after 0.3.1.
+1. Get the `encantis` binary for your platform from the [latest release](https://github.com/creationix/encantis/releases/latest) and put it on your `PATH`. Check with `which encantis` in the shell you start `claude` from. `encantis lsp` is in 0.4.0 and later.
 2. In Claude Code (2.1.275 or later):
 
    ```

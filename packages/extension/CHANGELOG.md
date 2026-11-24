@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Rename a struct's field or a function's named result: where it is declared and wherever it is named (`p.x`, constructors, literals and patterns), a shorthand written out so its variable keeps its name. Refused where a value is given to another struct with the same fields, or where another file of the workspace would no longer check. Rename is no longer offered on the keyword a test's `data` starts with.
 - Go to Symbol in Workspace (Ctrl+T) over the workspace's `.ents` files.
+- Brackets and prefixes nest at most 128 deep, as the compiler now allows (it was 256, which the parser's stack did not always hold).
 - Inlay hints: the inferred type of a `let` or `for` binding with none written, and the parameter name of a literal argument.
 - Completion no longer offers a local of a block that has closed; after a `.` it offers `.*` on a pointer, the type puns (`.u32`, …) of a pointer, slice or array, and a tuple's unnamed fields (`.0`); a local just given a generic's result (`let v = vec(Cell, 4)`) has its fields and methods; and a struct's methods are no longer offered for another struct whose fields have the same names.
 - The other uses of the name under the cursor are highlighted, its declaration and assignments as writes.
