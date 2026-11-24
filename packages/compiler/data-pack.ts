@@ -2,7 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import { byteSize, isOptional, isRowArray, isValueArray, manyPointer, primitive, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type SliceRT, type TupleRT } from './types'
+import { byteSize, enumLayout, isOptional, isRowArray, isValueArray, manyPointer, primitive, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type SliceRT, type TupleRT } from './types'
 import {
   bytesToHex,
   concatBytes,
@@ -188,6 +188,10 @@ export class DataSectionBuilder {
   /** Which element of a tuple gives each field, where that is not the one at
    *  the field's place (see TypeCheckResult.fieldOrder). */
   fieldOrder?: ReadonlyMap<AST.TupleExpr, number[]>
+  /** The variant each variant value and constructor is, and the payload of
+   *  each constructor (see TypeCheckResult.variants and payloads). */
+  variants?: ReadonlyMap<AST.Expr, number>
+  payloads?: ReadonlyMap<AST.CallExpr, AST.TupleExpr>
   private internedMap = new Map<string, DataEntry>()
   /** Mutable entries that skip deduplication */
   private mutEntries: DataEntry[] = []
@@ -649,6 +653,9 @@ function hasRuntimePart(expr: AST.Expr, builder: DataSectionBuilder): boolean {
   switch (e.kind) {
     case 'LiteralExpr':
       return false
+    case 'IdentExpr':
+      // A unit variant is its tag
+      return !builder.variants?.has(e) && !builder.constants?.has(e)
     case 'ArrayExpr':
       return e.elements.some((element) => hasRuntimePart(element, builder))
     case 'RepeatExpr':
@@ -918,6 +925,31 @@ function buildElementBytes(
 
   // A slice written as its two parts, (ptr, len).
   if (struct.kind === 'slice' && isSlicePair(expr)) return slicePairBytes(expr, struct, builder)
+
+  // A variant: its tag, its payload's fields as a struct's are laid out,
+  // and zeros for the padding (reference 2.9). One only known when the
+  // program runs stays zero here, and is stored when it runs.
+  if (struct.kind === 'enum') {
+    const layout = enumLayout(struct)
+    const k = builder.variants?.get(expr)
+    if (!layout || k === undefined) return zerosOf(byteSize(struct) ?? 0)
+    const tag = new Uint8Array(layout.tagBytes)
+    for (let i = 0; i < layout.tagBytes; i++) tag[i] = (k >> (8 * i)) & 0xff
+    const parts: Bytes[] = [bytesOf(tag)]
+    const fields = struct.variants[k].fields ?? []
+    const payload = expr.kind === 'CallExpr' ? builder.payloads?.get(expr) : undefined
+    let size = layout.tagBytes
+    if (payload) {
+      byField(payload, builder).forEach((arg, i) => {
+        const f = fields[i]
+        if (!f) return
+        parts.push(arg?.value ? buildFieldBytes(arg.value, f.type, builder) : zerosOf(byteSize(f.type) ?? 0))
+        size += byteSize(f.type) ?? 0
+      })
+    }
+    parts.push(zerosOf(layout.size - size))
+    return applyFramings(concat(parts), framings, layout.size)
+  }
 
   // A struct written out, as a tuple or a constructor: its fields one after
   // another, as they lie in memory. A field only known when the program runs
@@ -1434,6 +1466,8 @@ interface DataSectionOptions {
   calls?: ReadonlyMap<AST.CallExpr, AST.Expr>
   constants?: ReadonlyMap<AST.Expr, ComptimeValue>
   fieldOrder?: ReadonlyMap<AST.TupleExpr, number[]>
+  variants?: ReadonlyMap<AST.Expr, number>
+  payloads?: ReadonlyMap<AST.CallExpr, AST.TupleExpr>
 }
 
 /**
@@ -1462,6 +1496,8 @@ export function buildProgramDataSection(
   dataBuilder.built = options.calls
   dataBuilder.constants = options.constants
   dataBuilder.fieldOrder = options.fieldOrder
+  dataBuilder.variants = options.variants
+  dataBuilder.payloads = options.payloads
   // Address 0 means "none" for optional pointers and slices, so program data
   // never starts there: the first 8 bytes stay unused, keeping 8-byte alignment.
   dataBuilder.setAutoDataStart(NULL_PAGE)

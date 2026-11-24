@@ -1323,6 +1323,10 @@ class CheckContext {
     switch (e.kind) {
       case 'LiteralExpr':
         break
+      case 'IdentExpr':
+        // A unit variant is its tag
+        if (!this.variants.has(e)) leaves.push(e)
+        break
       case 'ArrayExpr':
         for (const element of e.elements) this.literalLeaves(element, leaves)
         break
@@ -1333,6 +1337,9 @@ class CheckContext {
         for (const element of e.elements) if (element.value) this.literalLeaves(element.value, leaves)
         break
       case 'CallExpr': {
+        // A variant's constructor is its tag and its payload's values
+        const payload = this.payloads.get(e)
+        if (payload) return this.literalLeaves(payload, leaves)
         const built = this.calls.get(e)
         if (built?.kind === 'TupleExpr') return this.literalLeaves(built, leaves)
         if (e.callee.kind === 'IdentExpr' && this.lookup(e.callee.name)?.kind === 'type') {
@@ -4844,6 +4851,24 @@ class CheckContext {
   // that has errors already, in its signature or its body (`span`), which is
   // not compiled. The errors of an instance are where they are in the
   // generic, which is where its copy is, less its own offset.
+  // Whether an assignment's target is a place in memory, not registers
+  private inMemory(target: AST.Expr | AST.LValue): boolean {
+    if (target.kind === 'IdentPattern' || target.kind === 'TuplePattern') return false
+    const t = ungrouped(target as AST.Expr)
+    if (t.kind === 'SliceExpr') return true
+    if (t.kind === 'MemberExpr') {
+      if (t.member.kind === 'deref') return true
+      const object = this.exprTypes.get(t.object)
+      return (object !== undefined && unwrap(object).kind === 'pointer') || this.inMemory(t.object)
+    }
+    if (t.kind === 'IndexExpr') {
+      const object = this.exprTypes.get(t.object)
+      const u = object && unwrap(object)
+      return u?.kind === 'pointer' || u?.kind === 'slice' || this.inMemory(t.object)
+    }
+    return false
+  }
+
   private checkSize(owner: string, span: AST.Span, body: readonly AST.Statement[] | AST.Expr): void {
     const from = span.start % INSTANCE_STRIDE
     const to = from + (span.end - span.start)
@@ -5070,10 +5095,16 @@ class CheckContext {
           case 'SetStmt':
             value(stmt.value, n, false)
             return
-          case 'AssignmentStmt':
+          case 'AssignmentStmt': {
             target(stmt.target, n)
-            value(stmt.value, n, false)
+            // A variant written into memory is stored as the struct of its
+            // tag and fields: it is never held whole.
+            const written = ungrouped(stmt.value)
+            const payload = written.kind === 'CallExpr' && this.inMemory(stmt.target) ? this.payloads.get(written) : undefined
+            if (payload) value(payload, n, false)
+            else if (!(this.variants.has(written) && this.inMemory(stmt.target))) value(stmt.value, n, false)
             return
+          }
           case 'ExpressionStmt':
             value(stmt.expr, n, false)
             return

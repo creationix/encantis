@@ -715,6 +715,9 @@ function aggregateParts(type: ResolvedType): RT.MemoryPart[] | null {
 // parts, so an address that is more than a local or a constant goes into a
 // scratch local with the first load.
 function loadFromMemory(type: ResolvedType, ptr: string, ctx: CodegenContext): string {
+  // What holds an enum has no one list of parts: which bytes it has
+  // depends on its variant.
+  if (RT.enumIn(type)) return loadHolding(type, ptr, ctx)
   const nw = wideIntParts(type)
   const u = unwrap(type)
   if (nw > 0 || u.kind === 'slice') {
@@ -760,7 +763,8 @@ function loadFromMemory(type: ResolvedType, ptr: string, ctx: CodegenContext): s
 // repeated instead, and a slice or wide integer repeats an address that reads
 // no memory, has no effects, and reads no global while the value has effects;
 // but only when the value sets no local the address reads.
-function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: CodegenContext): string {
+function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: CodegenContext, valueExpr?: AST.Expr): string {
+  if (RT.enumIn(type)) return storeHolding(type, ptr, value, valueExpr, ctx)
   const nw = wideIntParts(type)
   const u = unwrap(type)
   const parts = nw > 0 || u.kind === 'slice' ? RT.memoryParts(u) : aggregateParts(type)
@@ -805,6 +809,250 @@ function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: Code
     store(0, ''),
     ...temps.map((t, i) => store(i + 1, ` ${rest} (local.get ${t})`)),
   ].join('\n')
+}
+
+// === Enums in memory ===
+
+// An address that is used several times: a local's read or a constant as
+// it is, anything else evaluated once, into a scratch local at its first use
+// (the first one evaluated, where the uses are written in the order they run).
+function addressOnce(ptr: string, ctx: CodegenContext): () => string {
+  if (isSimple(ptr)) return () => ptr
+  const tmp = scratchLocal(ctx, 'i32')
+  let used = false
+  return () => {
+    if (used) return `(local.get ${tmp})`
+    used = true
+    return `(local.tee ${tmp} ${ptr})`
+  }
+}
+
+// Reads a value that holds an enum, at any depth, from memory (reference
+// 2.9): part by part, in field order, an enum part by its tag and then the
+// fields of the variant the tag names. The address is evaluated once.
+function loadHolding(type: ResolvedType, ptr: string, ctx: CodegenContext): string {
+  return loadAt(type, addressOnce(ptr, ctx), 0, ctx)
+}
+
+function loadAt(type: ResolvedType, addr: () => string, offset: number, ctx: CodegenContext): string {
+  const u = unwrap(type)
+  if (u.kind === 'enum') return loadEnumAt(u, addr, offset, ctx)
+  if (u.kind === 'tuple') {
+    let at = offset
+    return u.fields.map((f) => {
+      const wat = loadAt(f.type, addr, at, ctx)
+      at += byteSize(f.type) ?? 0
+      return wat
+    }).join(' ')
+  }
+  if (u.kind === 'array' && RT.isValueArray(u)) {
+    const stride = byteSize(u.element) ?? 0
+    return Array.from({ length: u.sizes?.[0] as number }, (_, i) => loadAt(u.element, addr, offset + i * stride, ctx)).join(' ')
+  }
+  const parts = RT.memoryParts(u)
+  if (!parts) throw new Error(`${RT.typeToString(type)} has no fixed size in memory`)
+  return parts.map((p) => `(${loadOp(p.type)}${atOffset(offset + p.offset)} ${addr()})`).join(' ')
+}
+
+// An enum in memory: its tag's load, then one if for each payload variant in
+// declaration order, each nested in the else of the one before, whose result
+// is the slots: that variant's fields, each put in its slot, then zeros. The
+// innermost else, for a unit variant or a tag no variant has, gives zeros.
+function loadEnumAt(e: RT.EnumRT, addr: () => string, offset: number, ctx: CodegenContext): string {
+  const layout = RT.enumLayout(e)
+  if (!layout) throw new Error(`${RT.typeToString(e)} has no fixed size in memory`)
+  const tagLoad = `(${loadOp(layout.tag)}${atOffset(offset)} ${addr()})`
+  const slots = RT.enumSlots(e)
+  if (slots.length === 0) return tagLoad
+  const tag = scratchLocal(ctx, 'i32')
+  const result = `(result ${slots.join(' ')})`
+  const branches: [number, string][] = []
+  e.variants.forEach((v, k) => {
+    if (!v.fields || v.fields.length === 0) return
+    const values: string[] = []
+    let at = 0
+    let fieldOffset = offset + layout.tagBytes
+    for (const f of v.fields) {
+      const from = typeToWasm(f.type)
+      if (from.length > 0) values.push(intoSlots(loadAt(f.type, addr, fieldOffset, ctx), from, slots.slice(at, at + from.length), ctx))
+      at += from.length
+      fieldOffset += byteSize(f.type) ?? 0
+    }
+    for (const slot of slots.slice(at)) values.push(zeroOf(slot))
+    branches.push([k, values.join(' ')])
+  })
+  let chain = slots.map(zeroOf).join(' ')
+  for (const [k, values] of branches.reverse()) {
+    chain = `(if ${result} (i32.eq (local.get ${tag}) (i32.const ${k}))\n(then ${values})\n(else ${chain}))`
+  }
+  return `(local.tee ${tag} ${tagLoad})\n${chain}`
+}
+
+// A part of a value as it lies in memory: where it starts, the scalar it is
+// stored as, and its value
+type StoredPart = { offset: number; type: RT.PrimitiveRT | RT.PointerRT; value: string }
+
+// A value that holds an enum, written into memory (reference 2.9). A value
+// written there as variants (Grey(k), Pixel(Grey(k), 9), (Red, 0)) is a struct
+// of fixed parts, its tags constants among them, and is stored as such a
+// struct is. Any other value is computed whole, its registers kept in scratch
+// locals unless they are a variable's (or constants), and its parts stored
+// in field order, an enum part by its tag and then one if for each payload
+// variant, which stores that variant's fields from its slots. The padding of
+// an enum is never written. The address is computed first.
+function storeHolding(type: ResolvedType, ptr: string, value: string, valueExpr: AST.Expr | undefined, ctx: CodegenContext): string {
+  const fixed = valueExpr ? fixedParts(type, valueExpr, 0, ctx) : null
+  if (fixed) return storeParts(fixed, ptr, ctx)
+  const [setup, regs] = registersHeld(value, typeToWasm(type), ctx)
+  let pre = ''
+  let base = ptr
+  if (!isSimple(ptr) || setsLocalOf(value, ptr)) {
+    const tmp = scratchLocal(ctx, 'i32')
+    pre = `(local.set ${tmp} ${ptr})`
+    base = `(local.get ${tmp})`
+  }
+  const stores = storeRegsAt(type, base, 0, regs, { next: 0 }, ctx)
+  return [pre, setup, stores].filter((x) => x !== '').join('\n')
+}
+
+// The registers of a value, each as an expression that can be read more than
+// once: a variable's reads or constants as they are, anything else into
+// scratch locals, last register first. Gives what sets them, and them.
+function registersHeld(value: string, wasm: string[], ctx: CodegenContext): [string, string[]] {
+  const parts = trySplitMultiValue(value, wasm.length)
+  if (parts && parts.every((p) => /^\((?:local\.get|global\.get|[if](?:32|64)\.const) [^\s()]+\)$/.test(p))) return ['', parts]
+  const temps = wasm.map((w) => scratchLocal(ctx, w))
+  return [[value, ...[...temps].reverse().map((t) => `(local.set ${t})`)].join('\n'), temps.map((t) => `(local.get ${t})`)]
+}
+
+// Stores registers `regs` (from `cursor.next` on) of a value of `type` at
+// `base` + `offset`, part by part in field order
+function storeRegsAt(type: ResolvedType, base: string, offset: number, regs: string[], cursor: { next: number }, ctx: CodegenContext): string {
+  const u = unwrap(type)
+  if (u.kind === 'enum') {
+    const layout = RT.enumLayout(u)
+    if (!layout) throw new Error(`${RT.typeToString(type)} has no fixed size in memory`)
+    const slots = RT.enumSlots(u)
+    const tag = regs[cursor.next++]
+    const slotRegs = regs.slice(cursor.next, cursor.next + slots.length)
+    cursor.next += slots.length
+    // A tag is stored in its width.
+    const out = [`(${storeOp(layout.tag)}${atOffset(offset)} ${base} ${tag})`]
+    const branches: [number, string][] = []
+    u.variants.forEach((v, k) => {
+      if (!v.fields || v.fields.length === 0) return
+      const stores: string[] = []
+      let at = 0
+      let fieldOffset = offset + layout.tagBytes
+      for (const f of v.fields) {
+        const from = typeToWasm(f.type)
+        const values = from.map((w, i) => toSlot(slotRegs[at + i], w, slots[at + i], 'out'))
+        stores.push(storeRegsAt(f.type, base, fieldOffset, values, { next: 0 }, ctx))
+        at += from.length
+        fieldOffset += byteSize(f.type) ?? 0
+      }
+      branches.push([k, stores.filter((x) => x !== '').join(' ')])
+    })
+    let chain = ''
+    for (const [k, stores] of branches.reverse()) {
+      chain = `(if (i32.eq ${tag} (i32.const ${k}))\n(then ${stores})${chain ? `\n(else ${chain})` : ''})`
+    }
+    if (chain) out.push(chain)
+    return out.join('\n')
+  }
+  if (u.kind === 'tuple') {
+    let at = offset
+    return u.fields.map((f) => {
+      const wat = storeRegsAt(f.type, base, at, regs, cursor, ctx)
+      at += byteSize(f.type) ?? 0
+      return wat
+    }).filter((x) => x !== '').join('\n')
+  }
+  if (u.kind === 'array' && RT.isValueArray(u)) {
+    const stride = byteSize(u.element) ?? 0
+    return Array.from({ length: u.sizes?.[0] as number }, (_, i) => storeRegsAt(u.element, base, offset + i * stride, regs, cursor, ctx)).filter((x) => x !== '').join('\n')
+  }
+  const parts = RT.memoryParts(u)
+  if (!parts) throw new Error(`${RT.typeToString(type)} has no fixed size in memory`)
+  return parts.map((p) => `(${storeOp(p.type)}${atOffset(offset + p.offset)} ${base} ${regs[cursor.next++]})`).join(' ')
+}
+
+// The parts a value written as variants is stored as, at `offset`: the tag
+// constant and the fields of each variant written there, and the parts of
+// every other field. Null where an enum part of it is no variant written
+// there, or where a part's value is not written as its parts.
+function fixedParts(type: ResolvedType, expr: AST.Expr, offset: number, ctx: CodegenContext): StoredPart[] | null {
+  const value = ungroup(expr)
+  const u = unwrap(type)
+  if (!RT.enumIn(u)) {
+    const parts = RT.memoryParts(u)
+    if (!parts) return null
+    const wat = exprToWat(value, ctx)
+    const values = parts.length === 1 ? [wat] : trySplitMultiValue(wat, parts.length)
+    if (!values) return null
+    return parts.map((p, i) => ({ offset: offset + p.offset, type: p.type, value: values[i] }))
+  }
+  if (u.kind === 'enum') {
+    const k = ctx.variants?.get(value)
+    if (k === undefined) return null
+    const layout = RT.enumLayout(u)
+    if (!layout) return null
+    const parts: StoredPart[] = [{ offset, type: layout.tag, value: `(i32.const ${k})` }]
+    const fields = u.variants[k].fields ?? []
+    const payload = value.kind === 'CallExpr' ? ctx.payloads?.get(value) : undefined
+    if (fields.length > 0) {
+      if (!payload || ctx.fieldOrder.has(payload)) return null
+      let at = offset + layout.tagBytes
+      for (const [j, f] of fields.entries()) {
+        const v = argValue(payload.elements[j])
+        const inner = v && fixedParts(f.type, v, at, ctx)
+        if (!inner) return null
+        parts.push(...inner)
+        at += byteSize(f.type) ?? 0
+      }
+    }
+    return parts
+  }
+  if (u.kind === 'tuple') {
+    // A tuple literal, or a struct's constructor: the tuple of its arguments
+    const lowered = value.kind === 'CallExpr' ? ctx.calls.get(value) : undefined
+    const constructed = value.kind === 'CallExpr' && !lowered && value.callee.kind === 'IdentExpr' && ctx.symbols.get(value.callee.name)?.kind === 'type'
+      ? { kind: 'TupleExpr' as const, elements: value.args, span: value.span }
+      : null
+    const tuple = value.kind === 'TupleExpr' ? value : lowered?.kind === 'TupleExpr' ? lowered : constructed
+    if (!tuple || ctx.fieldOrder.has(tuple) || tuple.elements.length !== u.fields.length || tuple.elements.some((e) => e.name !== null)) return null
+    const parts: StoredPart[] = []
+    let at = offset
+    for (const [j, f] of u.fields.entries()) {
+      const v = argValue(tuple.elements[j])
+      const inner = v && fixedParts(f.type, v, at, ctx)
+      if (!inner) return null
+      parts.push(...inner)
+      at += byteSize(f.type) ?? 0
+    }
+    return parts
+  }
+  return null
+}
+
+// Stores parts of fixed offsets, as a struct's are stored: one after
+// another, or, where a part after the first reads or writes memory, all of
+// them on the stack, each above its address, before the stores run.
+function storeParts(parts: StoredPart[], ptr: string, ctx: CodegenContext): string {
+  const repeat = isSimple(ptr) && !parts.some((p) => setsLocalOf(p.value, ptr))
+  let first = ptr
+  let rest = ptr
+  if (!repeat) {
+    const tmp = scratchLocal(ctx, 'i32')
+    first = `(local.tee ${tmp} ${ptr})`
+    rest = `(local.get ${tmp})`
+  }
+  const at = (i: number) => (i === 0 ? first : rest)
+  const store = (i: number, operands: string) => `(${storeOp(parts[i].type)}${atOffset(parts[i].offset)}${operands})`
+  if (!parts.slice(1).some((p) => readsMemory(p.value) || writesMemory(p.value))) {
+    return parts.map((p, i) => store(i, ` ${at(i)} ${p.value}`)).join('\n')
+  }
+  return [...parts.map((p, i) => `${at(i)} ${p.value}`), ...parts.map((_, i) => store(i, '')).reverse()].join('\n')
 }
 
 function splitMultiValue(wat: string, n: number): string[] {
@@ -1871,6 +2119,42 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
     return `${setDst}\n(memory.copy (local.get ${p}) ${srcPtr} ${bytes})`
   }
 
+  // An element that holds an enum is never zeros to a memory.fill: a fill
+  // would write the padding a store leaves. Each element is stored as an
+  // assignment stores it, from what is computed once before the loop: the
+  // values of the parts of a value written as variants (its tags are
+  // constants), or all the registers of any other value.
+  if (RT.enumIn(cell)) {
+    const fixed = fixedParts(cell, value, 0, ctx)
+    let set: string
+    let store: string
+    if (fixed) {
+      const sets: string[] = []
+      const held = fixed.map((part) => {
+        if (CONSTANT.test(part.value)) return part
+        const t = scratchLocal(ctx, typeToWasmSingle(part.type))
+        sets.push(`${part.value}\n(local.set ${t})`)
+        return { ...part, value: `(local.get ${t})` }
+      })
+      set = sets.join('\n')
+      store = storeParts(held, `(local.get ${p})`, ctx)
+    } else {
+      const v = exprToWat(value, ctx)
+      const temps = typeToWasm(cell).map((type) => scratchLocal(ctx, type))
+      set = [v, ...[...temps].reverse().map((t) => `(local.set ${t})`)].join('\n')
+      store = storeRegsAt(cell, `(local.get ${p})`, 0, temps.map((t) => `(local.get ${t})`), { next: 0 }, ctx)
+    }
+    return `${setDst}
+${set}
+(block $__fill_${uid}
+  (loop $__fill_next_${uid}
+    (br_if $__fill_${uid} (i32.eqz (local.get ${n})))
+    ${store}
+    (local.set ${p} (i32.add (local.get ${p}) (i32.const ${stride})))
+    (local.set ${n} (i32.sub (local.get ${n}) (i32.const 1)))
+    (br $__fill_next_${uid})))`
+  }
+
   const v = exprToWat(value, ctx)
   const wasm = typeToWasm(cell)
   // Zeros: every value the element is held in is a constant 0 (a struct, a
@@ -2460,7 +2744,7 @@ function runtimeStores(expr: AST.ArrayExpr | AST.RepeatExpr, elemType: ResolvedT
           parts.push(`(i32.const ${at})\n${value}\n(local.set $__slot_len)\n(i32.store)\n(i32.store (i32.const ${at + 4}) (local.get $__slot_len))`)
         }
       } else {
-        parts.push(storeToMemory(elemType, `(i32.const ${at})`, value, ctx))
+        parts.push(storeToMemory(elemType, `(i32.const ${at})`, value, ctx, elem))
       }
     }
   }
@@ -2468,6 +2752,8 @@ function runtimeStores(expr: AST.ArrayExpr | AST.RepeatExpr, elemType: ResolvedT
 
 function isRuntimeExpr(expr: AST.Expr, ctx: CodegenContext): boolean {
   if (expr.kind === 'LiteralExpr') return false
+  // A unit variant is its tag, laid out with the literal
+  if (expr.kind === 'IdentExpr' && ctx.variants?.has(expr)) return false
   if (expr.kind === 'ArrayExpr') return false
   if (expr.kind === 'RepeatExpr') return false
   if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr, ctx)
@@ -2847,7 +3133,7 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
     return assign(result)
   }
 
-  return assignLvalue(stmt.target, value, ctx)
+  return assignLvalue(stmt.target, value, ctx, stmt.value)
 }
 
 function lvalueToWat(target: AST.LValue, ctx: CodegenContext): string {
@@ -2865,7 +3151,7 @@ function lvalueToWat(target: AST.LValue, ctx: CodegenContext): string {
 
 // Assigns a value to a place: the registers of a variable or of a member of
 // one, or memory.
-function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): string {
+function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext, valueExpr?: AST.Expr): string {
   if (target.kind !== 'IdentExpr' && target.kind !== 'MemberExpr' && target.kind !== 'IndexExpr') return ''
   const regs = registersOf(target, ctx)
   if (regs) return setRegisters(regs, value)
@@ -2875,7 +3161,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
     if (!type) {
       throw new Error(`Missing type for store at offset ${target.span.start}`)
     }
-    return storeToMemory(type, addr, value, ctx)
+    return storeToMemory(type, addr, value, ctx, valueExpr)
   }
   if (target.kind === 'IdentExpr') return `(local.set $${target.name} ${value})`
   throw new Error(`Cannot assign to this expression at offset ${target.span.start}`)
@@ -3772,6 +4058,8 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
     calls: checkResult.calls,
     constants: checkResult.constants,
     fieldOrder: checkResult.fieldOrder,
+    variants: checkResult.variants,
+    payloads: checkResult.payloads,
   })
   labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
@@ -4342,6 +4630,8 @@ export function programToWat(
   const allCalls: TypeCheckResult['calls'] = new Map()
   const allConstants: TypeCheckResult['constants'] = new Map()
   const allFieldOrders: TypeCheckResult['fieldOrder'] = new Map()
+  const allVariants: TypeCheckResult['variants'] = new Map()
+  const allPayloads: TypeCheckResult['payloads'] = new Map()
 
   // One data section for the literals of all modules. A literal is known by
   // its offset in its own module's source, so each module has its own map
@@ -4353,11 +4643,15 @@ export function programToWat(
     for (const [written, compiled] of result.calls) allCalls.set(written, compiled)
     for (const [expr, value] of result.constants) allConstants.set(expr, value)
     for (const [tuple, order] of result.fieldOrder) allFieldOrders.set(tuple, order)
+    for (const [expr, k] of result.variants) allVariants.set(expr, k)
+    for (const [call, payload] of result.payloads) allPayloads.set(call, payload)
   }
   const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), {
     calls: allCalls,
     constants: allConstants,
     fieldOrder: allFieldOrders,
+    variants: allVariants,
+    payloads: allPayloads,
   })
   const literalRefsOf = new Map(sources.map(({ path }, i) => [path, refsOfSource[i]]))
   const refsOf = (path: string) => literalRefsOf.get(path) ?? new Map<number, DataRef>()

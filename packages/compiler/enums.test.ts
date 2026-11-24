@@ -708,3 +708,148 @@ export func viaid(c: Color) -> Color => id(c)
     expect(wat(source)).toContain('(func $id<enum<Red|Blue|Green|Rgb<r:u8|g:u8|b:u8>|')
   })
 })
+
+describe('an enum in memory (4.1 to 4.6)', () => {
+  const SOURCE = `${COLOR}enum Dir { North, East, South, West }
+type Pixel = (c: Color, a: u8)
+export func load(p: *Color) -> Color => p.*
+export func load-dir(p: *Dir) -> Dir => p.*
+export func put(p: *mut Color, k: u8) { p.* = Grey(k) }
+export func copy(p: *mut Color, c: Color) { p.* = c }
+export func load-px(q: *Pixel) -> Pixel => q.*
+export func store-px(q: *mut Pixel, px: Pixel) { q.* = px }
+export func put-px(q: *mut Pixel, k: u8) { q.* = Pixel(Grey(k), 9) }
+func make-px() -> Pixel => Pixel(Rgb(1, 2, 3), 4)
+export func call-px(q: *mut Pixel) { q.* = make-px() }
+export func clear(xs: *mut [4]Color) { xs[..] = Red }
+export func greys(xs: *mut [4]Color, k: u8) { xs[..] = Grey(k) }
+export func fill(xs: *mut [4]Color, c: Color) { xs[..] = c }
+export func zero(p: *mut Color) { p.* = Red }
+export func size() -> u32 => sizeof(Color) + sizeof(Pixel) * 10
+export memory 1
+`
+
+  const LOAD = [
+    '(local.tee $__tmp_0 (i32.load8_u (local.get $p)))',
+    '(if (result i32 i32 i32) (i32.eq (local.get $__tmp_0) (i32.const 3))',
+    '(then (i32.load8_u offset=1 (local.get $p)) (i32.load8_u offset=2 (local.get $p)) (i32.load8_u offset=3 (local.get $p)))',
+    '(else (if (result i32 i32 i32) (i32.eq (local.get $__tmp_0) (i32.const 4))',
+    '(then (i32.load8_u offset=1 (local.get $p)) (i32.load8_u offset=2 (local.get $p)) (i32.load8_u offset=3 (local.get $p)))',
+    '(else (if (result i32 i32 i32) (i32.eq (local.get $__tmp_0) (i32.const 5))',
+    '(then (i32.load8_u offset=1 (local.get $p)) (i32.const 0) (i32.const 0))',
+    '(else (if (result i32 i32 i32) (i32.eq (local.get $__tmp_0) (i32.const 6))',
+    '(then (i32.load offset=1 (local.get $p)) (i32.const 0) (i32.const 0))',
+    '(else (i32.const 0) (i32.const 0) (i32.const 0)))))))))',
+  ]
+  const STORE = (p: string, reg: (n: string) => string) => [
+    `(i32.store8 (local.get ${p}) ${reg('tag')})`,
+    `(if (i32.eq ${reg('tag')} (i32.const 3))`,
+    `(then (i32.store8 offset=1 (local.get ${p}) ${reg('0')}) (i32.store8 offset=2 (local.get ${p}) ${reg('1')}) (i32.store8 offset=3 (local.get ${p}) ${reg('2')}))`,
+    `(else (if (i32.eq ${reg('tag')} (i32.const 4))`,
+    `(then (i32.store8 offset=1 (local.get ${p}) ${reg('0')}) (i32.store8 offset=2 (local.get ${p}) ${reg('1')}) (i32.store8 offset=3 (local.get ${p}) ${reg('2')}))`,
+    `(else (if (i32.eq ${reg('tag')} (i32.const 5))`,
+    `(then (i32.store8 offset=1 (local.get ${p}) ${reg('0')}))`,
+    `(else (if (i32.eq ${reg('tag')} (i32.const 6))`,
+    `(then (i32.store offset=1 (local.get ${p}) ${reg('0')})))))))))`,
+  ]
+
+  test('a load reads the tag, then the fields of the variant it names', () => {
+    expect(watOf(SOURCE, '(func $load ')).toBe(lines('(func $load (param $p i32) (result i32 i32 i32 i32)', '(local $__tmp_0 i32)', ...LOAD, ')'))
+    expect(watOf(SOURCE, '(func $load-dir')).toBe(lines('(func $load-dir (param $p i32) (result i32)', '(i32.load8_u (local.get $p))', ')'))
+  })
+
+  test('a store writes the tag and that variant\'s fields, never the padding', () => {
+    expect(watOf(SOURCE, '(func $put ')).toBe(lines('(func $put (param $p i32) (param $k i32)', '(i32.store8 (local.get $p) (i32.const 5))', '(i32.store8 offset=1 (local.get $p) (local.get $k))', ')'))
+    expect(watOf(SOURCE, '(func $copy')).toBe(lines(
+      '(func $copy (param $p i32) (param $c_tag i32) (param $c_0 i32) (param $c_1 i32) (param $c_2 i32)',
+      ...STORE('$p', (n) => `(local.get $c_${n})`),
+      ')',
+    ))
+  })
+
+  test('a struct that holds an enum is loaded and stored part by part', () => {
+    expect(watOf(SOURCE, '(func $load-px')).toBe(lines(
+      '(func $load-px (param $q i32) (result i32 i32 i32 i32 i32)',
+      '(local $__tmp_0 i32)',
+      ...LOAD.map((l) => l.replaceAll('$p)', '$q)')).map((l, i, all) => (i === all.length - 1 ? `${l} (i32.load8_u offset=5 (local.get $q))` : l)),
+      ')',
+    ))
+    expect(watOf(SOURCE, '(func $store-px')).toBe(lines(
+      '(func $store-px (param $q i32) (param $px_c_tag i32) (param $px_c_0 i32) (param $px_c_1 i32) (param $px_c_2 i32) (param $px_a i32)',
+      ...STORE('$q', (n) => `(local.get $px_c_${n})`),
+      '(i32.store8 offset=5 (local.get $q) (local.get $px_a))',
+      ')',
+    ))
+    expect(watOf(SOURCE, '(func $put-px')).toBe(lines(
+      '(func $put-px (param $q i32) (param $k i32)',
+      '(i32.store8 (local.get $q) (i32.const 5))',
+      '(i32.store8 offset=1 (local.get $q) (local.get $k))',
+      '(i32.store8 offset=5 (local.get $q) (i32.const 9))',
+      ')',
+    ))
+    const temps = ['tag', '0', '1', '2'].map((n, i) => [n, `(local.get $__tmp_${i})`])
+    expect(watOf(SOURCE, '(func $call-px')).toBe(lines(
+      '(func $call-px (param $q i32)',
+      ...[0, 1, 2, 3, 4].map((i) => `(local $__tmp_${i} i32)`),
+      '(call $make-px)',
+      ...[4, 3, 2, 1, 0].map((i) => `(local.set $__tmp_${i})`),
+      ...STORE('$q', (n) => Object.fromEntries(temps)[n]),
+      '(i32.store8 offset=5 (local.get $q) (local.get $__tmp_4))',
+      ')',
+    ))
+  })
+
+  test('a range fill of enums is a loop of stores, never one memory.fill', () => {
+    const clear = watOf(SOURCE, '(func $clear')
+    expect(clear).not.toContain('memory.fill')
+    expect(clear).toContain('(i32.store8 (local.get $__bulk_p_')
+    const greys = watOf(SOURCE, '(func $greys')
+    expect(greys).toMatch(/\(local\.get \$k\)\n\(local\.set \$__tmp_0\)\n\(block/)
+    expect(greys).toMatch(/\(i32\.store8 \(local\.get \$__bulk_p_\d+\) \(i32\.const 5\)\)\n\(i32\.store8 offset=1 \(local\.get \$__bulk_p_\d+\) \(local\.get \$__tmp_0\)\)/)
+  })
+
+  test('the bytes a store leaves, and a tag stored in its width', async () => {
+    const exports = await instance(SOURCE)
+    const memory = new Uint8Array((exports.memory as WebAssembly.Memory).buffer)
+    const call = (name: string, ...args: (number | bigint)[]) => (exports[name] as (...a: (number | bigint)[]) => unknown)(...args)
+    // Red stored over Rgb(1, 2, 3) leaves the bytes of the payload.
+    call('copy', 100, 3, 1, 2, 3)
+    call('zero', 100)
+    expect([...memory.slice(100, 105)]).toEqual([0, 1, 2, 3, 0])
+    // A host's tag of 259 for a Color is stored as 3, Rgb, and the if for
+    // its fields matches no variant: the fields keep what they held.
+    memory.set([9, 7, 7, 7, 7], 200)
+    call('copy', 200, 259, 1, 2, 3)
+    expect([...memory.slice(200, 205)]).toEqual([3, 7, 7, 7, 7])
+    // A fill over 0xff bytes leaves their padding.
+    memory.fill(0xff, 300, 320)
+    call('clear', 300)
+    expect([...memory.slice(300, 310)]).toEqual([0, 0xff, 0xff, 0xff, 0xff, 0, 0xff, 0xff, 0xff, 0xff])
+    call('greys', 300, 7)
+    expect([...memory.slice(300, 305)]).toEqual([5, 7, 0xff, 0xff, 0xff])
+    call('fill', 300, 3, 1, 2, 3)
+    expect([...memory.slice(315, 320)]).toEqual([3, 1, 2, 3, 0xff])
+    // A load after a store gives the value; a struct that holds one too.
+    call('put', 400, 42)
+    expect(call('load', 400)).toEqual([5, 42, 0, 0])
+    call('put-px', 410, 8)
+    expect(call('load-px', 410)).toEqual([5, 8, 0, 0, 9])
+    call('call-px', 420)
+    expect(call('load-px', 420)).toEqual([3, 1, 2, 3, 4])
+    expect(call('size')).toBe(5 + 6 * 10)
+  })
+
+  test('data lays out each variant: its tag, its fields, zeros for the padding', () => {
+    const source = `${COLOR}${JSON_ENUM}enum Dir { North, East }
+data palette: *[3]Color = [Red, Rgb(10, 20, 30), Grey(7)]
+data doc: *[2]Json = [String("hi"), Number(1.5)]
+data spot = mut [Red]
+data xs: *[?]Dir = [North, East]
+`
+    const text = wat(source)
+    expect(text).toContain('"\\00\\00\\00\\00\\00\\03\\0a\\14\\1e\\00\\05\\07")  ;; palette: *[3]Color')
+    expect(text).toMatch(/\(data \(i32\.const (\d+)\) "hi"\)\n\s*\(data \(i32\.const \d+\) "\\03\\(..)\\00\\00\\00\\02\\00\\00\\00\\02\\00\\00\\00\\00\\00\\00\\f8\?"\)  ;; doc: \*\[2\]Json/)
+    expect(text).toContain('"\\02\\00\\01")  ;; xs: *[?]Dir')
+    expect(text).toContain('spot: *mut [1]Color')
+  })
+})
