@@ -247,7 +247,41 @@ Line 1, col 6
 
 <!-- spec:end -->
 
-The case alone tells the parser whether a word is a type or a name, without looking for a declaration: in `let point = Point(1.0, 2.0)`, `point` is a variable and `Point(…)` builds a `Point`. A capitalised name alone in an expression is a unit variant (`let c = Red`) or, where a type is wanted (an argument for a comptime type parameter, a method call's receiver), a type's name; anywhere else a type's name is `'Point' is a type; a type can only be passed for a comptime parameter`.
+The case alone tells the parser whether a word is a type or a name, without looking for a declaration: in `let point = Point(1.0, 2.0)`, `point` is a variable and `Point(…)` builds a `Point`. A capitalised name alone in an expression is a unit variant (`let c = Red`) or, where a type is wanted (an argument for a comptime type parameter, a method call's receiver), a type's name. Anywhere else a type's name is one error, and what it is used for says nothing more (`&Point`, a global's initializer, an element of `data`, a `def`, a range bound): a struct's or another type's name is `'Point' is a type; a type can only be passed for a comptime parameter`, an enum's is `'Color' is an enum: a value of it is one of its variants (Red or Grey)` ([2.9](#29-enum-types-algebraic-data-types)), and a generic type's is `'Vec' is a generic type: write Vec(T)` ([8.5](#85-generic-types)).
+
+<!-- spec:begin compile -->
+
+```ents
+type Point = (x: f32, y: f32)
+enum Color { Red, Grey(b: u8) }
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32)
+
+global origin: Point = Point
+data corners = [Point]
+def unit = Point
+
+func a() -> u32 { let p = Point
+  return 0 }
+func b() -> *Point => &Point
+func c(ps: []Point) -> []Point => ps[Point..]
+func d() -> u32 { let k = Color
+  return 0 }
+func e() -> u32 { let v = Vec
+  return 0 }
+```
+
+```errors
+'Point' is a type; a type can only be passed for a comptime parameter
+'Point' is a type; a type can only be passed for a comptime parameter
+'Point' is a type; a type can only be passed for a comptime parameter
+'Point' is a type; a type can only be passed for a comptime parameter
+'Point' is a type; a type can only be passed for a comptime parameter
+'Point' is a type; a type can only be passed for a comptime parameter
+'Color' is an enum: a value of it is one of its variants (Red or Grey)
+'Vec' is a generic type: write Vec(T)
+```
+
+<!-- spec:end -->
 
 <!-- spec:begin compile -->
 

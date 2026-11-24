@@ -502,6 +502,40 @@ ${COLOR}`
     ])
   })
 
+  test('a variant pattern on a subject whose type is unknown or declared twice says nothing more', () => {
+    // The unknown type is the one error, and so is the name declared twice
+    expect(errors('func f(c: Colour) -> u32 => match c { Red => 1, Blue => 2 }\nfunc g(c: Colour) -> u8 => if let Rgb(r, g, b) = c { r } elif let Hsl(h, s, l) = c { h } else { 0 }\n')).toEqual([
+      "1:11 unknown type 'Colour'",
+      "2:11 unknown type 'Colour'",
+    ])
+    expect(errors('type P = (x: u32)\nenum P { A, B }\nfunc f(p: P) -> u32 => match p { A => 1, B => 2 }\nfunc g(p: P) -> u32 => if let A = p { 1 } else { 0 }\n')).toEqual([
+      "2:6 'P' is already declared (first declared at 1:6)",
+    ])
+    expect(errors('type Vec = (a: u32)\nfunc Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32)\nfunc f(v: *Vec(u32), w: Vec) -> u32 => v.len + w.a\n')).toEqual([
+      "2:6 'Vec' is already declared (first declared at 1:6)",
+    ])
+  })
+
+  test("a type's name as a value is one error wherever a constant is wanted", () => {
+    expect(errors(`${COLOR}type Point = (x: f32, y: f32)
+global origin: Point = Point
+global pair: (Point, u32) = (Point, 1)
+data corners: *[1]Point = [Point]
+def unit: u32 = Point
+global shade: Color = Color
+func a() -> *Point => &Point
+func b(ps: []Point) -> []Point => ps[Point..]
+`).map((e) => e.replace(/ — .*/, ''))).toEqual([
+      "11:24 'Point' is a type; a type can only be passed for a comptime parameter",
+      "12:30 'Point' is a type; a type can only be passed for a comptime parameter",
+      "13:28 'Point' is a type; a type can only be passed for a comptime parameter",
+      "14:17 'Point' is a type; a type can only be passed for a comptime parameter",
+      "15:23 'Color' is an enum: a value of it is one of its variants (Red, Blue, Green, Rgb, Hsl, Grey or Darker)",
+      "16:24 'Point' is a type; a type can only be passed for a comptime parameter",
+      "17:38 'Point' is a type; a type can only be passed for a comptime parameter",
+    ])
+  })
+
   test('a name as the whole pattern is refused on every subject', () => {
     expect(errors('func f(x: u32) -> u32 => match x {\n  n => 1\n}\n')).toEqual([
       '2:3 a name as the whole pattern is not implemented: write _ and use the subject',

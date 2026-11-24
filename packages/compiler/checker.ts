@@ -2372,7 +2372,8 @@ class CheckContext {
     const sym = value
       ? { kind: 'def' as const, type, value }
       : { kind: 'def' as const, type, value: { kind: 'int' as const, value: 0n } }
-    if (!value) {
+    // A type's name has its error already
+    if (!value && !this.namesType(decl.value)) {
       // A variant is no scalar: a def is one number or bool (3.1).
       const variant = unwrap(inferredType).kind === 'enum' ? exprText(decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value) : null
       this.error(decl.span.start, variant !== null
@@ -2497,6 +2498,8 @@ class CheckContext {
   // program fills it in: each value in it has to be known by then.
   private requireConstants(name: string, literal: AST.Expr): void {
     for (const leaf of this.literalLeaves(literal)) {
+      // A type's name has its error already
+      if (this.namesType(leaf)) continue
       if (!this.evalComptimeExpr(leaf, true)) {
         this.error(leaf.span.start, `data '${name}' is laid out at compile time: its values must be constants`)
       }
@@ -3144,6 +3147,17 @@ class CheckContext {
   // for each. Each value goes to codegen, which emits it where the
   // expression as written would need an instruction (1 + 1, a literal that
   // widens, a cast that narrows).
+  // Whether an expression is a type's name where a value is wanted (refused
+  // where it is inferred: 'Point' is a type), which a declaration that wants
+  // a constant says nothing more of
+  private namesType(expr: AST.Expr): boolean {
+    let e = ungrouped(expr)
+    while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+    if (e.kind !== 'IdentExpr' || this.variants.has(e)) return false
+    const kind = this.lookup(e.name)?.kind
+    return kind === 'type' || kind === 'typefunc'
+  }
+
   private isConstantInitializer(expr: AST.Expr): boolean {
     const value = this.evalComptimeExpr(expr, true)
     if (value) {
@@ -3175,8 +3189,8 @@ class CheckContext {
           && expr.args.every(a => a.value !== null && this.isConstantInitializer(a.value))
       }
       case 'IdentExpr':
-        // A function's index, or a unit variant
-        return this.lookup(expr.name)?.kind === 'func' || this.variants.has(expr)
+        // A function's index, or a unit variant; a type's name has its error
+        return this.lookup(expr.name)?.kind === 'func' || this.variants.has(expr) || this.namesType(expr)
       case 'ArrayExpr':
       case 'RepeatExpr':
         // An array behind a pointer or a slice lives in the data section,
@@ -4539,8 +4553,9 @@ class CheckContext {
         }
         const similar = this.findSimilar(type.name)
         const hint = similar ? ` — did you mean '${similar}'?` : ''
+        // A refused type: what its values are used for says nothing more
         this.error(type.span.start, `unknown type '${type.name}'${hint}`)
-        return primitive('i32')
+        return RECOVERY
       }
 
       case 'FuncType': {
@@ -7707,6 +7722,8 @@ class CheckContext {
         // generic, a method's receiver), a place & gave the address of has
         // that address as its type already: it is not taken twice.
         if (this.addressed.has(expr.operand)) return operandType
+        // A refused value (a type's name) has no address to say anything of
+        if (operandType === RECOVERY) return RECOVERY
         // `&x as T` is `&(x as T)`: where the cast was refused and its
         // message said what was meant (see castPrecedence), the & is taken
         // as meant, its value the cast's type, and nothing more is said.
@@ -8146,6 +8163,9 @@ class CheckContext {
         : `cannot take a range of ${typeToString(objType)}: use a slice or a pointer to an array`)
       return RECOVERY
     }
+    // A refused bound (a type's name) has its error: whether the range fits
+    // is not asked as well.
+    if ([expr.start, expr.end].some((e) => e !== null && this.exprTypes.get(e) === RECOVERY)) return RECOVERY
     return slice(elem, mutable, !proven)
   }
 
@@ -9163,6 +9183,9 @@ class CheckContext {
     const e = unwrap(stripMax(valueType))
     if (valueType === RECOVERY) return { index: null, bindings: null }
     if (e.kind !== 'enum') {
+      // A type whose name is declared twice (a type and an enum) has that
+      // error: which one the pattern meant is not known.
+      if (valueType.kind === 'named' && this.contested.has(valueType.name)) return { index: null, bindings: null, unknown: true }
       // A struct's constructor pattern compares fields, which nothing does yet.
       const sym = this.lookup(pattern.type)
       if (pattern.kind === 'constructor' && sym?.kind === 'type' && unwrap(sym.type).kind === 'tuple') {
@@ -9560,6 +9583,9 @@ class CheckContext {
       return bare ? `'${name}' is a generic type: write ${typeFuncForm(sym.decl)}` : null
     }
     if (sym?.kind !== 'typefunc') {
+      // A name declared twice is the first declaration's, which has the error:
+      // whether it was meant as a generic type is not known.
+      if (this.contested.has(name)) return null
       if (sym?.kind === 'type' || this.pendingTypeNames.has(name)) return `'${name}' is not a generic type`
       const similar = this.findSimilar(name)
       return `unknown generic type '${name}'${similar ? ` — did you mean '${similar}'?` : ''}`
