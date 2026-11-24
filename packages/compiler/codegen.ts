@@ -3874,7 +3874,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   for (const decl of module.decls) {
     if (decl.kind === 'ImportDecl') {
       for (const item of decl.items) {
-        parts.push(importItemToWat(decl.module, item, ctx))
+        parts.push(importItemToWat(decl.module, item, ctx, unnamedImportName(item, checkResult.funcNames, '')))
       }
     }
   }
@@ -4038,6 +4038,26 @@ function untestedInstanceSet(checkResults: ReadonlyMap<string, TypeCheckResult>,
   return found.get(result) ?? new Set()
 }
 
+// The modules of a build without tests, each after those it imports, in the
+// order the checker visits them (typecheckProgram): only the imports outside
+// test blocks are followed (7.1).
+function modulesWithoutTests(modules: ReadonlyMap<string, LoadedModule>, entryPath: string): string[] {
+  const order: string[] = []
+  const seen = new Set<string>()
+  const visit = (path: string) => {
+    if (seen.has(path)) return
+    seen.add(path)
+    const loaded = modules.get(path)
+    if (!loaded) return
+    for (const decl of loaded.module.decls) {
+      if (decl.kind === 'ImportDecl' && isSourceImport(decl.module)) visit(resolveModulePath(decl.module, path))
+    }
+    order.push(path)
+  }
+  visit(entryPath)
+  return order
+}
+
 // A generic is never exported to the host: there is no one function to
 // export, and a generic type is not there at run time at all. Its `export`
 // only makes it importable by other source modules.
@@ -4121,7 +4141,7 @@ function testBuildNames(
         continue
       }
       for (const imported of item.items) {
-        if (imported.item.kind === 'ImportFunc') names.imports.set(imported, `${id}.${imported.item.ident ?? imported.name}`)
+        if (imported.item.kind === 'ImportFunc') names.imports.set(imported, `${id}.${imported.item.ident ?? unnamedImportWat(imported.name)}`)
         if (imported.item.kind === 'ImportGlobal') {
           const ident = imported.item.ident
           const sym = checkResults.get(path)?.symbols.get(ident)
@@ -4186,6 +4206,9 @@ function emitTestDecl(
       for (const imported of item.items) {
         const local = importedAs(imported)
         const wat = names.imports.get(imported)
+        // One that cannot be called is left out: its name can be a key of
+        // another declaration, a nested function's path (unnamedImportWat).
+        if (imported.item.kind === 'ImportFunc' && !imported.item.ident && unnamedImportWat(imported.name) !== imported.name) continue
         if (local !== undefined && wat !== undefined) ctx.nameMap.set(local, wat)
       }
     } else if (item.kind === 'FuncDecl') {
@@ -4507,6 +4530,32 @@ function modulePrefix(filePath: string): string {
   return basename(filePath, '.ents').replace(/[^a-zA-Z0-9_]/g, '_')
 }
 
+// The WAT name of a function import without a local name, given the name the
+// checker knows it by. Where that is an identifier the import is called by
+// it, and it is the import's WAT name too. Any other name cannot be called
+// (7.1) and can be any text: a nested function's path (console.log), the
+// name of a test's function (__test1), a space (two words). Such an import
+// is named with a % first, which no other WAT name has, and with each
+// character a WAT name does not hold, and each %, written as %XX.
+function unnamedImportWat(known: string): string {
+  if (/^[a-z][\p{L}0-9_-]*$/u.test(known)) return known
+  const bytes = (c: string) => [...new TextEncoder().encode(c)].map((b) => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join('')
+  return `%${known.replace(/[^A-Za-z0-9!#&'*+\-./:<=>?@^_`|~]/gu, bytes)}`
+}
+
+// The WAT name of a module's host import of a function, where it has no
+// local name that is an identifier (see unnamedImportWat), with the module's
+// prefix. It is given to importItemToWat as it is: the name the checker knows
+// the import by can be another declaration's key in the module's name map (a
+// nested function's path, console.log).
+function unnamedImportName(item: AST.ImportItem, funcNames: ReadonlyMap<AST.FuncDecl | AST.ImportFunc, string> | undefined, prefix: string): string | undefined {
+  if (item.item.kind !== 'ImportFunc' || item.item.ident) return undefined
+  const known = funcNames?.get(item.item) ?? item.name
+  const wat = unnamedImportWat(known)
+  if (wat === known) return undefined
+  return prefix ? `${prefix}$${wat}` : wat
+}
+
 export function programToWat(
   modules: Map<string, LoadedModule>,
   checkResults: Map<string, TypeCheckResult>,
@@ -4535,9 +4584,23 @@ export function programToWat(
     for (const [expr, value] of result.constants) allConstants.set(expr, value)
     for (const [tuple, order] of result.fieldOrder) allFieldOrders.set(tuple, order)
   }
+  // The modules are laid out in the order the build without tests checks
+  // them, which only the imports outside tests decide: a test's import of a
+  // module checks that module earlier, and one that only tests import is not
+  // in that build at all, and is laid out after the program's data (9.0).
+  const programOrder = options?.includeTests ? modulesWithoutTests(modules, entryPath) : null
+  const rankOf = new Map(programOrder?.map((path, i) => [path, i]))
+  if (programOrder) {
+    const at = (path: string) => rankOf.get(path) ?? programOrder.length
+    sources.sort((a, b) => at(a.path) - at(b.path))
+  }
   // The instances each module leaves out of the build (see untestedInstances)
   const left = untestedInstances(checkResults, tested)
-  const fates = sources.map(({ path, result }) => literalFates(modules.get(path)?.module, result, left.get(path), tested.has(path), !!options?.includeTests, checkResults))
+  const fates = sources.map(({ path, result }) => {
+    const fate = literalFates(modules.get(path)?.module, result, left.get(path), tested.has(path), !!options?.includeTests, checkResults)
+    if (!programOrder || rankOf.has(path)) return fate
+    return (id: number) => (fate(id) === 'none' ? 'none' : 'late')
+  })
   const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }, i) => ({
     literals: result.literals.filter((lit) => fates[i](lit.id) !== 'none'),
     types: result.types,
@@ -4658,7 +4721,9 @@ export function programToWat(
         if (item.kind !== 'ImportDecl' || isSourceImport(item.module)) continue
         for (const imported of item.items) {
           const wat = testNames.imports.get(imported)
-          if (imported.item.kind === 'ImportFunc' && wat !== undefined) own.set(`${id}.${importedAs(imported)}`, wat)
+          // One that cannot be called cannot be given either (unnamedImportWat)
+          if (imported.item.kind !== 'ImportFunc' || (!imported.item.ident && unnamedImportWat(imported.name) !== imported.name)) continue
+          if (wat !== undefined) own.set(`${id}.${importedAs(imported)}`, wat)
         }
       }
     }
@@ -4704,7 +4769,7 @@ export function programToWat(
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'ImportDecl' && !isSourceImport(decl.module)) {
         for (const item of decl.items) {
-          parts.push(importItemToWat(decl.module, item, ctx))
+          parts.push(importItemToWat(decl.module, item, ctx, unnamedImportName(item, result.funcNames, prefixes.get(path) ?? '')))
         }
       }
     }

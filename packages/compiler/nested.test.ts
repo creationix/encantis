@@ -6,7 +6,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { typecheck, typecheckProgram, type TypeCheckResult } from './checker'
-import { programToWatWithTests } from './codegen'
+import { programToWat, programToWatWithTests } from './codegen'
 import { loadModule } from './loader'
 import { createTestHost } from './test-host'
 import { buildMeta } from './meta'
@@ -2913,5 +2913,156 @@ test "empty" { }
 test "with a statement" {
   assert 1 == 1
 }`)).toEqual({ ran: ['only a declaration', 'empty', 'with a statement'], failed: [] })
+  })
+})
+
+// Builds the program of `main.ents` among `files` without its tests, as
+// `encantis wasm` does, and gives its WAT and, where it imports nothing from
+// the host, the exports of an instance of it
+async function buildPlain(files: Record<string, string>): Promise<{ wat: string; exports?: Record<string, () => number> }> {
+  const dir = await mkdtemp(join(tmpdir(), 'encantis-nested-'))
+  try {
+    for (const [name, source] of Object.entries(files)) await writeFile(join(dir, name), source)
+    const path = join(dir, 'main.ents')
+    const load = await loadModule(path, { includeTests: false })
+    if (load.errors.length > 0) throw new Error(load.errors.map((e) => e.message).join('\n'))
+    const checked = typecheckProgram(load.modules, path, { includeTests: false })
+    if (checked.errors.length > 0) throw new Error(checked.errors.map((e) => e.message).join('\n'))
+    const wat = programToWat(load.modules, checked.results, path)
+    const bytes = await wasmOfWat(wat)
+    if (wat.includes('(import "env"')) return { wat }
+    const instance = await WebAssembly.instantiate(await WebAssembly.compile(bytes), {})
+    return { wat, exports: instance.exports as Record<string, () => number> }
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+}
+
+describe('nested functions: test builds, names and the editor (fifth review)', () => {
+  // A test's import of another module is part of the program only when the
+  // tests are built (7.1): the modules are laid out in the order the build
+  // without tests has them, and one that only tests import after all of the
+  // program's data, which keeps its addresses (9.0)
+  test('a test\'s imports of other modules leave the program\'s data at its addresses', async () => {
+    const lib = 'data libdata = "lib"\nexport func where_lib() -> u32 => libdata as u32'
+    const a = 'data adata = "a\'s data"\nexport func addr_a() -> u32 => adata as u32'
+    const b = 'data bdata = "b\'s data, longer"\nexport func addr_b() -> u32 => bdata as u32'
+    // A module only the entry's test imports
+    const onlyTests = {
+      'lib.ents': lib,
+      'w.ents': 'data wdata = "only the tests import this module"\nexport func wlen() -> u32 => wdata.len',
+      'main.ents': `import "./lib" "where_lib" func where_lib() -> u32
+data mine = "abcd"
+export func where_mine() -> u32 => mine as u32
+test "a test that imports a module of its own" {
+  import "./w" "wlen" func wlen() -> u32
+  assert wlen() == 33 && where_lib() == 8 && where_mine() == 11
+}`,
+    }
+    expect((await buildPlain(onlyTests)).exports?.where_mine()).toBe(11)
+    expect(await runProgram(onlyTests)).toMatchObject({ failed: [] })
+    // A test above the module's imports, which imports one of them
+    const both = {
+      'a.ents': a,
+      'b.ents': b,
+      'main.ents': `test "a test above the imports, which imports b" {
+  import "./b" "addr_b" func addr_b() -> u32
+  assert addr_b() == 16 && addr_a() == 8
+}
+import "./a" "addr_a" func addr_a() -> u32
+import "./b" "addr_b" func addr_b() -> u32
+export func where_a() -> u32 => addr_a()
+export func where_b() -> u32 => addr_b()`,
+    }
+    const plain = (await buildPlain(both)).exports
+    expect([plain?.where_a(), plain?.where_b()]).toEqual([8, 16])
+    expect(await runProgram(both)).toMatchObject({ failed: [] })
+    // An imported module's test, checked and not built, imports a module the
+    // program imports
+    const imported = {
+      'a.ents': a,
+      'b.ents': b,
+      'lib.ents': `${lib}
+test "lib's test imports b, which the program imports too" {
+  import "./b" "addr_b" func addr_b() -> u32
+  assert addr_b() > 0
+}`,
+      'main.ents': `import "./lib" "where_lib" func where_lib() -> u32
+import "./a" "addr_a" func addr_a() -> u32
+import "./b" "addr_b" func addr_b() -> u32
+export func where() -> u32 => where_lib() * 10000 + addr_a() * 100 + addr_b()
+test "the program's data keeps its addresses" {
+  assert where_lib() == 8 && addr_a() == 11 && addr_b() == 19
+}`,
+    }
+    expect((await buildPlain(imported)).exports?.where()).toBe(81119)
+    expect(await runProgram(imported)).toMatchObject({ failed: [] })
+  })
+
+  // An instance that looks a function up at its site is laid out by its
+  // arguments and its site, whichever site asked for it first: a test that
+  // asks first moves no instance of the program's
+  test('an instance a test asks for first leaves the program\'s instances where they are', async () => {
+    const site = (n: number) => `import "./gen" "site" func site(comptime T: type, x: T) -> *mut u32
+func tick(x: u32) -> u32 => x + ${n}`
+    const files = {
+      'gen.ents': `export func site(comptime T: type, x: T) -> *mut u32 {
+  let c = &mut 0:u32
+  c.* = tick(x)
+  return c
+}`,
+      'x.ents': `${site(1000)}
+export func one() -> u32 => 1
+test "x's test asks for site(u32) with x as the site" {
+  assert site(1:u32).* == 1001
+}`,
+      'zeta.ents': `${site(1)}\nexport func z() -> u32 => site(1:u32) as u32`,
+      'alpha.ents': `${site(2)}\nexport func a() -> u32 => site(2:u32) as u32`,
+      'main.ents': `import "./x" "one" func one() -> u32
+import "./zeta" "z" func z() -> u32
+import "./alpha" "a" func a() -> u32
+export func where_z() -> u32 => z()
+export func where_a() -> u32 => a()
+test "the program's cells keep their addresses" {
+  assert one() == 1 && where_z() == 12 && where_a() == 8
+}`,
+    }
+    const plain = (await buildPlain(files)).exports
+    expect([plain?.where_z(), plain?.where_a()]).toEqual([12, 8])
+    expect(await runProgram(files)).toMatchObject({ failed: [] })
+  })
+
+  // A host import without a local name that is an identifier cannot be
+  // called (7.1), and its name can be any text: its WAT name is one no other
+  // declaration has
+  test('an import without a local name that cannot be called is a WAT name of its own', async () => {
+    const console = `import "env" "console.log" func(msg: []u8)
+export func console(msg: []u8) -> u32 {
+  func log() -> u32 => msg.len
+  return log()
+}`
+    // In a module another imports, and in the entry
+    const lib = await buildPlain({ 'lib.ents': console, 'main.ents': 'import "./lib" "console" func console(msg: []u8) -> u32\nexport memory\nexport func m() -> u32 => console("hello")' })
+    expect(lib.wat).toContain('(import "env" "console.log" (func $lib$%console.log ')
+    expect(lib.wat).toContain('(func $lib$console.log ')
+    const entry = await buildPlain({ 'main.ents': `${console}\nexport memory` })
+    expect(entry.wat).toContain('(func $%console.log ')
+    // A space, and the names of a test's functions
+    expect((await buildPlain({ 'main.ents': 'import "env" "two words" func(x: u32)\nexport func m() -> u32 => 1' })).wat).toContain('$%two%20words')
+    expect(await runProgram({
+      'main.ents': `import "env" "__test1" func()
+import "env" "__test2.helper" func()
+export func m() -> u32 => 1
+test "one" { assert m() == 1 }
+test "two" {
+  import "env" "console.log" func(msg: []u8)
+  func helper() -> u32 => 2
+  func console() -> u32 {
+    func log() -> u32 => 3
+    return log()
+  }
+  assert helper() + console() == 5
+}`,
+    })).toMatchObject({ ran: ['one', 'two'], failed: [] })
   })
 })

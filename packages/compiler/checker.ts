@@ -10625,7 +10625,11 @@ class CheckContext {
   // written by hand in the generic's place would have registered them: the
   // instances of one generic follow each other in the order of their names,
   // as their code does. Without this a generic with a string in its body and
-  // its hand-written twin would differ in every address.
+  // its hand-written twin would differ in every address. An instance that
+  // depends on its site is placed by its arguments and its site's tag,
+  // whichever site asked first and so has the name without the tag: a test
+  // build, whose tests can ask before the program does, then lays out the
+  // program's instances as the build without tests does (9.0).
   private placeInstanceLiterals(): void {
     const own = this.pendingLiterals.filter((lit) => lit.id < INSTANCE_STRIDE)
     if (own.length === this.pendingLiterals.length) return
@@ -10633,9 +10637,10 @@ class CheckContext {
       const base = inst.index * INSTANCE_STRIDE
       return this.pendingLiterals.filter((lit) => lit.id >= base && lit.id < base + INSTANCE_STRIDE)
     }
+    const placedBy = (inst: Instance) => (inst.usedSite && inst.name.endsWith('>') ? `${inst.name}@${inst.site.moduleTag()}` : inst.name)
     const placed: { at: number; literals: PendingLiteral[] }[] = []
     for (const [generic, at] of this.literalSlots) {
-      const instances = this.instances.filter((inst) => inst.of === generic).sort((a, b) => (a.name < b.name ? -1 : 1))
+      const instances = this.instances.filter((inst) => inst.of === generic).sort((a, b) => (placedBy(a) < placedBy(b) ? -1 : 1))
       placed.push({ at, literals: instances.flatMap(ofInstance) })
     }
     // Slots were noted in source order: filling the last one first leaves the
