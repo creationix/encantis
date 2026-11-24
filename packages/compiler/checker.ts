@@ -470,6 +470,11 @@ export interface TypeCheckResult {
   nestedCalls: Map<AST.CallExpr, NestedCall>
   // The captured variables an instance takes and gives back, by its name
   instanceHidden: Map<string, CaptureSets>
+  // A function whose name a test then took over in module scope (#74), the
+  // module's or an earlier test's, by where its declaration is recorded:
+  // what the name is there and outside the test, which the symbols by name
+  // no longer say (see seenAs)
+  takenOver: Map<number, Symbol>
 }
 
 // A call in an instance of another module's generic, at its place in the
@@ -718,6 +723,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     varFrames: ctx.varFrames,
     nestedCalls: ctx.nestedCalls,
     instanceHidden: new Map(ctx.instances.filter((i) => i.hidden.captures.length > 0).map((i) => [i.name, i.hidden])),
+    takenOver: ctx.takenOver,
   }
 }
 
@@ -1276,6 +1282,8 @@ class CheckContext {
   // test's in those tests alone (see seenAs)
   private declaredInTest = new WeakMap<Symbol, AST.TestDecl>()
   private replacedByTest = new WeakMap<Symbol, Symbol | undefined>()
+  // What each of those replaced, by where it was declared (TypeCheckResult)
+  takenOver = new Map<number, Symbol>()
   private openTests: AST.TestDecl[] = []
   // The name the output gives each function a test declares at its top, or
   // imports from the host, by its symbol: what an instance given it calls
@@ -3401,6 +3409,7 @@ class CheckContext {
     const at = this.symbolDefOffsets.get(name)
     if (at !== undefined && !this.declaredAt.has(sym)) this.declaredAt.set(sym, at)
     if (before && beforeAt !== undefined && !this.declaredAt.has(before)) this.declaredAt.set(before, beforeAt)
+    if (before?.kind === 'func' && beforeAt !== undefined && !this.takenOver.has(beforeAt)) this.takenOver.set(beforeAt, before)
   }
 
   // A many-pointer is refused where it's written through; memcpy may read from one.
@@ -10568,8 +10577,15 @@ class CheckContext {
       // in an instance: all of them count as used, until the instances say
       // which they call (see settleGuesses).
       for (const known of this.overloads.get(name) ?? [name]) {
-        this.recordReference(known, offset)
-        const def = this.symbolDefOffsets.get(known)
+        // A name a test put in module scope (#74) is, in a generic's body,
+        // the module's function of the name, as module code has it (12.4,
+        // see seenAs), and no function where only tests declare it
+        const sym = this.moduleScope.symbols.get(known)
+        const seen = sym && this.seenAs(sym)
+        if (!seen) continue
+        const resolved = seen === sym ? undefined : seen
+        this.recordReference(known, offset, true, resolved)
+        const def = resolved ? this.declaredAt.get(resolved) : this.symbolDefOffsets.get(known)
         if (called && def !== undefined) this.guessedCalls.push({ generic: decl, def, use: offset })
       }
     }

@@ -402,6 +402,10 @@ export function hover(
     const captures = capturesText(nested)
     return { name, type: typeToString(nested.type), kind: 'func', nestedIn: nestedParent(nested), ...(captures ? { captures } : {}) }
   }
+  // A function whose name a test took over (#74), where it is the one
+  // meant: a comptime argument outside the test
+  const replaced = defined === undefined ? undefined : checkResult.takenOver.get(defined)
+  if (replaced) return { name, type: symbolTypeString(replaced, source, name), kind: replaced.kind }
   if (defined !== undefined && localDefinedAt(checkResult, defined)) {
     const type = localType(checkResult, start) ?? localType(checkResult, defined)
     // Used in a nested function that does not declare it: captured
@@ -418,8 +422,11 @@ export function hover(
   }
 
   // Check module-scope symbols first. A function that shares its name is, at
-  // its own declaration, the one declared there.
-  const sym = checkResult.symbols.get(declaredAt(module, checkResult, start, name) ?? name)
+  // its own declaration, the one declared there, and so is one whose name a
+  // test took over.
+  const declaration = funcDeclaredAt(module, checkResult, start, name)
+  const sym = (declaration && checkResult.takenOver.get(declaration.span.start))
+    ?? checkResult.symbols.get(declaredAt(module, checkResult, start, name) ?? name)
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded
     // the one that call uses, as the type of the callee. It did the same for

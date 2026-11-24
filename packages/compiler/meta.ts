@@ -469,9 +469,12 @@ class MetaBuilder {
       // A function a test declared under a module function's name (#74), or
       // under another test's, holds the name: each declaration has its own
       // uses, recorded where it is (see recordedAt)
+      // with its own type, which the name no longer has
       const checked = this.checked(decl)
       const recorded = this.checkResult.references.has(checked.span.start) ? checked.span.start : undefined
-      const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset, undefined, decl.inline, known, recorded)
+      const own = this.checkResult.takenOver.get(checked.span.start)
+      const type = own?.kind === 'func' ? own.type : sym.type
+      const symbolIndex = this.addSymbol(decl.ident, 'func', type, offset, undefined, decl.inline, known, recorded)
 
       // Collect params and locals (also adds hints for params/returns)
       this.collectFuncBody(decl, symbolIndex)

@@ -2686,6 +2686,58 @@ test "later" {
     expect(meta.symbols.filter((s) => s.name === 'f').map((s) => s.refs.length)).toEqual([3, 1])
   })
 
+  // Hover there shows the module's function, also at its declaration where
+  // the test's function of the name has other parameters
+  test('hover shows the module\'s function where a comptime argument gives it after a test took its name', () => {
+    const src = `func apply(comptime k: () -> u32) -> u32 => k()
+func f() -> u32 => 1
+func outer(comptime T: type) -> u32 => apply(f)
+test "takes over f" {
+  func f(x: u64) -> u64 => x
+  assert f(5) == 5
+}
+export func below() -> u32 => apply(f) + outer(u32)
+test "later" {
+  assert apply(f) == 1
+}`
+    const { module, result } = checkWithTests(src)
+    expect(result.errors).toEqual([])
+    const at = (text: string, skip: number) => src.indexOf(text) + skip
+    const shown = (offset: number) => {
+      const h = hover(src, module, result, offset)
+      return h && `${h.kind} ${h.type}`
+    }
+    expect(shown(at('f() -> u32 => 1', 0))).toBe('func func() -> u32')
+    expect(shown(at('apply(f)\ntest', 6))).toBe('func func() -> u32')
+    expect(shown(at('apply(f) + outer', 6))).toBe('func func() -> u32')
+    expect(shown(at('apply(f) == 1', 6))).toBe('func func() -> u32')
+    expect(shown(at('f(x: u64)', 0))).toBe('func func(x: u64) -> u64')
+  })
+
+  // A comptime argument in a generic's body is module code: a use of the
+  // module's function, and none of the test's that took the name
+  test('a comptime argument in a generic\'s body is a use of the module\'s function only', () => {
+    const src = `func apply(comptime f: () -> u32) -> u32 => f()
+func shared() -> u32 => 1
+test "takes" {
+  func shared() -> u32 => 2
+  assert apply(shared) == 2
+}
+func gk(comptime T: type, x: T) -> u32 => apply(shared)
+func never(comptime T: type) -> u32 => apply(shared)
+export func m3(a: u32) -> u32 => gk(a) + apply(shared)`
+    const { module, result } = checkWithTests(src)
+    expect(result.errors).toEqual([])
+    const own = src.indexOf('shared() -> u32 => 1')
+    const test = src.indexOf('shared() -> u32 => 2')
+    const inTest = src.indexOf('apply(shared) == 2') + 'apply('.length
+    const generic = src.indexOf('x: T) -> u32 => apply(') + 'x: T) -> u32 => apply('.length
+    const uninstantiated = src.indexOf('T: type) -> u32 => apply(') + 'T: type) -> u32 => apply('.length
+    const below = src.indexOf('gk(a) + apply(') + 'gk(a) + apply('.length
+    expect(rename(src, module, result, test)?.locations.map((l) => l.offset)).toEqual([test, inTest])
+    expect(rename(src, module, result, own)?.locations.map((l) => l.offset)).toEqual([own, generic, uninstantiated, below])
+  })
+
   // A function or an import declared in a test cannot take the name of an
   // import of the module (12.4), unless it imports the same function again
   test('a test\'s function or import cannot take the name of an import of the module', () => {
