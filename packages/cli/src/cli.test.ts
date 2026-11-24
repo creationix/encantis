@@ -458,6 +458,36 @@ export func high(n: i32) -> (t: u32) {
       expect(m.high(5)).toBe(1)
     }
   }, 60_000)
+
+  // release() has a try that runs binaryen's rse pass once before -Oz, and
+  // keeps it where it is the smallest: this module is 4 bytes smaller with it
+  // (110 bytes against 114, with the binaryen package.json pins). Without the
+  // pass, here a binaryen whose runPasses does nothing, that try is the plain
+  // -Oz one. (#172; without the try, release builds of examples/ and lib/
+  // are 45 bytes larger.)
+  test('--release keeps the try that runs rse first where it is smaller', async () => {
+    const source = `export "mem" memory
+type Tree = (kids: []Tree, v: u32)
+export func depth(t: Tree) -> u32 {
+  let deepest: u32 = 0
+  for k in t.kids {
+    deepest = max(deepest, depth(k))
+  }
+  return deepest + 1
+}
+`
+    const binaryen = (await import('binaryen')).default
+    const noPasses = Object.create(binaryen)
+    noPasses.readBinary = (bytes: Uint8Array) => {
+      const module = binaryen.readBinary(bytes)
+      module.runPasses = () => {}
+      return module
+    }
+    const debug = await watToWasm('rse.ents', watOfSource(source))
+    const withRse = await optimizeWasm(debug, 'release')
+    const withoutRse = await optimizeWasm(debug, 'release', async () => noPasses)
+    expect(withRse.length).toBeLessThan(withoutRse.length)
+  }, 60_000)
 })
 
 // encantis test gives each imported global the zero of its type. A module
