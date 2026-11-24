@@ -791,6 +791,9 @@ export global pk: M = B(((k32)))
 export global pa: M = L((5:u32))
 export global plain: u64 = (sizeof(u32))
 export global wide: u128 = ((k32))
+export global sum: u64 = (sizeof(u32) + 116)
+export global sums: [2]i64 = [(0 - 1), (sizeof(u32) + 116)]
+export global ps2: M = L((sizeof(u32) + 1))
 `
     const globals = wat(source).split('\n').filter((l) => l.trim().startsWith('(global'))
     // Each initializer is one constant instruction
@@ -802,6 +805,8 @@ export global wide: u128 = ((k32))
     // Parentheses are their value, which widens as it would without them.
     expect(['ps_0', 'pl_0', 'pl_1', 'pk_0', 'pa_0', 'plain', 'wide_0', 'wide_1'].map(value))
       .toEqual([4n, 3n, 0n, 0x4014000000000000n, 5n, 4n, 5n, 0n])
+    // ...also where they widen as a whole, a sum in parentheses
+    expect(['sum', 'sums_0', 'sums_1', 'ps2_0', 'ps2_1'].map(value)).toEqual([120n, -1n, 120n, 5n, 0n])
   })
 
   test('enums in structs, arrays, instances and branches are their registers', () => {

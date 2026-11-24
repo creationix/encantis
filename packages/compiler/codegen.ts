@@ -248,15 +248,19 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
 
 export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
   const wat = wideningOf(expr, ctx)(exprValueToWat(expr, ctx))
-  // A constant in a global's initializer has to be a constant instruction.
-  // Where it isn't one as written (1 + 1, an integer widened to a float),
-  // the checker has worked out its value.
+  // A constant in a global's initializer has to be constant instructions.
+  // Where it isn't as written (1 + 1, an integer widened to a float), the
+  // checker has worked out its value. Parentheses have the value of what is
+  // inside them, which gives it already where that is where it widens.
   const constant = ctx.constants.get(expr)
-  const type = constant && !CONSTANT.test(wat) && valueType(expr, ctx)
+  const type = constant && !CONSTANTS.test(wat) && valueType(expr, ctx)
   return (constant && type && constantToWat(constant, type)) || wat
 }
 
 const CONSTANT = /^\((?:[if](?:32|64)\.const|ref\.func) [^\s()]+\)$/
+// One constant instruction, or several: the parts of a value that takes more
+// than one wasm value (a u128 is two i64)
+const CONSTANTS = /^\((?:[if](?:32|64)\.const|ref\.func) [^\s()]+\)(?:\s+\((?:[if](?:32|64)\.const|ref\.func) [^\s()]+\))*$/
 
 // Every implicit widening happens here: the checker says which expressions
 // meet a wider type (as an operand, an argument, an initializer, a branch).
@@ -920,8 +924,8 @@ type StoredPart = { offset: number; type: RT.PrimitiveRT | RT.PointerRT; value: 
 // locals unless they are a variable's (or constants), and its parts stored
 // in field order, an enum part by its tag and then one if for each payload
 // variant (nested, or flat for many: testChain), which stores that variant's
-// fields from its slots. The padding of
-// an enum is never written. The address is computed first.
+// fields from its slots. The padding of an enum is never written. The
+// address is computed first.
 function storeHolding(type: ResolvedType, ptr: string, value: string, valueExpr: AST.Expr | undefined, ctx: CodegenContext): string {
   const fixed = valueExpr ? fixedParts(type, valueExpr, 0, ctx) : null
   if (fixed) return storeParts(fixed, ptr, ctx)

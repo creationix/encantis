@@ -3219,17 +3219,19 @@ class CheckContext {
   // expression as written would need an instruction (1 + 1, a literal that
   // widens, a cast that narrows).
   private isConstantInitializer(expr: AST.Expr): boolean {
-    // Parentheses are their value, and what it widens to is said of the
-    // value inside them (`(sizeof(u32))` for a u64): it is recorded there.
+    // Parentheses are their value, which widens either inside them
+    // (`(sizeof(u32))` for a u64) or as a whole (`(sizeof(u32) + 1)`): it is
+    // recorded on both, and codegen takes the first that is constants.
     const inner = groupedExpr(expr)
-    if (inner) return this.isConstantInitializer(inner)
+    if (inner && !this.isConstantInitializer(inner)) return false
     // A refused value has its error
-    if (this.refusedValue(expr)) return true
+    if (!inner && this.refusedValue(expr)) return true
     const value = this.evalComptimeExpr(expr, true)
     if (value) {
       this.constants.set(expr, value)
       return true
     }
+    if (inner) return true
     // An address cast to another pointer type or to a 32-bit integer is the
     // same i32, so the same constant.
     const castee = castOperand(expr)
@@ -9302,7 +9304,7 @@ class CheckContext {
     const index = e.variants.findIndex((v) => v.name === pattern.type)
     // An enum whose name is declared twice is the first declaration: a
     // variant of the one left out has that error.
-    if (index < 0 && e.name !== undefined && this.contested.has(e.name)) return { index: null, bindings: null, unknown: true }
+    if (index < 0 && e.name !== undefined && this.contested.has(e.name) && this.leftOutVariants.has(pattern.type)) return { index: null, bindings: null, unknown: true }
     if (index < 0) {
       error(`${typeToString(valueType)} has no variant '${pattern.type}': its variants are ${spoken(e.variants.map((v) => v.name))}`)
       return { index: null, bindings: null, unknown: true }
