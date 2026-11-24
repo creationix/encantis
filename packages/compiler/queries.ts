@@ -87,15 +87,18 @@ function shorthandAt(source: string, start: number, name: string): boolean {
   return /^:\s*[,)]/.test(source.slice(start + name.length))
 }
 
-// Whether `start` is where a variant or a payload field of an enum left out
-// is named: one declared second to a declaration of its name, which declares
-// nothing (2.9). The editor answers nothing there, whatever else of the
-// module is spelled like it.
+// Whether `start` is where an enum left out, or a variant or a payload
+// field of one, is named: one declared second to a declaration of its name,
+// which declares nothing (2.9); or where a type left out so is. The editor
+// answers nothing there, whatever else of the module is spelled like it.
 export function leftOutNameAt(module: AST.Module, checkResult: TypeCheckResult, start: number): boolean {
   for (const item of module.decls) {
     const decl = item.kind === 'ExportDecl' ? item.item : item
+    // A type declared second under a name another declaration has declares
+    // nothing either: its name is no use of the first's
+    if (decl.kind === 'TypeDecl' && checkResult.leftOut.has(decl) && decl.ident.span.start === start) return true
     if (decl.kind !== 'EnumDecl' || !checkResult.leftOut.has(decl) || start < decl.span.start || start >= decl.span.end) continue
-    return decl.variants.some((v) => v.span.start === start || (v.fields ?? []).some((f) => f.ident !== null && (f.identSpan?.start ?? f.span.start) === start))
+    return decl.identSpan.start === start || decl.variants.some((v) => v.span.start === start || (v.fields ?? []).some((f) => f.ident !== null && (f.identSpan?.start ?? f.span.start) === start))
   }
   return false
 }
@@ -457,8 +460,11 @@ export function hover(
       const called = calledType(module, checkResult, start)
       if (called) return { name, type: typeToString(called), kind: sym.kind, ...callOf(source, module, checkResult, start, name) }
     }
-    // A def or a global of a refused value has no type or value to show
-    if ((sym.kind === 'def' || sym.kind === 'global') && isRefusedType(sym.type)) return { name, type: '', kind: sym.kind }
+    // A def, a global or data of a refused value has no type or value to
+    // show (data is a def whose value is its address)
+    if ((sym.kind === 'def' || sym.kind === 'global') && isRefusedType(sym.type)) {
+      return { name, type: '', kind: sym.kind === 'def' && sym.value.kind === 'data_ptr' ? 'data' : sym.kind }
+    }
     const result: HoverResult = {
       name,
       type: symbolTypeString(sym, source, name),
@@ -517,6 +523,8 @@ export function findReferences(
   const name = identAtOffset(source, offset)
   if (!name) return null
 
+  // A name of an enum or a type left out declares nothing
+  if (leftOutNameAt(module, checkResult, wordStart(source, offset))) return null
   // A variant whose name an earlier declaration has: the patterns that name it
   const clash = clashingVariantAt(module, checkResult, wordStart(source, offset))
   if (clash) return { definition: { offset: clash.declared, length: name.length }, references: clash.uses.map((r) => ({ offset: r, length: name.length })) }
@@ -682,7 +690,7 @@ export function documentSymbols(
           symbols.push({
             name: decl.ident,
             kind: 'func',
-            type: sym ? symbolTypeString(sym, source) : '',
+            type: sym ? symbolTypeString(sym, source, undefined, decl.signature) : '',
             offset: decl.span.start,
             length: decl.ident.length,
             exported: false,
@@ -768,7 +776,7 @@ export function documentSymbols(
           symbols.push({
             name: item.ident,
             kind: 'func',
-            type: sym ? symbolTypeString(sym, source) : '',
+            type: sym ? symbolTypeString(sym, source, undefined, item.signature) : '',
             offset: item.span.start,
             length: item.ident.length,
             exported: true,
@@ -819,16 +827,33 @@ export function signatureHelp(
   const ft = called ?? (sym?.kind === 'func' ? sym.type : null)
   if (ft?.kind !== 'func') return null
 
+  // A parameter or a result of a type that did not resolve is shown as its
+  // type is written (p: Nope), as the function hovers
+  const decl = !called && [...ft.params, ...ft.returns].some((f) => isRefusedType(f.type)) ? funcDeclNamed(module, name) : null
+  const written = (list: AST.Type | undefined, i: number, type: ResolvedType): string => {
+    const field = list?.kind === 'CompositeType' ? list.fields[i] : i === 0 ? null : undefined
+    const at = field ? field.type : field === null ? list : undefined
+    return at && isRefusedType(type) ? source.slice(at.span.start, at.span.end) : typeToString(type)
+  }
   return {
     name,
-    params: ft.params.map(p => ({
+    params: ft.params.map((p, i) => ({
       name: p.name ?? '',
-      type: typeToString(p.type),
+      type: written(decl?.signature.input, i, p.type),
     })),
     returnType: ft.returns.length === 0
       ? '()'
-      : ft.returns.map(r => r.name ? `${r.name}: ${typeToString(r.type)}` : typeToString(r.type)).join(', '),
+      : ft.returns.map((r, i) => r.name ? `${r.name}: ${written(decl?.signature.output, i, r.type)}` : written(decl?.signature.output, i, r.type)).join(', '),
   }
+}
+
+// The function a module declares under a name, exported or not
+function funcDeclNamed(module: AST.Module, name: string): AST.FuncDecl | null {
+  for (const decl of module.decls) {
+    const item = decl.kind === 'ExportDecl' ? decl.item : decl
+    if (item.kind === 'FuncDecl' && item.ident === name) return item
+  }
+  return null
 }
 
 export async function workspaceSymbols(
@@ -895,7 +920,13 @@ function typeCostAnnotation(type: ResolvedType): string {
   return ''
 }
 
-function symbolTypeString(sym: CheckSymbol, source?: string, name?: string): string {
+// A signature as it is written: (p: Nope) -> (r: Nope)
+function writtenSignature(source: string, { input, output }: AST.FuncSignature): string {
+  const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${source.slice(output.span.start, output.span.end)}`
+  return `${source.slice(input.span.start, input.span.end)}${returns}`
+}
+
+function symbolTypeString(sym: CheckSymbol, source?: string, name?: string, signature?: AST.FuncSignature): string {
   // A generic has a signature per instance, not one of its own: what there is
   // to show is the one it was written with.
   if (sym.kind === 'generic') {
@@ -909,7 +940,14 @@ function symbolTypeString(sym: CheckSymbol, source?: string, name?: string): str
     return params >= 0 && params < end ? `generic type${source?.slice(params, end)}` : 'generic type'
   }
   const base = typeToString(sym.type)
-  if (sym.kind === 'func') return base
+  if (sym.kind === 'func') {
+    // A parameter or a result of a type that did not resolve has no type to
+    // show: the signature is as it is written, as it hovers
+    const refused = [...sym.type.params, ...sym.type.returns].some((f) => isRefusedType(f.type))
+    return refused && source && signature ? `func${writtenSignature(source, signature)}` : base
+  }
+  // A refused value (a def or a global given one) has no type to show
+  if (isRefusedType(sym.type) && (sym.kind === 'def' || sym.kind === 'global')) return ''
   // A variant: what it is constructed from, and its enum
   if (sym.kind === 'variant') {
     const e = unwrap(sym.type)

@@ -14,7 +14,7 @@ function server(options: ServerOptions = {}) {
   const sent = new Map<string, { message: string }[]>()
   const connection = new Proxy({}, {
     get(_target, name: string) {
-      if (name === 'languages') return { semanticTokens: { on: () => {} }, inlayHint: { on: (h: Handler) => handlers.set('onInlayHint', h) } }
+      if (name === 'languages') return { semanticTokens: { on: (h: Handler) => handlers.set('tokens', h) }, inlayHint: { on: (h: Handler) => handlers.set('onInlayHint', h) } }
       if (name === 'listen') return () => {}
       if (name === 'sendDiagnostics') return (p: { uri: string; diagnostics: { message: string }[] }) => sent.set(p.uri, p.diagnostics)
       return (handler: Handler) => {
@@ -748,6 +748,100 @@ export func f(n: *Node, e: *Even) -> u32 {
   test('none in a declaration that does not parse yet', async () => {
     const edited = text.replace('  return p.x + q.y', '  return p.x + (q.y')
     expect(await hinted(text, edited)).toEqual([])
+  })
+})
+
+describe('refused values, clashes and left-out declarations in the editor', () => {
+  const hoverAt = (s: ReturnType<typeof server>, file: string, text: string, offset: number) =>
+    s.at<{ contents: { value: string } } | null>('onHover', file, text, offset)?.contents.value.replace(/```\w*\n?/g, '').trim() ?? null
+  // The semantic tokens of a document, each as line:col and its type
+  const tokensOf = async (s: ReturnType<typeof server>, file: string) => {
+    const { data } = (await s.ask<Promise<{ data: number[] }> | { data: number[] }>('tokens', { textDocument: { uri: file } })) as { data: number[] }
+    const out = new Map<string, number>()
+    let line = 0
+    let col = 0
+    for (let i = 0; i < data.length; i += 5) {
+      line += data[i]
+      col = data[i] === 0 ? col + data[i + 1] : data[i + 1]
+      out.set(`${line + 1}:${col + 1}`, data[i + 3])
+    }
+    return out
+  }
+
+  test('a refused def, data or global hovers with no type, and so is listed', async () => {
+    const file = 'file:///ws/rf.ents'
+    const text = 'global gg = -true\ndef dv: u32 = Red\nenum Color { Red, Grey(b: u8) }\ndata dk = -true\nexport func f() -> u32 {\n  let e = dv\n  let m = dk\n  return 0\n}\nfunc u(p: Nope) -> (r: Nope) { r = p }\nexport func w() -> u32 => u(1)\n'
+    const s = server()
+    await s.open(file, text)
+    expect(hoverAt(s, file, text, text.indexOf('dv:'))).toBe('def dv')
+    expect(hoverAt(s, file, text, text.indexOf('= dv') + 2)).toBe('def dv')
+    expect(hoverAt(s, file, text, text.indexOf('dk ='))).toBe('data dk')
+    expect(hoverAt(s, file, text, text.indexOf('= dk') + 2)).toBe('data dk')
+    const symbols = s.ask<DocumentSymbol[]>('onDocumentSymbol', { textDocument: { uri: file } })
+    expect(symbols.filter((d) => ['gg', 'dv', 'dk'].includes(d.name)).map((d) => [d.name, d.detail ?? ''])).toEqual([['gg', ''], ['dv', ''], ['dk', '']])
+    const help = s.at<SignatureHelp>('onSignatureHelp', file, text, text.indexOf('u(1)') + 2)
+    expect(help.signatures[0].label).toBe('u(p: Nope) -> (r: Nope)')
+  })
+
+  test('a comptime value parameter is a parameter, a comptime function parameter a function', async () => {
+    const file = 'file:///ws/ct.ents'
+    const text = 'func ap(comptime f: (x: u32) -> u32, comptime n: u32, x: u32) -> u32 => f(x) + n\nfunc inc(x: u32) -> u32 => x + 1\nexport func g(x: u32) -> u32 => ap(inc, 2, x)\n'
+    const s = server()
+    await s.open(file, text)
+    const tokens = await tokensOf(s, file)
+    expect([tokens.get('1:18'), tokens.get('1:47'), tokens.get('1:73'), tokens.get('1:80')]).toEqual([1, 2, 1, 2])
+  })
+
+  test('a variant whose name an earlier declaration has is shown as its enum\'s where it is declared', async () => {
+    const file = 'file:///ws/cv.ents'
+    const text = 'enum A { Red }\nenum B { Blue(x: u8), Red(r: u8) }\nexport func f(b: B) -> u32 => match b {\n  Red(r) => r as u32\n  _ => 0\n}\n'
+    const s = server()
+    await s.open(file, text)
+    const red = text.indexOf('Red(r: u8)')
+    expect(hoverAt(s, file, text, red)).toBe('variant Red:(r:u8) -> B = 1')
+    expect((await tokensOf(s, file)).get('2:23')).toBe((await tokensOf(s, file)).get('2:10'))
+    const symbols = s.ask<DocumentSymbol[]>('onDocumentSymbol', { textDocument: { uri: file } })
+    const b = symbols.find((d) => d.name === 'B')
+    expect(b?.children?.map((c) => [c.name, c.detail])).toEqual([['Blue', '(x:u8) -> B'], ['Red', '(r:u8) -> B']])
+  })
+
+  test('an enum or a type declared second declares nothing: nothing is answered at its name', async () => {
+    const file = 'file:///ws/lo.ents'
+    const text = 'enum Q { A, B(n: u8) }\nenum Q { C }\ntype Q = (n: u8)\nexport func f(q: Q) -> u32 => match q {\n  A => 1\n  B(n:) => n as u32\n}\n'
+    const s = server()
+    await s.open(file, text)
+    for (const at of [text.indexOf('Q { C'), text.indexOf('Q = (')]) {
+      expect(hoverAt(s, file, text, at)).toBeNull()
+      expect(s.at('onDefinition', file, text, at)).toBeNull()
+      expect(s.at<unknown[] | null>('onReferences', file, text, at, { context: { includeDeclaration: true } }) ?? []).toEqual([])
+    }
+  })
+
+  test('a rename that only moves the place an error already has says, or the name it says, adds no error', async () => {
+    const file = 'file:///ws/rp.ents'
+    const text = 'export func f(k: u32) -> u32 {\n  let kz = 1 let b = k let b = 2\n  return b\n}\n'
+    const s = server()
+    await s.open(file, text)
+    const edit = await s.at<Promise<WorkspaceEdit>>('onRenameRequest', file, text, text.indexOf('kz'), { newName: 'kzz' })
+    expect(applied(text, edit, file)).toContain('let kzz = 1')
+    const colors = 'enum A { Red, Green(g: u8) }\nenum B { Red(r: u8), Green }\nexport func k() -> B => Red(1)\n'
+    const other = 'file:///ws/cv1.ents'
+    await s.open(other, colors)
+    const renamed = await s.at<Promise<WorkspaceEdit>>('onRenameRequest', other, colors, colors.indexOf('Red'), { newName: 'Rouge' })
+    expect(applied(colors, renamed, other)).toBe('enum A { Rouge, Green(g: u8) }\nenum B { Red(r: u8), Green }\nexport func k() -> B => Rouge(1)\n')
+  })
+
+  test('a variant whose name an earlier declaration has is not renamed where a module that imports its enum takes it apart', async () => {
+    const lib = 'file:///ws/lib.ents'
+    const use = 'file:///ws/use.ents'
+    const libText = 'type Text = u32\nenum Json { None, Number(f64), Text(s: []u8) }\nexport func num(x: f64) -> Json => Number(x)\n'
+    const useText = 'import "./lib.ents" "num" func num(x: f64) -> Json\nexport func val(x: f64) -> u32 => match num(x) {\n  None => 0\n  Number(n) => n as u32\n  Text(s:) => s.len\n}\n'
+    const files = new Map([[pathOf(lib) as string, libText], [pathOf(use) as string, useText]])
+    const s = server({ findFiles: async () => [lib, use], readFile: async (path) => files.get(path) ?? null })
+    await s.open(lib, libText)
+    await expect(s.at<Promise<WorkspaceEdit>>('onRenameRequest', lib, libText, libText.indexOf('Text(s'), { newName: 'Txt' })).rejects.toThrow(
+      "renamed to 'Txt', use.ents, which uses this module, would not check: Json has no variant 'Text'",
+    )
   })
 })
 

@@ -681,8 +681,16 @@ class MetaBuilder {
     const e = unwrap(sym.type)
     const symbolIndex = this.addSymbol(decl.ident, 'type', e.kind === 'enum' ? enumText(e) : sym.type, decl.identSpan.start)
     this.typeRegistry.registerWithSymbol(sym.type, symbolIndex)
-    for (const v of decl.variants) {
+    for (const [index, v] of decl.variants.entries()) {
       const variant = this.checkResult.symbols.get(v.name)
+      // One whose name an earlier declaration has is its enum's all the same
+      // (queries' clashingVariantAt), and no symbol of the module: its
+      // declaration is shown as its enum's variant, as its patterns are
+      if (this.checkResult.leftOut.has(v) && e.kind === 'enum' && e.variants[index]) {
+        const shown = variantSignature(e.variants[index], decl.ident)
+        this.addHint(v.span.start, v.name.length, this.typeRegistry.registerText(shown), undefined, String(index), undefined, 'variant')
+        continue
+      }
       if (variant?.kind !== 'variant' || this.checkResult.symbolDefOffsets.get(v.name) !== v.span.start) continue
       // A payload variant as what it is constructed from: (r: u8) -> Color
       const declared = e.kind === 'enum' ? e.variants[variant.index] : undefined
@@ -856,7 +864,7 @@ class MetaBuilder {
     if (doc) symbol.doc = doc
     if (value) symbol.value = value
     if (inline) symbol.inline = true
-    if ((local || kind === 'def' || kind === 'global') && typeof type !== 'string' && isRefusedType(type)) symbol.refused = true
+    if ((local || kind === 'def' || kind === 'global' || kind === 'data') && typeof type !== 'string' && isRefusedType(type)) symbol.refused = true
 
     const index = this.symbols.length
     this.symbols.push(symbol)
@@ -1657,7 +1665,9 @@ class MetaBuilder {
 
   private generateHintsForTypeDecl(decl: AST.TypeDecl): void {
     const symbolIndex = this.symbolIndexByName.get(decl.ident.name)
-    if (symbolIndex !== undefined) {
+    // One declared second declares nothing (2.9): its name is no use of the
+    // first's either
+    if (symbolIndex !== undefined && !this.checkResult.leftOut.has(decl)) {
       this.addHint(
         decl.ident.span.start,
         decl.ident.name.length,

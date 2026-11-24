@@ -458,7 +458,7 @@ switch (command) {
         for (const s of syms) {
           const p = lineMap.offsetToPosition(s.offset)
           const exp = s.exported ? ' [exported]' : ''
-          console.log(`${target}:${p.line + 1}:${p.col + 1} ${s.kind} ${s.name}: ${s.type}${exp}`)
+          console.log(`${target}:${p.line + 1}:${p.col + 1} ${s.kind} ${s.name}${s.type ? `: ${s.type}` : ''}${exp}`)
         }
       }
     } else {

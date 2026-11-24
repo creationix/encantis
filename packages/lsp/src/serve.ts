@@ -116,7 +116,7 @@ function offsetAt(text: string, position: { line: number; character: number }): 
 // A parameter or local that is a refused value has no type to show: what it
 // is and its name (MetaSymbol.refused)
 function refusedDisplay(symbol: MetaSymbol): string {
-  const kind = symbol.kind === 'param' ? 'input' : symbol.kind === 'return' ? 'output' : symbol.kind === 'def' || symbol.kind === 'global' ? symbol.kind : 'let';
+  const kind = symbol.kind === 'param' ? 'input' : symbol.kind === 'return' ? 'output' : symbol.kind === 'def' || symbol.kind === 'global' || symbol.kind === 'data' ? symbol.kind : 'let';
   return `${kind} ${symbol.name}`;
 }
 
@@ -438,6 +438,12 @@ export function uriOf(path: string, paths: Paths = nodePath): string {
     return `file://${host}/${encode(rest)}`;
   }
   return `file://${slashed.startsWith('/') ? '' : '/'}${encode(slashed.split('/'))}`;
+}
+
+// An error message with the places it says (`first declared at 1:15`, `at
+// lib.ents:2:3`) left out: a rename moves them, and the error is the same.
+function withoutPlaces(message: string): string {
+  return message.replace(/\b\d+:\d+\b/g, 'L:C');
 }
 
 export function startServer(connection: Connection, options: ServerOptions = {}): void {
@@ -1090,15 +1096,19 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // Why the renamed text would not mean what the text does, or null: it adds
   // an error, or the new name is not, at each place, what the old one was
   // (another name of that spelling is seen there instead, or hides it).
-  async function renameProblem(uri: string, analysis: Analysis, renamed: { text: string; places: number[] }, name: string): Promise<string | null> {
+  async function renameProblem(uri: string, analysis: Analysis, renamed: { text: string; places: number[] }, name: string, oldName: string): Promise<string | null> {
     const parsed = parse(renamed.text);
     let module = parsed.module ?? recoverParse(renamed.text, parse, parsed)?.module;
     if (!module) return 'the renamed text does not parse';
     const program = parsed.module && getSourceImports(module, true).length > 0 ? await programOf(uri, renamed.text) : null;
     if (program) module = program.module;
     const check = program?.checkResult ?? typecheck(module, { source: renamed.text });
-    const before = new Set(analysis.check.errors.map((e) => e.message));
-    const added = check.errors.filter((e) => !before.has(e.message));
+    // An error the program has already may say where something is (`first
+    // declared at 1:15`), which the rename moves, or name what is renamed:
+    // it is the same error.
+    const renamedName = new RegExp(`(?<![\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`, 'g');
+    const before = new Set(analysis.check.errors.map((e) => withoutPlaces(e.message)));
+    const added = check.errors.filter((e) => !before.has(withoutPlaces(e.message)) && !before.has(withoutPlaces(e.message.replace(renamedName, oldName))));
     if (check.errors.length > analysis.check.errors.length || added.length > 0) {
       return `renamed to '${name}', the program would not check: ${added[0]?.message ?? check.errors[0]?.message}`;
     }
@@ -1169,9 +1179,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       if (!now.sources?.has(own)) continue;
       const then = await programOf(other, text, new Map([[own, renamed]]));
       const errors = (program: ProgramCheckResult) => [...program.results.values()].flatMap((r) => r.errors.map((e) => e.message));
-      const before = errors(now.program);
+      const before = errors(now.program).map(withoutPlaces);
       const after = then ? errors(then.program) : ['the renamed program does not load'];
-      const added = after.filter((message) => !before.includes(message));
+      const added = after.filter((message) => !before.includes(withoutPlaces(message)));
       if (after.length > before.length || added.length > 0) {
         return `renamed to '${name}', ${file(path)}, which uses this module, would not check: ${added[0] ?? after[0]}`;
       }
@@ -1202,12 +1212,14 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     const renamed = applyRename(analysis.text, plan, params.newName);
     const at = (offset: number) => offsetToPosition(analysis.text, offset);
     const edits = renamed.edits.map((e) => ({ range: { start: at(e.start), end: at(e.end) }, newText: e.newText }));
-    const problem = await renameProblem(uri, analysis, renamed, params.newName);
+    const problem = await renameProblem(uri, analysis, renamed, params.newName, plan.name);
     if (problem) throw refuse(problem);
     // A field is named by other modules, which rename does not edit, and so
     // is a variant, by a pattern on a value of its enum that another module
-    // takes apart
-    if (plan.field !== null || analysis.check.symbols.get(plan.name)?.kind === 'variant') {
+    // takes apart: also one whose name an earlier declaration has, which is
+    // no symbol of the module (clashingVariantAt)
+    const variant = analysis.check.symbols.get(plan.name)?.kind === 'variant' || clashingVariantAt(analysis.module, analysis.check, found.start) !== null;
+    if (plan.field !== null || variant) {
       const elsewhere = await dependentProblem(uri, renamed.text, params.newName).catch((e: unknown) => {
         throw refuse(`the workspace's files could not all be listed, so the modules that use this one could not be checked: ${(e as Error)?.message ?? e}`);
       });
@@ -1231,6 +1243,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       if (!analysis || !answersAt(analysis, offset)) return undefined;
       const at = offsetToPosition(text, offset);
       const hint = analysis.meta.hints[`${at.line}:${at.character}`];
+      // A refused value has no type to show (MetaSymbol.refused), as its
+      // hover shows none
+      if (hint?.symbol !== undefined && analysis.meta.symbols[hint.symbol]?.refused) return undefined;
       const type = hint && analysis.meta.types[hint.type]?.type;
       return type ? formatLine(type) : undefined;
     };
@@ -1443,6 +1458,11 @@ export function startServer(connection: Connection, options: ServerOptions = {})
             tokenType = 2; // parameter
             // 'param' symbols get 'input' modifier, 'return' symbols get 'output' modifier
             modifiers = symbolKindToModifiers(symbol.kind, isDef, symbol.kind === 'param');
+          } else if (symbol.kind === 'comptime' && !meta.types[symbol.type]?.type.includes('->')) {
+            // A comptime value parameter (comptime n: u32) is a parameter; a
+            // comptime function parameter stands for a function
+            tokenType = 2;
+            modifiers = symbolKindToModifiers('param', isDef, true);
           } else {
             tokenType = symbolKindToTokenType(symbol.kind);
             modifiers = symbolKindToModifiers(symbol.kind, isDef);
