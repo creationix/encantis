@@ -252,11 +252,88 @@ export func f(p: Point) -> i32 {
     await s.open(lib, libText)
     const rename = (offset: number, newName: string) => s.at<Promise<WorkspaceEdit>>('onRenameRequest', lib, libText, offset, { newName })
     // main.ents reads count
-    await expect(rename(libText.indexOf('count:'), 'total')).rejects.toThrow("'count' is a field that main.ents names too")
+    await expect(rename(libText.indexOf('count:'), 'total')).rejects.toThrow(
+      "renamed to 'total', main.ents, which uses this module, would not check: no field 'count' on type (total: u32, clipped: bool)",
+    )
     // It names clipped only in its import, which is not where it reads it
     expect(applied(libText, await rename(libText.indexOf('clipped:'), 'cut'), lib)).toBe(
       'export func pair(n: u32) -> (count: u32, cut: bool) => (count: n, cut: n > 9)\n',
     )
+  })
+
+  // A module that never writes pair(n).count still needs count, where it
+  // gives what pair returns to a struct of its own with those fields.
+  test('a field another module needs to give a whole value to another struct is not renamed', async () => {
+    const lib = 'file:///ws/lib.ents'
+    const libText = 'export func pair(n: u32) -> (count: u32, clipped: bool) => (count: n, clipped: n > 9)\nexport func other() -> (left: u32, right: u32) => (left: 1, right: 2)\n'
+    const mainText = `import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)
+type Pair = (count: u32, clipped: bool)
+func take(p: Pair) -> u32 => 1
+export func f() -> u32 => take(pair(3))
+`
+    const files = new Map([[pathOf(lib) as string, libText], [pathOf('file:///ws/main.ents') as string, mainText]])
+    const s = server({ findFiles: async () => [lib, 'file:///ws/main.ents'], readFile: async (path) => files.get(path) ?? null })
+    await s.open(lib, libText)
+    const rename = (offset: number, newName: string) => s.at<Promise<WorkspaceEdit>>('onRenameRequest', lib, libText, offset, { newName })
+    for (const field of ['count:', 'clipped:']) {
+      await expect(rename(libText.indexOf(field), 'renamed')).rejects.toThrow('main.ents, which uses this module, would not check')
+    }
+    // A struct no other module gives elsewhere
+    expect(applied(libText, await rename(libText.indexOf('left:'), 'first'), lib)).toContain('-> (first: u32, right: u32) => (first: 1, right: 2)')
+  })
+
+  test('a file that changes while the rename is checked is not edited, and an edit says its version', async () => {
+    const text = 'export func pair(n: u32) -> (count: u32, clipped: bool) => (count: n, clipped: n > 9)\n'
+    let listed = (_: string[]) => {}
+    let asked = false
+    const s = server({
+      findFiles: () => {
+        asked = true
+        return new Promise<string[]>((resolve) => {
+          listed = resolve
+        })
+      },
+    })
+    s.ask('onInitialize', { capabilities: { workspace: { workspaceEdit: { documentChanges: true } } } })
+    await s.open(uri, text)
+    // The workspace is listed while the field is renamed; the file is edited then
+    const pending = s.at<Promise<WorkspaceEdit>>('onRenameRequest', uri, text, text.indexOf('count:'), { newName: 'total' })
+    for (let i = 0; i < 200 && !asked; i++) await Bun.sleep(5)
+    expect(asked).toBe(true)
+    await s.change(uri, `// a line above\n${text}`)
+    listed([])
+    await expect(pending).rejects.toThrow('The file changed while the rename was checked')
+    // Unchanged, the edit is of the version it was made of
+    asked = false
+    const again = s.at<Promise<WorkspaceEdit>>('onRenameRequest', uri, `// a line above\n${text}`, text.indexOf('count:') + 16, { newName: 'total' })
+    for (let i = 0; i < 200 && !asked; i++) await Bun.sleep(5)
+    listed([])
+    const edit = await again
+    expect(edit.changes).toBeUndefined()
+    const [change] = edit.documentChanges as { textDocument: { uri: string; version: number }; edits: unknown[] }[]
+    expect(change.textDocument).toEqual({ uri, version: 2 })
+    expect(change.edits.length).toBe(2)
+  })
+
+  test('a field is not renamed while the workspace cannot be listed, and the listing is not an old one', async () => {
+    const lib = 'file:///ws/lib.ents'
+    const main = 'file:///ws/main.ents'
+    const libText = 'export func pair(n: u32) -> (count: u32, clipped: bool) => (count: n, clipped: n > 9)\n'
+    const files = new Map([[pathOf(lib) as string, libText]])
+    let found: () => Promise<string[]> = async () => {
+      throw new Error('no workspace')
+    }
+    const s = server({ findFiles: () => found(), readFile: async (path) => files.get(path) ?? null })
+    await s.open(lib, libText)
+    const rename = () => s.at<Promise<WorkspaceEdit>>('onRenameRequest', lib, libText, libText.indexOf('count:'), { newName: 'total' })
+    await expect(rename()).rejects.toThrow("the workspace's files could not be listed")
+    // A search keeps its listing a while; a rename lists the files again, and
+    // finds the module that came since
+    found = async () => [lib]
+    await s.ask<Promise<unknown>>('onWorkspaceSymbol', { query: '' })
+    files.set(pathOf(main) as string, 'import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)\nexport func f() -> u32 => pair(3).count\n')
+    found = async () => [lib, main]
+    await expect(rename()).rejects.toThrow('main.ents, which uses this module, would not check')
   })
 })
 

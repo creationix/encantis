@@ -49,7 +49,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
 import type { ExportDecl, ImportDecl, ImportItem, Module, Span } from '@encantis/compiler/ast';
-import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, type TypeCheckResult, typecheck, typecheckProgram } from '@encantis/compiler/checker';
+import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, type ProgramCheckResult, type TypeCheckResult, typecheck, typecheckProgram } from '@encantis/compiler/checker';
 import { getSourceImports, loadModule, resolveModulePath } from '@encantis/compiler/loader';
 import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
@@ -421,11 +421,19 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return documents.all().find(document => pathFor(document.uri) === path && sameFileSystem(document.uri, near));
   }
 
-  async function programOf(uri: string, text: string): Promise<(MetaOptions & { module: Module }) | null> {
+  // `instead`: the texts of other files, by path, to check the program with
+  // in place of theirs
+  async function programOf(
+    uri: string,
+    text: string,
+    instead: ReadonlyMap<string, string> = new Map(),
+  ): Promise<(MetaOptions & { module: Module; program: ProgramCheckResult }) | null> {
     const path = pathFor(uri);
     if (!path) return null;
     const readFile = async (file: string): Promise<string | null> => {
       if (file === path) return text;
+      const given = instead.get(file);
+      if (given !== undefined) return given;
       const open = documentAt(file, uri);
       if (open) return open.getText();
       if (uri.startsWith('file:')) return options.readFile ? options.readFile(file) : null;
@@ -439,7 +447,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       if (!checkResult) return null;
       // The checker's tables are keyed by the nodes of the module it checked.
       const sources = new Map([...load.modules].map(([file, loaded]) => [file, loaded.source]));
-      return { module: load.entry.module, checkResult, sources };
+      return { module: load.entry.module, checkResult, sources, program: check };
     } catch {
       return null;
     }
@@ -451,8 +459,12 @@ export function startServer(connection: Connection, options: ServerOptions = {})
 
   // The workspace's folders, as the client names them when it starts
   let folders: string[] = [];
+  // Whether the client takes an edit of a document at a version of it, which
+  // it does not apply to another (see onRenameRequest)
+  let versionedEdits = false;
 
   connection.onInitialize((params: InitializeParams): InitializeResult => {
+    versionedEdits = params.capabilities.workspace?.workspaceEdit?.documentChanges === true;
     if (params.workspaceFolders?.length) folders = params.workspaceFolders.map((folder) => folder.uri);
     else if (params.rootUri) folders = [params.rootUri];
     else if (params.rootPath) folders = [uriOf(params.rootPath)];
@@ -966,22 +978,31 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return null;
   }
 
-  // The other module of the workspace (its file's name) that names, through
-  // what it imports, the field this document declares at `declared`, or
-  // null. Only a module with a source import of its own can, and only one
-  // whose text has the field's name in it.
-  async function fieldReadElsewhere(uri: string, declared: number, name: string): Promise<string | null> {
+  // Why the renamed text of a document would break another module of the
+  // workspace, or null: a program that holds the document, checked with the
+  // renamed text in its place, has an error it does not have now. A field is
+  // named by the modules that import its struct or the function whose results
+  // it is, also where none of them writes its name: a value of the struct given
+  // to another struct of those fields needs them all. The files are listed
+  // afresh; where they cannot be, that is said, as nothing could be checked.
+  async function dependentProblem(uri: string, renamed: string, name: string): Promise<string | null> {
     const own = pathFor(uri);
     if (!own) return null;
-    const others = new Set([...documents.all().map((d) => d.uri), ...(await workspaceFiles())]);
+    const others = new Set([...documents.all().map((d) => d.uri), ...(await workspaceFiles(true))]);
     for (const other of others) {
       const path = pathFor(other);
       if (!path || path === own || !sameFileSystem(other, uri)) continue;
       const text = await textOf(other);
-      if (text === null || !text.includes(name) || !/\bimport\s+"\.\.?\//.test(text)) continue;
-      const fields = (await programOf(other, text))?.checkResult?.fieldNames;
-      for (const named of fields?.values() ?? []) {
-        if (named.some((f) => f.file === own && f.offset === declared)) return path.replace(/^.*[\\/]/, '');
+      if (text === null || !/\bimport\s+"\.\.?\//.test(text)) continue;
+      const now = await programOf(other, text);
+      if (!now?.sources?.has(own)) continue;
+      const then = await programOf(other, text, new Map([[own, renamed]]));
+      const errors = (program: ProgramCheckResult) => [...program.results.values()].flatMap((r) => r.errors.map((e) => e.message));
+      const before = errors(now.program);
+      const after = then ? errors(then.program) : ['the renamed program does not load'];
+      const added = after.filter((message) => !before.includes(message));
+      if (after.length > before.length || added.length > 0) {
+        return `renamed to '${name}', ${path.replace(/^.*[\\/]/, '')}, which uses this module, would not check: ${added[0] ?? after[0]}`;
       }
     }
     return null;
@@ -994,22 +1015,33 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return { range: { start: document.positionAt(start), end: document.positionAt(start + plan.name.length) }, placeholder: plan.name };
   });
 
+  // The edits are made of the text the plan was made of, at its version: the
+  // document can change while the rename is checked, which awaits other
+  // files. An edit of a document that changed meanwhile is refused, and a
+  // client that can be told the version is.
   connection.onRenameRequest(async (params: RenameParams): Promise<WorkspaceEdit | null> => {
     const found = renamePlan(params);
     if (!found) return null;
     const { plan, analysis, document } = found;
+    const { uri } = params.textDocument;
+    const version = document.version;
     const why = refusedName(plan.name, params.newName);
     if (why) throw refuse(why);
     if (params.newName === plan.name) return { changes: {} };
     const renamed = applyRename(analysis.text, plan, params.newName);
-    const problem = await renameProblem(params.textDocument.uri, analysis, renamed, params.newName);
+    const at = (offset: number) => offsetToPosition(analysis.text, offset);
+    const edits = renamed.edits.map((e) => ({ range: { start: at(e.start), end: at(e.end) }, newText: e.newText }));
+    const problem = await renameProblem(uri, analysis, renamed, params.newName);
     if (problem) throw refuse(problem);
-    // A field is named by the modules that import its struct or the
-    // function whose results it is: rename edits this file only.
-    const reader = plan.field === null ? null : await fieldReadElsewhere(params.textDocument.uri, plan.field, plan.name);
-    if (reader) throw refuse(`'${plan.name}' is a field that ${reader} names too: renamed here, it would no longer find it there`);
-    const edits = renamed.edits.map((e) => ({ range: { start: document.positionAt(e.start), end: document.positionAt(e.end) }, newText: e.newText }));
-    return { changes: { [params.textDocument.uri]: edits } };
+    // A field is named by other modules, which rename does not edit
+    if (plan.field !== null) {
+      const elsewhere = await dependentProblem(uri, renamed.text, params.newName).catch((e: unknown) => {
+        throw refuse(`the workspace's files could not be listed, to check the modules that use this one: try again (${(e as Error)?.message ?? e})`);
+      });
+      if (elsewhere) throw refuse(elsewhere);
+    }
+    if (documents.get(uri)?.version !== version) throw refuse('The file changed while the rename was checked: try again');
+    return versionedEdits ? { documentChanges: [{ textDocument: { uri, version }, edits }] } : { changes: { [uri]: edits } };
   });
 
   // The declarations of the document, for the outline, the breadcrumbs and
@@ -1050,9 +1082,13 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // each letter of a query is written.
   let listed: { at: number; uris: string[] } | null = null;
 
-  async function workspaceFiles(): Promise<string[]> {
+  // `fresh`: listed now, and a failure to is thrown (rename depends on what
+  // is there, a search does not)
+  async function workspaceFiles(fresh = false): Promise<string[]> {
     if (!options.findFiles) return [];
-    if (!listed || Date.now() - listed.at > 5000) {
+    if (fresh) {
+      listed = { at: Date.now(), uris: await options.findFiles(folders) };
+    } else if (!listed || Date.now() - listed.at > 5000) {
       listed = { at: Date.now(), uris: await options.findFiles(folders).catch(() => []) };
     }
     return listed.uris;
