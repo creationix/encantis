@@ -1260,6 +1260,13 @@ export function variantToString(v: EnumVariantRT, opts?: { compact?: boolean }):
   return v.fields === null ? v.name : `${v.name}(${v.fields.map((f) => fieldToString(f, opts)).join(sep)})`
 }
 
+// A payload variant as the function its constructor is, what it is built
+// from and the enum it makes: (r: u8, g: u8, b: u8) -> Color. A unit
+// variant is its enum alone.
+export function variantSignature(v: EnumVariantRT, enumName: string): string {
+  return v.fields === null ? enumName : `(${v.fields.map((f) => fieldToString(f)).join(', ')}) -> ${enumName}`
+}
+
 function fieldToString(f: ResolvedField, opts?: { compact?: boolean }): string {
   const sep = opts?.compact ? ':' : ': '
   if (f.name) {

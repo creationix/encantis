@@ -2,7 +2,7 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { argValue, ungroupedType } from './ast'
+import { argValue, partBinding, ungroupedType } from './ast'
 import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, testsToRun, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
@@ -2955,10 +2955,9 @@ function withPatternBindings<T>(pattern: AST.MatchPattern, ctx: CodegenContext, 
   const visit = (p: AST.MatchPattern) => {
     if (p.kind !== 'constructor') return
     for (const part of p.elements) {
-      const at = part.kind === 'namedShort' ? part.span.start : part.pattern.kind === 'binding' ? part.pattern.span.start : null
-      const name = part.kind === 'namedShort' ? part.field : part.pattern.kind === 'binding' ? part.pattern.name : null
-      const names = at === null ? undefined : ctx.patternLocals?.get(at)
-      if (name && names) bound.push([name, names])
+      const binding = partBinding(part)
+      const names = binding && ctx.patternLocals?.get(binding.at)
+      if (binding && names) bound.push([binding.name, names])
     }
   }
   visit(pattern)
@@ -3975,13 +3974,11 @@ function collectLocals(
   function patternLocals(pattern: AST.MatchPattern, kind: string) {
     if (pattern.kind !== 'constructor') return
     for (const part of pattern.elements) {
-      const at = part.kind === 'namedShort' ? part.span.start : part.pattern.kind === 'binding' ? part.pattern.span.start : null
-      const name = part.kind === 'namedShort' ? part.field : part.pattern.kind === 'binding' ? part.pattern.name : null
-      if (at === null || name === null) continue
-      const type = checkResult.types.get(typeKey(at, 'Binding'))
-      if (!type) continue
+      const binding = partBinding(part)
+      const type = binding && checkResult.types.get(typeKey(binding.at, 'Binding'))
+      if (!binding || !type) continue
       ctx.patternLocals ??= new Map()
-      ctx.patternLocals.set(at, claimLocals(ctx, name, type, locals, true, kind))
+      ctx.patternLocals.set(binding.at, claimLocals(ctx, binding.name, type, locals, true, kind))
     }
   }
 

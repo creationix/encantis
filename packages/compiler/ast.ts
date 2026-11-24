@@ -585,6 +585,15 @@ export type MatchPatternElement =
   | { kind: 'namedShort'; field: string; span: Span }
   | { kind: 'positional'; pattern: MatchPattern }
 
+// The name a part of a variant pattern binds and where it is bound, the
+// offset its binding's type is recorded at: a shorthand `r:` binds its
+// field's name where it is written, `r: x` and `x` bind `x`. Null for a part
+// that binds nothing (`_`).
+export function partBinding(part: MatchPatternElement): { name: string; at: number } | null {
+  if (part.kind === 'namedShort') return { name: part.field, at: part.span.start }
+  return part.pattern.kind === 'binding' ? { name: part.pattern.name, at: part.pattern.span.start } : null
+}
+
 // (expr, expr) or (name: expr, name: expr)
 export interface TupleExpr extends BaseNode {
   kind: 'TupleExpr'

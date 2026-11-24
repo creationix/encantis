@@ -2,9 +2,10 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
+import { partBinding } from './ast'
 import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, refusedBindingAt, type TypeCheckResult } from './checker'
 import { ownName, callOf, memberIn, instancesListed, applicationsListed, genericAround, type GenericInfo } from './instances'
-import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow, enumText } from './types'
+import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow, enumText, variantSignature } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
 import { buildDataSection, type DataRef } from './data-pack'
@@ -672,8 +673,8 @@ class MetaBuilder {
       const variant = this.checkResult.symbols.get(v.name)
       if (variant?.kind !== 'variant' || this.checkResult.symbolDefOffsets.get(v.name) !== v.span.start) continue
       // A payload variant as what it is constructed from: (r: u8) -> Color
-      const fields = e.kind === 'enum' ? e.variants[variant.index]?.fields : null
-      const shown = fields ? `(${fields.map((f) => (f.name ? `${f.name}: ${typeToString(f.type)}` : typeToString(f.type))).join(', ')}) -> ${decl.ident}` : variant.type
+      const declared = e.kind === 'enum' ? e.variants[variant.index] : undefined
+      const shown = declared?.fields ? variantSignature(declared, decl.ident) : variant.type
       this.addSymbol(v.name, 'variant', shown, v.span.start, String(variant.index))
     }
   }
@@ -1217,9 +1218,9 @@ class MetaBuilder {
     }
     if (pattern.kind !== 'constructor') return
     for (const part of pattern.elements) {
-      const at = part.kind === 'namedShort' ? part.span.start : part.pattern.kind === 'binding' ? part.pattern.span.start : null
-      const name = part.kind === 'namedShort' ? part.field : part.pattern.kind === 'binding' ? part.pattern.name : null
-      if (at === null || name === null) continue
+      const binding = partBinding(part)
+      if (!binding) continue
+      const { name, at } = binding
       // A name of a refused pattern is a refused value: it has no type to show
       const type = this.bindingType(at, 'Binding')
       if (!type || refusedBindingAt(this.checkResult, at)) continue

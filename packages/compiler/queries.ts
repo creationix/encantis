@@ -5,7 +5,7 @@ import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
 import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, refusedBindingAt } from './checker'
 import { parse } from './parser'
-import { typeToString, type ResolvedType, type ResolvedField, byteSize, unwrap, isValueArray, enumText } from './types'
+import { typeToString, type ResolvedType, type ResolvedField, byteSize, unwrap, isValueArray, enumText, variantSignature } from './types'
 import { typeToWasm } from './codegen'
 import { LineMap, type Position } from './position'
 import {
@@ -818,8 +818,7 @@ function symbolTypeString(sym: CheckSymbol, source?: string, name?: string): str
   // A variant: what it is constructed from, and its enum
   if (sym.kind === 'variant') {
     const e = unwrap(sym.type)
-    const fields = e.kind === 'enum' ? e.variants[sym.index].fields : null
-    return fields ? `(${fields.map((f) => (f.name ? `${f.name}: ${typeToString(f.type)}` : typeToString(f.type))).join(', ')}) -> ${base}` : base
+    return e.kind === 'enum' ? variantSignature(e.variants[sym.index], base) : base
   }
   // A host type is named for itself: what it is, is a host reference. A
   // name for it (type Screen = Canvas) is that type.

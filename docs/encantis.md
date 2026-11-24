@@ -104,6 +104,7 @@ The compiler implements everything this reference describes except what this tab
 |---|---|---|
 | `match` patterns other than numbers, codepoints, bools, `_` and variant patterns on an enum | A tuple pattern and a struct constructor pattern are refused (`match cannot compare a tuple pattern yet: compare one field at a time`, `match cannot compare a struct pattern yet: ...`), a lower-case name as the whole pattern is refused on every subject (`a name as the whole pattern is not implemented: write _ and use the subject`), a part of a variant pattern is a name or `_` only (no nested patterns, no literals), and a guard (`(x, y) if x == y`) is a syntax error | [5.4](#54-match-expressions), [6.3](#63-patterns-in-match-arms) |
 | Generic enums (`Option(T)`), `let Some(x) = opt else { ... }`, qualified variant names (`Color.Red`) | Not parsed or refused: an enum is declared with no parameters, and a `let` takes no variant pattern | [2.9](#29-enum-types-algebraic-data-types) |
+| A host reference or a function in an enum's payload, and a null-terminated array of an enum (`*[!]Color`) | Refused where the payload or the array type is written (`an enum payload cannot hold a host reference yet: Canvas, in Draw`, `an enum payload cannot hold a function yet: (u32) -> u32, in Fn`, `a null-terminated array of an enum is not supported yet: Color`) | [Where an enum is allowed](#where-an-enum-is-allowed) |
 | Patterns in function signatures, `func to_polar Point(x, y) -> Polar(d, a)` | Reads the pattern as a generic type and refuses it (`'Point' is not a generic type`) | [6.2](#62-patterns-in-function-signatures) |
 | Struct constructor patterns in `if let` and `let`, `if let Point(x, y) = p`, `let Point(x, y) = p` | `if let` refuses one (`if let cannot compare a struct pattern yet: take it apart with let (x, y) = p`); in a `let` it is a syntax error. `let (x:, y:) = p` destructures a struct. `if let` takes the variant patterns of an enum | [6.4](#64-if-let-bindings), [6.5](#65-let-destructuring) |
 | Assigning a tuple of variables without `set`, `(q, r) = divmod(17, 5)` | A syntax error: write `set (q, r) = divmod(17, 5)` | [4.5](#45-assignment-and-compound-assignment) |
@@ -2423,12 +2424,12 @@ An enum goes wherever a value type goes: a parameter, a result, a `let`, a `glob
 |---|---|
 | `?Color` | `cannot make Color optional: only a pointer, a slice or a host reference has a none` |
 | `def c = Red` | `def value must be a number or a bool: Red is a value of the enum Color; use a global` |
-| a null-terminated array whose element holds an enum by value, at any depth: `*[!]Color`, `*[!]Cell` with `type Cell = (e: E, n: u16)` | `a null-terminated array of an enum is not supported yet: Color`, `...: Cell holds E` |
+| a null-terminated array whose element holds an enum by value, at any depth: `*[!]Color`, `*[!]Cell` with `type Cell = (e: E, n: u16)` (**Not implemented**) | `a null-terminated array of an enum is not supported yet: Color`, `...: Cell holds E` |
 | a variant's name as a type, `c: Red` | `'Red' is a variant of Color, not a type: write Color` |
 | an enum with no variants, `enum Never {}` | `enum 'Never' has no variants` |
 | a payload field name twice, `Rgb(r: u8, r: u8)` | `Rgb: field 'r' is declared twice` |
-| a host reference in a payload, also inside a struct or array there | `an enum payload cannot hold a host reference yet: Canvas, in Draw` |
-| a function type in a payload | `an enum payload cannot hold a function yet: (u32) -> u32, in Fn` |
+| a host reference in a payload, also inside a struct or array there (**Not implemented**) | `an enum payload cannot hold a host reference yet: Canvas, in Draw` |
+| a function type in a payload (**Not implemented**) | `an enum payload cannot hold a function yet: (u32) -> u32, in Fn` |
 
 A null-terminated array ends at its first element whose bytes are all zero, and a value that holds an enum can be its zero without its bytes being zero (the padding of an enum is never written, [Memory Representation](#memory-representation)), so its length would depend on what was stored before. A length-prefixed one, `*[?]Color`, is allowed, laid out as any `*[?]T` is and, as every `*[?]T`, not read yet.
 

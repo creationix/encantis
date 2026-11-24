@@ -1138,6 +1138,9 @@ class CheckContext {
   testDeclared = new Set<Symbol>()
   // Names of generics that a later declaration tried to take
   contested = new Set<string>()
+  // The matches on an enum this check found to handle every variant, or to
+  // have a _ arm: no value falls through one (exprTerminates)
+  private exhaustive = new WeakSet<AST.MatchExpr>()
   // The module's generic types, in the order they are declared, and how deep
   // in applications of them a type is being resolved
   typeFuncs: (Symbol & { kind: 'typefunc' })[] = []
@@ -3453,7 +3456,7 @@ class CheckContext {
       // are no named locals to return when it falls off the end.
       const resultType = this.currentReturnType
       const hasResult = resultType.kind !== 'void' && !(resultType.kind === 'tuple' && resultType.fields.length === 0)
-      if (!named && hasResult && !blockTerminates(decl.body.stmts)) {
+      if (!named && hasResult && !blockTerminates(decl.body.stmts, this.exhaustive)) {
         // The name the user wrote, not max<u32>: the message is followed by
         // the instance anyway.
         const name = this.currentInstance?.decl === decl ? this.currentInstance.of.ident : decl.ident
@@ -4859,22 +4862,6 @@ class CheckContext {
     return { call, callee }
   }
 
-  // A function is one wasm function, and an engine takes one of at most
-  // 50000 locals and a body of at most 7654321 bytes (MAX_FUNCTION_REGISTERS).
-  // What a function holds and computes is counted in registers, the wasm
-  // values a value is laid out in: each register of its parameters and
-  // variables, and each register of each value its code computes, as often as
-  // the code is written out (a fill [x; N] writes x N times, a deferred
-  // expression is written at each exit, a return without a value reads the
-  // named results again). A value computes as much code as it
-  // has registers, so this bounds the body as well; and a value an if, an if
-  // let, a match or a ?? gives is a wasm block's results, at most 1000
-  // (MAX_RESULT_REGISTERS). One error where the count goes over, at the value
-  // or the variable that takes it over, and one for each block that gives
-  // too much, where the count is then not said; nothing is said of a function
-  // that has errors already, in its signature or its body (`span`), which is
-  // not compiled. The errors of an instance are where they are in the
-  // generic, which is where its copy is, less its own offset.
   // Whether an assignment's target is a place in memory, not registers
   private inMemory(target: AST.Expr | AST.LValue): boolean {
     if (target.kind === 'IdentPattern' || target.kind === 'TuplePattern') return false
@@ -4893,6 +4880,22 @@ class CheckContext {
     return false
   }
 
+  // A function is one wasm function, and an engine takes one of at most
+  // 50000 locals and a body of at most 7654321 bytes (MAX_FUNCTION_REGISTERS).
+  // What a function holds and computes is counted in registers, the wasm
+  // values a value is laid out in: each register of its parameters and
+  // variables, and each register of each value its code computes, as often as
+  // the code is written out (a fill [x; N] writes x N times, a deferred
+  // expression is written at each exit, a return without a value reads the
+  // named results again). A value computes as much code as it
+  // has registers, so this bounds the body as well; and a value an if, an if
+  // let, a match or a ?? gives is a wasm block's results, at most 1000
+  // (MAX_RESULT_REGISTERS). One error where the count goes over, at the value
+  // or the variable that takes it over, and one for each block that gives
+  // too much, where the count is then not said; nothing is said of a function
+  // that has errors already, in its signature or its body (`span`), which is
+  // not compiled. The errors of an instance are where they are in the
+  // generic, which is where its copy is, less its own offset.
   private checkSize(owner: string, span: AST.Span, body: readonly AST.Statement[] | AST.Expr): void {
     const from = span.start % INSTANCE_STRIDE
     const to = from + (span.end - span.start)
@@ -7367,10 +7370,10 @@ class CheckContext {
       case 'IfExpr': {
         if (!e.else_) return false
         const bodies = [e.thenBranch, ...e.elifs.map((elif) => elif.thenBranch), e.else_]
-        return bodies.every((body) => bodyExits(body) || this.branchZero(body))
+        return bodies.every((body) => bodyExits(body, this.exhaustive) || this.branchZero(body))
       }
       case 'MatchExpr':
-        return e.arms.every((arm) => bodyExits(arm.body) || this.branchZero(arm.body))
+        return e.arms.every((arm) => bodyExits(arm.body, this.exhaustive) || this.branchZero(arm.body))
       default:
         return false
     }
@@ -8821,7 +8824,7 @@ class CheckContext {
   // don't agree are an error where the value is used; in a statement they
   // just leave the expression without one.
   private unifyBranches(branches: Branch[], valueUsed: boolean): ResolvedType {
-    const valued = branches.filter(b => !bodyExits(b.body))
+    const valued = branches.filter(b => !bodyExits(b.body, this.exhaustive))
     if (valued.length === 0 || valued.some(b => b.type.kind === 'void')) return VOID
     let type = valued[0].type
     if (valued.every(b => isComptimeNumber(b.type))) {
@@ -9033,7 +9036,7 @@ class CheckContext {
       }
       if (last) this.checkStmt(last)
       const wanted = expected.kind !== 'void' && !(expected.kind === 'tuple' && expected.fields.length === 0)
-      if (wanted && !bodyExits(body)) {
+      if (wanted && !bodyExits(body, this.exhaustive)) {
         this.error(last?.span.start ?? body.span.start, `this branch has no value: expected ${typeToString(expected)}`)
       }
     } else {
@@ -9163,7 +9166,7 @@ class CheckContext {
     // A match on an enum handles every variant, or has a _ arm.
     if (subject.kind === 'enum') {
       const missing = subject.variants.filter((_, k) => !covered.has(k)).map((v) => v.name)
-      if (catchAll || missing.length === 0) EXHAUSTIVE.add(expr)
+      if (catchAll || missing.length === 0) this.exhaustive.add(expr)
       else if (!unknownCover && !this.declared.has(expr)) {
         this.error(expr.span.start, `match on ${typeToString(subjectType)} does not handle ${spoken(missing)}: add an arm for each, or a _ arm`)
       }
@@ -12644,8 +12647,9 @@ type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
 type Binding = { name: string; type: ResolvedType; at: number }
 
 // The matches on an enum that handle every variant, or have a _ arm: no
-// value falls through one (exprTerminates)
-const EXHAUSTIVE = new WeakSet<AST.MatchExpr>()
+// value falls through one (exprTerminates). A check keeps its own
+// (CheckContext.exhaustive).
+type Exhaustive = { has(match: AST.MatchExpr): boolean }
 
 // Whether a branch's value is an array literal with no type of its own that
 // is to be laid out in memory as the pointer or slice the branches are.
@@ -13141,8 +13145,8 @@ function bodyValue(body: AST.FuncBody | AST.Expr): AST.Expr | null {
 }
 
 // Whether control never reaches the end of a branch, so it needs no value.
-function bodyExits(body: AST.FuncBody | AST.Expr): boolean {
-  return bodyTerminates(body) || (body.kind === 'Block' && alwaysExits(body))
+function bodyExits(body: AST.FuncBody | AST.Expr, exhaustive: Exhaustive): boolean {
+  return bodyTerminates(body, exhaustive) || (body.kind === 'Block' && alwaysExits(body))
 }
 
 // Whether a body ends in an unconditional return, break or continue.
@@ -13206,7 +13210,7 @@ function writtenMut(expr: AST.Expr): boolean {
 // Whether control can never fall off the end of these statements: they end in
 // an unconditional return, a loop with no break out of it, or an if/else whose
 // every branch terminates.
-export function blockTerminates(stmts: AST.Statement[]): boolean {
+export function blockTerminates(stmts: AST.Statement[], exhaustive: Exhaustive): boolean {
   const last = stmts.at(-1)
   if (!last) return false
   switch (last.kind) {
@@ -13215,29 +13219,29 @@ export function blockTerminates(stmts: AST.Statement[]): boolean {
     case 'LoopStmt':
       return !breaksOut(last.body)
     case 'ExpressionStmt':
-      return exprTerminates(last.expr)
+      return exprTerminates(last.expr, exhaustive)
     default:
       return false
   }
 }
 
-function bodyTerminates(body: AST.FuncBody | AST.Expr): boolean {
-  if (body.kind === 'Block') return blockTerminates(body.stmts)
-  if (body.kind === 'ArrowBody') return exprTerminates(body.expr)
-  return exprTerminates(body)
+function bodyTerminates(body: AST.FuncBody | AST.Expr, exhaustive: Exhaustive): boolean {
+  if (body.kind === 'Block') return blockTerminates(body.stmts, exhaustive)
+  if (body.kind === 'ArrowBody') return exprTerminates(body.expr, exhaustive)
+  return exprTerminates(body, exhaustive)
 }
 
-function exprTerminates(expr: AST.Expr): boolean {
+function exprTerminates(expr: AST.Expr, exhaustive: Exhaustive): boolean {
   if (expr.kind === 'IfExpr') {
-    return !!expr.else_ && bodyTerminates(expr.thenBranch) &&
-      expr.elifs.every(e => bodyTerminates(e.thenBranch)) && bodyTerminates(expr.else_)
+    return !!expr.else_ && bodyTerminates(expr.thenBranch, exhaustive) &&
+      expr.elifs.every(e => bodyTerminates(e.thenBranch, exhaustive)) && bodyTerminates(expr.else_, exhaustive)
   }
   if (expr.kind === 'MatchExpr') {
     // Every arm returns, and some arm catches everything (a wildcard or a bare
     // binding), so no value falls through.
-    // A match on an enum that handles every variant does too (EXHAUSTIVE).
-    const catchAll = EXHAUSTIVE.has(expr) || expr.arms.some(arm => arm.patterns.some(p => p.kind === 'wildcard' || p.kind === 'binding'))
-    return catchAll && expr.arms.every(arm => bodyTerminates(arm.body))
+    // A match on an enum that handles every variant does too (exhaustive).
+    const catchAll = exhaustive.has(expr) || expr.arms.some(arm => arm.patterns.some(p => p.kind === 'wildcard' || p.kind === 'binding'))
+    return catchAll && expr.arms.every(arm => bodyTerminates(arm.body, exhaustive))
   }
   return false
 }
