@@ -373,6 +373,9 @@ export func f() -> u32 => take(pair(3))
     // Once it parses and loads, it is checked
     files.set(pathOf(main) as string, uses)
     await expect(rename()).rejects.toThrow("main.ents, which uses this module, would not check: no field 'count'")
+    // An import that is commented out is none
+    files.set(pathOf(main) as string, 'export func g() -> u32 => 1\ntest "t" {\n  // import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)\n  assert true\n')
+    expect(applied(libText, await rename(), lib)).toContain('-> (total: u32, clipped: bool) => (total: n,')
     files.set(pathOf(main) as string, 'export func f() -> u32 => 1\n')
     expect(applied(libText, await rename(), lib)).toContain('-> (total: u32, clipped: bool) => (total: n,')
   })

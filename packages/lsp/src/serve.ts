@@ -61,7 +61,7 @@ import { complete, signatureHelp } from './complete';
 import { inlayHints } from './hints';
 import { applyRename, planRename, type RenamePlan, refusedName } from './rename';
 import { rename } from '@encantis/compiler/queries';
-import { literalAt, nameAfter } from './scan';
+import { literalAt, nameAfter, pieces } from './scan';
 
 
 // Convert symbol kind to display prefix
@@ -297,12 +297,26 @@ export interface FoundFiles {
 }
 
 // The source files a text that does not parse imports, as far as an import
-// of one can be read in it: `import`, comments, and the module's path. (Part
-// of a module that recovery left out, where nothing else says what it
-// imports.)
+// of one can be read in it: a module's path in double quotes after `import`,
+// with nothing but space and comments between. An import in a comment is
+// none. (Part of a module that recovery left out, where nothing else says
+// what it imports.)
 function importedIn(text: string): string[] {
-  const found = text.matchAll(/(?<![A-Za-z0-9_-])import(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*(?:\n|$))*"((?:[^"\\\n]|\\.)*)"/g);
-  return [...found].map((m) => m[1]).filter((spec) => isSourceImport(spec));
+  const found: string[] = [];
+  // The code before the next piece, its comments left out
+  let code = '';
+  let at = 0;
+  for (const piece of pieces(text, text.length)) {
+    code += text.slice(at, piece.start);
+    at = piece.end;
+    if (piece.kind === 'comment') continue;
+    if (piece.kind === 'quoted' && !piece.open && text[piece.start] === '"' && /(?<![A-Za-z0-9_-])import\s*$/.test(code)) {
+      const spec = text.slice(piece.start + 1, piece.end - 1);
+      if (isSourceImport(spec)) found.push(spec);
+    }
+    code = '';
+  }
+  return found;
 }
 
 // The path the loader names a document's file by: a file's path (pathOf),
