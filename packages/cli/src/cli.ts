@@ -46,6 +46,7 @@ Commands:
   test <file>                           Run inline tests
   fmt <file...>                        Format source files in place
   fmt --check <file...>                Check formatting without changing
+  lsp                                  Run the language server on stdin and stdout
 
 Options:
   -o <file>       Output file (default: stdout)
@@ -68,6 +69,16 @@ if (args[0] === '--version' || args[0] === 'version') {
 if (args.length === 0 || args.includes('--help')) {
   usage()
   process.exit(0)
+}
+
+// The language server, for an editor or an agent that starts it as a command.
+// It takes no file, and the process is its until it ends it: when the client
+// says exit, or closes stdin. (--stdio, which clients often pass, is what it
+// does anyway.)
+if (args[0] === 'lsp') {
+  const { serveStdio } = await import('@encantis/lsp/src/stdio')
+  serveStdio()
+  await new Promise(() => {})
 }
 
 const command = args[0]
@@ -405,7 +416,9 @@ switch (command) {
       if (jsonOutput) {
         const locs = r.locations.map(loc => {
           const p = lineMap.offsetToPosition(loc.offset)
-          return { file: pos.file, line: p.line + 1, col: p.col + 1, length: loc.length }
+          // A field's name (a struct's, a named result's): a shorthand there,
+          // `x:`, is written out so that its variable keeps its name
+          return { file: pos.file, line: p.line + 1, col: p.col + 1, length: loc.length, ...(loc.field ? { field: true } : {}) }
         })
         console.log(JSON.stringify({ oldName: r.oldName, locations: locs }))
       } else {

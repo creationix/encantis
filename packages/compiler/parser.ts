@@ -100,7 +100,7 @@ export function parse(source: string, options: ParseOptions = {}): ParseResult {
 
 // How deep brackets and prefixes may nest: ((( and [[[, and also *[]?*u8 or
 // - - x, which parse as deep as brackets do though nothing closes them.
-export const MAX_NESTING = 256
+export const MAX_NESTING = 128
 
 function nestingError(source: string, offset: number | null): ParseError {
   const at = offset ?? 0

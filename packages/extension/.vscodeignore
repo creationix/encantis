@@ -1,6 +1,7 @@
 .vscode/
 src/
 scripts/
+test/
 out/
 node_modules/
 **/*.ts

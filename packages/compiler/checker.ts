@@ -8,6 +8,7 @@ import {
   type ResolvedType,
   type ForwardRefRT,
   type ResolvedField,
+  type FieldPlace,
   type ArrayRT,
   type ComptimeArrayRT,
   type ArraySize,
@@ -286,6 +287,14 @@ export interface TypeCheckResult {
   symbolRefs: Map<number, number>
   // Symbol name → definition offset
   symbolDefOffsets: Map<string, number>
+  // Where the module's source names a field of a struct, by offset: the
+  // field, by where its name is written in its struct (a type, a function's
+  // results, a literal that makes its own struct), `file` null where that is
+  // this module. A field declared there names itself. `p.x`, `x:` in a
+  // pattern, a constructor and a literal given for a struct are uses; a use in
+  // a generic's body names the field of each instance, which may be more than
+  // one. A match pattern is not counted: it compares no field yet.
+  fieldNames: Map<number, { file: string | null; offset: number }[]>
   // Literals that need data section serialization (for codegen)
   literals: PendingLiteral[]
   // The instances of this module's generic functions, in the order they were
@@ -534,6 +543,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     references: ctx.references,
     symbolRefs: ctx.symbolRefs,
     symbolDefOffsets: ctx.symbolDefOffsets,
+    fieldNames: ctx.fieldNames(),
     literals: ctx.pendingLiterals,
     instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl, name: i.name, label: i.label, args: i.args })),
     applications: ctx.applications,
@@ -962,6 +972,12 @@ class CheckContext {
   references = new Map<number, number[]>() // defOffset → refOffsets
   symbolRefs = new Map<number, number>() // usageOffset → defOffset
   symbolDefOffsets = new Map<string, number>() // name → defOffset
+  // Where a field is named, by offset (an instance's own, so that each
+  // instance's is kept): uses, and the declarations of fields, each of which
+  // names itself. Per offset, as a look's are replaced by the check's that
+  // follows it (see untraced).
+  private fieldUses = new Map<number, FieldPlace>()
+  private fieldDecls = new Map<number, FieldPlace>()
 
   // The functions of this module that instances of other modules' generics
   // call (see callAtSite), with the calls: used, though nothing in this
@@ -1934,12 +1950,12 @@ class CheckContext {
         return slice(this.resolveForwardRefsInType(t.element, made), t.mutable, t.optional)
 
       case 'tuple':
-        return tuple(t.fields.map(f => field(f.name, this.resolveForwardRefsInType(f.type, made))))
+        return tuple(t.fields.map(f => ({ ...f, type: this.resolveForwardRefsInType(f.type, made) })))
 
       case 'func':
         return func(
-          t.params.map(p => field(p.name, this.resolveForwardRefsInType(p.type, made))),
-          t.returns.map(r => field(r.name, this.resolveForwardRefsInType(r.type, made)))
+          t.params.map(p => ({ ...p, type: this.resolveForwardRefsInType(p.type, made) })),
+          t.returns.map(r => ({ ...r, type: this.resolveForwardRefsInType(r.type, made) }))
         )
 
       case 'named':
@@ -3059,7 +3075,7 @@ class CheckContext {
     const results = this.returnValueType()
     const value = unwrap(valueType)
     if (results.kind !== 'tuple' || value.kind !== 'tuple' || value.fields.length !== results.fields.length) return results
-    return tuple(results.fields.map((f, i) => field(value.fields[i].name, f.type)))
+    return tuple(results.fields.map((f, i) => ({ ...value.fields[i], type: f.type })))
   }
 
   private bindFields(type: AST.Type, scope: Scope, kind: 'param' | 'return'): void {
@@ -3558,6 +3574,7 @@ class CheckContext {
             // would be assigned to its variable
             const field = unwrappedType.fields.find(f => f.name === element.field)
             if (!field) this.error(pattern.span.start, `field '${element.field}' not found in ${typeToString(type)}`)
+            else this.usedField(field, element.span.start)
             fits(varName, field?.type)
           } else {
             const fieldType = unwrappedType.fields[pattern.elements.indexOf(element)]?.type
@@ -3709,6 +3726,7 @@ class CheckContext {
               this.error(pattern.span.start, `field '${element.field}' not found in ${typeToString(type)}`)
               continue
             }
+            this.usedField(tupleField, element.span.start)
             this.bindNamedPart(pattern, element, tupleField.type)
           } else {
             // Positional pattern: (a, b) - match by index
@@ -3803,7 +3821,7 @@ class CheckContext {
         const fields = type.fields.map(f => {
           const ct = this.concretize(f.type)
           if (ct !== f.type) changed = true
-          return field(f.name, ct)
+          return { ...f, type: ct }
         })
         return changed ? tuple(fields) : type
       }
@@ -3932,7 +3950,7 @@ class CheckContext {
     if (first.kind === 'tuple' && tuples.every((t) => t.kind === 'tuple' && t.fields.length === first.fields.length
       && t.fields.every((f, i) => f.name === first.fields[i].name))) {
       const fields = first.fields.map((f, i) =>
-        field(f.name, this.concretize(this.unifyTypes(tuples.map((t) => (t as TupleRT).fields[i].type)))))
+        ({ ...f, type: this.concretize(this.unifyTypes(tuples.map((t) => (t as TupleRT).fields[i].type))) }))
       if (fields.some((f, i) => holdsSlice(f.type) && !holdsSlice(this.concretize(first.fields[i].type)))) return tuple(fields)
     }
 
@@ -4062,9 +4080,7 @@ class CheckContext {
         // (u32) is u32: parentheses around one type only group it.
         const inner = ungroupedType(type)
         if (inner !== type) return this.resolveType(inner)
-        const fields = type.fields.map((f) =>
-          field(f.ident, this.resolveType(f.type)),
-        )
+        const fields = type.fields.map((f) => this.declaredField(f, this.resolveType(f.type)))
         return tuple(fields)
       }
 
@@ -4104,7 +4120,7 @@ class CheckContext {
 
       case 'FuncType': {
         // Function type: input -> output
-        const params = this.typeToFields(type.input)
+        const params = this.typeToFields(type.input, false, false)
         const returns = this.typeToFields(type.output)
         const made = func(params, returns)
         // One too large to write out has that error (resolveType).
@@ -4252,7 +4268,7 @@ class CheckContext {
 
   resolveSignature(sig: AST.FuncSignature): ResolvedType & { kind: 'func' } {
     return this.inSignature(sig, () => {
-      const params = this.typeToFields(sig.input, true)
+      const params = this.typeToFields(sig.input, true, false)
       const returns = this.typeToFields(sig.output, true)
       this.checkSignatureSize(sig.input, params, sig.output, returns)
       return func(params, returns)
@@ -4306,7 +4322,10 @@ class CheckContext {
   // `held`: these are the parameters or the results of a function, each held
   // by value (heldByValue). Those of a function type written in a type are
   // counted with that type.
-  typeToFields(type: AST.Type, held = false): ResolvedField[] {
+  // `declares`: the names are fields of a struct (results), whose places go
+  // with them (declaredField); a parameter is no field, but a name of its
+  // function's.
+  typeToFields(type: AST.Type, held = false, declares = true): ResolvedField[] {
     const resolve = (t: AST.Type) => (held ? this.resolveHeld(t) : this.resolveType(t))
     if (type.kind === 'CompositeType') {
       // Empty composite = void, return no fields
@@ -4314,7 +4333,7 @@ class CheckContext {
         return []
       }
       // Composite with fields = tuple/struct
-      return type.fields.map((f) => field(f.ident, resolve(f.type)))
+      return type.fields.map((f) => (declares ? this.declaredField(f, resolve(f.type)) : field(f.ident, resolve(f.type))))
     }
     // Single type without name
     return [field(null, resolve(type))]
@@ -5766,6 +5785,7 @@ class CheckContext {
       if (!value) return
       const field = arg.name ? struct.fields.find((f) => f.name === arg.name) : struct.fields[i]
       if (field) {
+        if (arg.name) this.usedField(field, arg.span.start)
         given.set(field, [...(given.get(field) ?? []), arg])
         this.checkExpr(value, field.type, literal ? undefined : `field ${field.name ?? i}`)
       } else {
@@ -7258,16 +7278,17 @@ class CheckContext {
       case 'field': {
         const fieldName = expr.member.name
         // Look up field in tuple/struct
+        const nameAt = expr.span.end - fieldName.length
         if (unwrappedType.kind === 'tuple') {
           const f = unwrappedType.fields.find((f) => f.name === fieldName)
-          if (f) return f.type
+          if (f) return this.usedField(f, nameAt).type
         }
         // Auto-deref: pointer to tuple allows field access (loads from memory)
         if (unwrappedType.kind === 'pointer') {
           const pointeeType = unwrap(unwrappedType.pointee)
           if (pointeeType.kind === 'tuple') {
             const f = pointeeType.fields.find((f) => f.name === fieldName)
-            if (f) return f.type
+            if (f) return this.usedField(f, nameAt).type
           }
         }
         // Slice built-in fields: .ptr, .len, and .wid, the width of an
@@ -8045,7 +8066,9 @@ class CheckContext {
       // Shorthand: (x:) means use variable x
       const value = argValue(arg)
       const argType = value ? this.inferExpr(value) : VOID
-      fields.push(field(arg.name, argType))
+      // A literal not given for a struct makes its own: a name it gives is
+      // the field's declaration.
+      fields.push(arg.name ? this.declaredFieldAt(arg.name, argType, arg.span.start) : field(null, argType))
     }
     // (x) is grouping, not a 1-element tuple
     if (fields.length === 1 && !fields[0].name) return fields[0].type
@@ -8248,7 +8271,7 @@ class CheckContext {
     if (alike && tuples.some(holdsConstant)) {
       const tupleType = tuple(first.fields.map((f, i) => {
         const of = tuples.map(t => t.fields[i].type)
-        return field(f.name, of.every(isComptimeNumber) ? this.concretize(standIn(of)) : this.commonType(of).type)
+        return { ...f, type: of.every(isComptimeNumber) ? this.concretize(standIn(of)) : this.commonType(of).type }
       }))
       return { type: tupleType, odd: types.find(t => !typeAssignable(tupleType, t)) }
     }
@@ -10115,6 +10138,43 @@ class CheckContext {
     }
   }
 
+  // A field of a struct written in the source (a type's, a function's results,
+  // a literal's own): where its name is written goes with it.
+  private declaredField(f: AST.Field, type: ResolvedType): ResolvedField {
+    return f.ident ? this.declaredFieldAt(f.ident, type, f.identSpan?.start ?? f.span.start) : field(null, type)
+  }
+
+  private declaredFieldAt(name: string, type: ResolvedType, offset: number): ResolvedField {
+    const at = { file: this.filePath ?? '', offset: offset % INSTANCE_STRIDE }
+    this.fieldDecls.set(offset, at)
+    return { name, type, at }
+  }
+
+  // A field named where its name is written at `offset`: a use of it, unless
+  // the field is one no source declares
+  private usedField(f: ResolvedField, offset: number): ResolvedField {
+    if (f.at) this.fieldUses.set(offset, f.at)
+    return f
+  }
+
+  // Where the module names each field, at its places in the module's source:
+  // a use where it is one (a literal given for a struct is no declaration of
+  // its own), each field an instance's use names once.
+  fieldNames(): TypeCheckResult['fieldNames'] {
+    const own = this.filePath ?? ''
+    const named = new Map<number, Map<string, { file: string | null; offset: number }>>()
+    const add = (offset: number, at: FieldPlace) => {
+      const place = offset % INSTANCE_STRIDE
+      const fields = named.get(place) ?? new Map()
+      fields.set(`${at.file}\n${at.offset}`, { file: at.file === own ? null : at.file, offset: at.offset })
+      named.set(place, fields)
+    }
+    for (const [offset, at] of this.fieldUses) add(offset, at)
+    const used = new Set([...this.fieldUses.keys()].map((offset) => offset % INSTANCE_STRIDE))
+    for (const [offset, at] of this.fieldDecls) if (!used.has(offset % INSTANCE_STRIDE)) add(offset, at)
+    return new Map([...named].map(([offset, fields]) => [offset, [...fields.values()]]))
+  }
+
   // Record a use of a name: of what the name means where it is used, a
   // parameter or local in scope or else the module's name. `scoped` is false
   // for a type's name, which is the module's whatever is in scope.
@@ -10499,7 +10559,7 @@ function byFieldNames(param: ResolvedType, arg: ResolvedType): ResolvedType {
   if (p.kind !== 'tuple' || a.kind !== 'tuple' || p.fields.length !== a.fields.length) return arg
   const given = p.fields.map((f, i) => a.fields.find((g) => g.name !== null && g.name === f.name) ?? (a.fields[i].name === null ? a.fields[i] : undefined))
   if (given.some((g) => !g) || new Set(given).size !== given.length) return arg
-  return tuple(p.fields.map((f, i) => field(f.name, given[i]!.type)))
+  return tuple(p.fields.map((f, i) => ({ ...f, type: given[i]!.type })))
 }
 
 // The type of an argument as the parameter it meets lays it out: a tuple
@@ -10526,7 +10586,7 @@ function laidLiteral(expr: AST.Expr, param: ResolvedType, type: ResolvedType): R
   return tuple(p.fields.map((f, i) => {
     const element = value.elements[given[i]]
     const part = t.fields[given[i]].type
-    return field(f.name, element.value ? laidLiteral(element.value, f.type, part) : part)
+    return { ...f, type: element.value ? laidLiteral(element.value, f.type, part) : part }
   }))
 }
 
@@ -10611,11 +10671,11 @@ function plain(type: ResolvedType): ResolvedType {
       return element === type.element ? type : { ...type, element }
     }
     case 'tuple': {
-      const fields = type.fields.map((f) => field(f.name, plain(f.type)))
+      const fields = type.fields.map((f) => ({ ...f, type: plain(f.type) }))
       return fields.every((f, i) => f.type === type.fields[i].type) ? type : tuple(fields)
     }
     case 'func': {
-      const [params, returns] = [type.params, type.returns].map((fs) => fs.map((f) => field(f.name, plain(f.type))))
+      const [params, returns] = [type.params, type.returns].map((fs) => fs.map((f) => ({ ...f, type: plain(f.type) })))
       const same = [...params, ...returns].every((f, i) => f.type === [...type.params, ...type.returns][i].type)
       return same ? type : func(params, returns)
     }
@@ -10632,7 +10692,7 @@ function withoutRanges(type: ResolvedType): ResolvedType {
   const u = unwrap(type)
   if (u.kind === 'primitive') return u.max !== undefined ? primitive(u.name) : type
   if (type.kind !== 'tuple') return type
-  const fields = type.fields.map((f) => field(f.name, withoutRanges(f.type)))
+  const fields = type.fields.map((f) => ({ ...f, type: withoutRanges(f.type) }))
   return fields.every((f, i) => f.type === type.fields[i].type) ? type : tuple(fields)
 }
 
