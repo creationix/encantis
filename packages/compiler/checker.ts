@@ -10126,9 +10126,10 @@ class CheckContext {
       // A name a test put in module scope (#74) is the test's function in
       // that test and the tests it holds alone: module code, a generic's
       // instances and the other tests give the module's function of the
-      // name (12.4), where the module has one.
-      const own = found && arg.kind === 'IdentExpr' && found === this.moduleScope.symbols.get(arg.name) ? this.seenAs(found) : found
-      const target = own?.kind === 'func' ? own : found
+      // name (12.4), and where the module has none, the name is no function
+      // there, as in a build without tests.
+      const moduleLevel = !!found && arg.kind === 'IdentExpr' && found === this.moduleScope.symbols.get(arg.name)
+      const target = moduleLevel ? this.seenAs(found) : found
       if (arg.kind !== 'IdentExpr' || target?.kind !== 'func') {
         this.error(arg.span.start, `${place} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter`)
         return null
@@ -10140,7 +10141,7 @@ class CheckContext {
         this.error(arg.span.start, `${place} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter ('${arg.name}' has several overloads)`)
         return null
       }
-      this.recordReference(arg.name, arg.span.start)
+      this.recordReference(arg.name, arg.span.start, true, target === found ? undefined : target)
       // A nested function is given by its path, with what it captures and
       // writes, which the instance takes and gives back (N29, N30); a
       // comptime parameter passed on brings those of the function it was
@@ -11228,16 +11229,19 @@ class CheckContext {
   // Record a use of a name: of what the name means where it is used, a
   // parameter or local in scope or else the module's name. `scoped` is false
   // for a type's name, which is the module's whatever is in scope.
-  recordReference(name: string, refOffset: number, scoped = true): void {
+  // `resolved`: what the name was found to mean where the module scope's
+  // symbol of it is one a test put there (see seenAs): the module's own
+  // function, defined where it was declared before the test took the name.
+  recordReference(name: string, refOffset: number, scoped = true, resolved?: Symbol): void {
     const module = this.moduleScope.symbols.get(name)
-    const sym = scoped ? this.lookup(name) : module
+    const sym = resolved ?? (scoped ? this.lookup(name) : module)
     // From an instance, a use is recorded at its place in the generic's
     // source: of a module-level name always (a helper that only generic
     // bodies call is used), of the instance's own names for the first
     // instance only, which is the one whose definitions are held. A name
     // that is not the module's and has no place recorded (one a test
     // declares, from an instance) has no uses either.
-    const defOffset = sym === module ? this.symbolDefOffsets.get(name) : sym && this.localDefs.get(sym)
+    const defOffset = sym === module ? this.symbolDefOffsets.get(name) : sym && (this.localDefs.get(sym) ?? (resolved && this.declaredAt.get(sym)))
     const instance = refOffset >= INSTANCE_STRIDE ? this.instances[Math.floor(refOffset / INSTANCE_STRIDE) - 1] : undefined
     refOffset %= INSTANCE_STRIDE
     if (defOffset !== undefined) {

@@ -2401,3 +2401,80 @@ test "one" {
     expect(meta.symbols.some((s) => s.name === 'a' && s.kind === 'param')).toBe(true)
   })
 })
+
+// From the third review of the merge of #263
+describe('nested functions: names a test takes, messages and the editor', () => {
+  const checkWithTests = (source: string) => {
+    const module = parse(source, { filePath: 'test.ents' }).module!
+    return { module, result: typecheck(module, { source, includeTests: true }) }
+  }
+  const testErrorsOf = (source: string) => checkWithTests(source).result.errors.map((e) => e.message)
+
+  // What only a test declares or imports is no function of the module's:
+  // module code below the test, and a later test, are refused it as a
+  // build without tests refuses it (12.4, 8.6)
+  test('module code and a later test cannot give a name only a test declares or imports', () => {
+    expect(testErrorsOf(`func apply(comptime k: () -> u32) -> u32 => k()
+test "declares" {
+  func tf() -> u32 => 2
+  import "env" "hf" func hf() -> u32
+  assert apply(tf) == 2
+  if tf() == 3 { assert apply(hf) == 0 }
+}
+export func below() -> u32 => apply(tf)
+export func below_host() -> u32 => apply(hf)
+test "later" {
+  assert apply(tf) == 2
+}`)).toEqual([
+      "argument 1 of 'apply' must be the name of a function: k is a comptime function parameter",
+      "argument 1 of 'apply' must be the name of a function: k is a comptime function parameter",
+      "argument 1 of 'apply' must be the name of a function: k is a comptime function parameter",
+    ])
+  })
+
+  test('a source function only a test imports is not given in module code', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-nested-'))
+    try {
+      await writeFile(join(dir, 'slib.ents'), 'export func g() -> u32 => 3')
+      await writeFile(join(dir, 'main.ents'), `func apply(comptime k: () -> u32) -> u32 => k()
+test "imports" {
+  import "./slib.ents" ("g" func tri() -> u32)
+  assert apply(tri) == 3
+}
+export func later() -> u32 => apply(tri)`)
+      const path = join(dir, 'main.ents')
+      const load = await loadModule(path, { includeTests: true })
+      const checked = typecheckProgram(load.modules, path, { includeTests: true })
+      expect(checked.errors.map((e) => e.message)).toEqual(["argument 1 of 'apply' must be the name of a function: k is a comptime function parameter"])
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+
+  // The module's function, given after a test took its name over, is a use
+  // of the module's function: renamed with it, defined at it
+  test('the editor finds the module\'s function where a comptime argument gives it after a test took its name', () => {
+    const src = `func apply(comptime k: () -> u32) -> u32 => k()
+func f() -> u32 => 1
+export func above() -> u32 => apply(f)
+test "takes over f" {
+  func f() -> u32 => 2
+  assert apply(f) == 2
+}
+export func below() -> u32 => apply(f)
+test "later" {
+  assert apply(f) == 1
+}`
+    const { module, result } = checkWithTests(src)
+    expect(result.errors).toEqual([])
+    const own = src.indexOf('f() -> u32 => 1')
+    const test = src.indexOf('f() -> u32 => 2')
+    const uses = ['above() -> u32 => apply(', 'assert apply(', 'below() -> u32 => apply(', 'assert apply(f) == 1'].map((t, i) => src.indexOf(t) + (i === 3 ? 'assert apply('.length : t.length))
+    expect(rename(src, module, result, own)?.locations.map((l) => l.offset)).toEqual([own, uses[0], uses[2], uses[3]])
+    expect(rename(src, module, result, test)?.locations.map((l) => l.offset)).toEqual([test, uses[1]])
+    expect(gotoDefinition(src, module, result, uses[2])?.location.offset).toBe(src.indexOf('func f() -> u32 => 1'))
+    expect(gotoDefinition(src, module, result, uses[1])?.location.offset).toBe(src.indexOf('func f() -> u32 => 2'))
+    const meta = buildMeta(module, src, { checkResult: result })
+    expect(meta.symbols.filter((s) => s.name === 'f').map((s) => s.refs.length)).toEqual([3, 1])
+  })
+})

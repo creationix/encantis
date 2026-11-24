@@ -466,7 +466,12 @@ class MetaBuilder {
 
       // Find the function name offset (after "func" keyword)
       const offset = this.findFuncIdentOffset(decl)
-      const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset, undefined, decl.inline, known)
+      // A function a test declared under a module function's name (#74), or
+      // under another test's, holds the name: each declaration has its own
+      // uses, recorded where it is (see recordedAt)
+      const checked = this.checked(decl)
+      const recorded = this.checkResult.references.has(checked.span.start) ? checked.span.start : undefined
+      const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset, undefined, decl.inline, known, recorded)
 
       // Collect params and locals (also adds hints for params/returns)
       this.collectFuncBody(decl, symbolIndex)

@@ -131,6 +131,12 @@ function wordStart(source: string, offset: number): number {
 // Functions that share a name are each known by a name of their own, and by
 // the shared name alone every one of them would be the first.
 function declaredAt(module: AST.Module, checkResult: TypeCheckResult, offset: number, name: string): string | undefined {
+  const decl = funcDeclaredAt(module, checkResult, offset, name)
+  return decl && (checkResult.funcNames.get(decl) ?? name)
+}
+
+// The function or imported function whose name is written at `offset`
+function funcDeclaredAt(module: AST.Module, checkResult: TypeCheckResult, offset: number, name: string): AST.FuncDecl | AST.ImportFunc | undefined {
   const find = (items: readonly (AST.Declaration | AST.TestItem)[]): AST.FuncDecl | AST.ImportFunc | undefined => {
     for (const item of items) {
       const decl = item.kind === 'ExportDecl' ? item.item : item
@@ -150,8 +156,7 @@ function declaredAt(module: AST.Module, checkResult: TypeCheckResult, offset: nu
     }
     return undefined
   }
-  const decl = find(module.decls)
-  return decl && (checkResult.funcNames.get(decl) ?? name)
+  return find(module.decls)
 }
 
 // Where the def or data whose name is written at `offset` is recorded: where
@@ -214,8 +219,14 @@ function definitionOf(
   name: string,
 ): number | undefined {
   const start = wordStart(source, offset)
-  const declared = declaredAt(module, checkResult, start, name)
-  if (declared !== undefined) return checkResult.symbolDefOffsets.get(declared)
+  const decl = funcDeclaredAt(module, checkResult, start, name)
+  if (decl) {
+    // A function a test declared under a module function's name (#74), or
+    // under another test's, holds the name in the module's table: the
+    // declaration written here is still its own, with its own uses.
+    const def = checkResult.symbolDefOffsets.get(checkResult.funcNames.get(decl) ?? name)
+    return def !== decl.span.start && checkResult.references.has(decl.span.start) ? decl.span.start : def
+  }
   const value = valueDeclaredAt(module, start, name)
   if (value !== undefined && checkResult.references.has(value)) return value
   // A call in a generic's body means, of functions that share a name, one
