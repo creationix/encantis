@@ -3249,9 +3249,10 @@ class CheckContext {
     // Messages, hover and an instance's label name what it declares under
     // the test as the test runner names it, its groups' names and its own,
     // written as a string is: test "t".helper, test "g > t".helper, and
-    // `test` alone for one without a name (12.5), not by __test<n>
-    const title = [...this.openTests, decl].flatMap((t) => (t.name ? [t.name] : [])).join(' > ')
-    const shown = title ? `test ${spellString(title)}` : 'test'
+    // `test` alone for one without a name (12.5), not by __test<n>. An
+    // empty name is a name, written `test ""` (refused, 12.6).
+    const names = [...this.openTests, decl].flatMap((t) => (t.name !== null ? [t.name] : []))
+    const shown = names.length > 0 ? `test ${spellString(names.join(' > '))}` : 'test'
     const frame = {
       kind: 'test' as const, shown, path: id, shownPath: shown,
       owner: decl, signature: null, body: decl.children, nested: null, instance: null, inTest: true,
@@ -3405,9 +3406,9 @@ class CheckContext {
   // written as a string is, `the group "shapes > rectangles"`, or as a group
   // without a name, in the groups around it
   private groupShown(decl: AST.TestDecl): string {
-    const title = this.openTests.flatMap((t) => (t.name ? [t.name] : [])).join(' > ')
-    if (decl.name) return `the group ${spellString(title)}`
-    return title ? `a group without a name in ${spellString(title)}` : 'a group without a name'
+    const names = this.openTests.flatMap((t) => (t.name !== null ? [t.name] : []))
+    if (decl.name !== null) return `the group ${spellString(names.join(' > '))}`
+    return names.length > 0 ? `a group without a name in ${spellString(names.join(' > '))}` : 'a group without a name'
   }
 
   // A symbol a test put in module scope under `name`, in place of `before`
@@ -3519,8 +3520,9 @@ class CheckContext {
       shown: `'${shownName ?? 'anonymous'}'`,
       path: nested?.path ?? path ?? inst?.name ?? this.funcNames.get(decl) ?? decl.ident ?? 'anonymous',
       // A function of a test is shown under it, as what it declares is
-      // (test "t".helper.inner)
-      shownPath: nested?.shown ?? inst?.name ?? (path !== undefined && this.frame ? `${this.frame.shownPath}.${shownName ?? 'anonymous'}` : shownName ?? 'anonymous'),
+      // (test "t".helper.inner), and an instance by its label, as messages
+      // name it (apply(f = test "t".plus))
+      shownPath: nested?.shown ?? inst?.label ?? (path !== undefined && this.frame ? `${this.frame.shownPath}.${shownName ?? 'anonymous'}` : shownName ?? 'anonymous'),
       owner: decl, signature: decl.signature, body: decl.body, nested, instance: inst,
       // A function a test declares is "inside a test" in what it is told
       inTest: this.frame?.inTest ?? false,

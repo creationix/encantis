@@ -2621,6 +2621,47 @@ func g(comptime T: type, x: T) -> T {
     ])
   })
 
+  // A test named with an empty string has a name, written as the string is
+  // (the name is refused, 12.6, and what it declares is still named)
+  test('a test with an empty name is named test ""', () => {
+    const src = `func apply(comptime f: () -> u32) -> u32 => f()
+test "" {
+  let z: u32 = 1
+  func plus() -> u32 => z
+  assert apply(plus) == 1
+}
+test "" {
+  let gv: u32 = 1
+  test "in" { assert gv == 1 }
+}`
+    const { module, result } = checkWithTests(src)
+    expect(result.errors.map((e) => e.message)).toEqual([
+      "a test's name is empty: give it one",
+      "a test's name is empty: give it one",
+      '\'gv\' is a variable of the group "", whose statements are never run (12.3): a test nested in it cannot use it',
+    ])
+    expect(hover(src, module, result, src.indexOf('plus()'))?.nestedIn).toBe('test ""')
+    expect(hover(src, module, result, src.indexOf('z\n'))?.capturedFrom).toBe('test ""')
+  })
+
+  // A function nested in a generic's body is nested in the instance, named
+  // by its label as messages name it, not by its key
+  test('hover names the instance a nested function is in by its label', () => {
+    const src = `func gapply(comptime f: (u32) -> u32, x: u32) -> u32 {
+  let v: u32 = x
+  func gh(y: u32) -> u32 => f(y + v)
+  return gh(x)
+}
+test "t" {
+  let z: u32 = 1
+  func plus(x: u32) -> u32 => x + z
+  assert gapply(plus, 1) == 3
+}`
+    const { module, result } = checkWithTests(src)
+    expect(result.errors).toEqual([])
+    expect(hover(src, module, result, src.indexOf('gh(y'))).toMatchObject({ nestedIn: 'gapply(f = test "t".plus)', captures: 'v, z' })
+  })
+
   // Hover names the function a captured variable is declared in as the
   // checker names it, and a test's name is written as an Encantis string is
   test('captured from names the test as nested in does, escaped as a string is', () => {

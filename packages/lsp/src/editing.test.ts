@@ -146,6 +146,27 @@ describe('the outline', () => {
     expect(names(symbols)).toEqual([['test "say \\"hi\\""', ['plus', 'deep', 'step']]])
   })
 
+  // A test's name is selected to its closing quote, past an escaped one, and
+  // one that does not parse yet is named as it is once it parses
+  test('names and selects a test whose name holds escapes, parsed or not', async () => {
+    const s = server()
+    const text = `export func f() -> u32 => 1
+test "q\\"uote" {
+  assert f() == 1
+}
+test "c\\x01" {
+  assert f( == 1
+}
+test "ok\\x01" {
+  assert f() == 1
+}
+`
+    await s.open(uri, text)
+    const symbols = s.ask<DocumentSymbol[]>('onDocumentSymbol', { textDocument: { uri } })
+    expect(symbols.map((x) => x.name)).toEqual(['f', 'test "q\\"uote"', 'test "c\\u{1}"', 'test "ok\\u{1}"'])
+    expect(symbols[1].selectionRange).toEqual({ start: { line: 1, character: 5 }, end: { line: 1, character: 14 } })
+  })
+
   test('keeps a declaration that does not parse while it is written', async () => {
     const s = server()
     await s.open(uri, SHAPES)

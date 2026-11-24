@@ -356,7 +356,7 @@ function functionAround(module: AST.Module, checkResult: TypeCheckResult, offset
       const decl = item.kind === 'ExportDecl' ? item.item : item
       if (offset < decl.span.start || offset >= decl.span.end) continue
       if (decl.kind === 'FuncDecl') return decl.ident ?? undefined
-      if (decl.kind === 'TestDecl') return find(decl.children) ?? (decl.name ? `test ${spellString(decl.name)}` : 'test')
+      if (decl.kind === 'TestDecl') return find(decl.children) ?? (decl.name !== null ? `test ${spellString(decl.name)}` : 'test')
     }
     return undefined
   }

@@ -102,7 +102,7 @@ export function outline(module: Module, text: string, positionAt: (offset: numbe
         const children = decl.children.flatMap((child) => symbolsOf(child));
         const name = decl.name === null ? 'test' : `test ${spellString(decl.name)}`;
         const quote = decl.name === null ? -1 : text.indexOf('"', decl.span.start);
-        const close = quote < 0 ? -1 : text.indexOf('"', quote + 1) + 1;
+        const close = quote < 0 ? -1 : quotedEnd(text, quote);
         const selection = quote >= 0 && close > quote && close <= decl.span.end ? range(quote, close) : range(decl.span.start, decl.span.start + 'test'.length);
         return [{ name, kind: SymbolKind.Namespace, range: range(decl.span.start, decl.span.end), selectionRange: selection, ...(children.length > 0 ? { children } : {}) }];
       }
@@ -128,10 +128,40 @@ function patternNames(pattern: Pattern): string[] {
   return pattern.elements.flatMap((e) => (e.kind === 'positional' ? patternNames(e.pattern) : [e.binding ?? e.field]));
 }
 
+// Where the string that starts at the quote at `quote` ends, after its
+// closing quote: an escaped quote (\") is part of it. -1 where it is not
+// closed on its line.
+function quotedEnd(text: string, quote: number): number {
+  for (let i = quote + 1; i < text.length && text[i] !== '\n'; i++) {
+    if (text[i] === '\\') i++;
+    else if (text[i] === '"') return i + 1;
+  }
+  return -1;
+}
+
+// The text that the characters between a string's quotes stand for, as the
+// parser reads them: \xHH a byte, \u{H..} a codepoint, \n, \t and \r, and
+// any other character after a backslash itself
+function quotedText(written: string): string {
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  const add = (s: string) => bytes.push(...encoder.encode(s));
+  for (const [, escaped, plain] of written.matchAll(/\\(x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\}|.)|([^\\]+)/gsu)) {
+    if (plain !== undefined) add(plain);
+    else if (escaped.startsWith('x') && escaped.length === 3) bytes.push(parseInt(escaped.slice(1), 16));
+    else if (escaped.startsWith('u{')) {
+      const cp = parseInt(escaped.slice(2, -1), 16);
+      add(cp <= 0x10ffff && (cp < 0xd800 || cp > 0xdfff) ? String.fromCodePoint(cp) : escaped);
+    } else add(({ n: '\n', t: '\t', r: '\r' } as Record<string, string>)[escaped] ?? escaped);
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+
 // What a declaration left out of the analysis declares (it does not parse
 // yet, see recoverParse), read from the words it starts with, so that the
-// outline keeps it while it is written
-const HEAD = /^(export\s+(?:"[^"\n]*"\s+)?)?(?:inline\s+)?(func|type|enum|data|def|global|test|import|memory)\b\s*(?:"([^"\n]*)"|([A-Za-z_][A-Za-z0-9_-]*))?/;
+// outline keeps it while it is written. A test is named as one that parses
+// is, its name written as a string is.
+const HEAD = /^(export\s+(?:"[^"\n]*"\s+)?)?(?:inline\s+)?(func|type|enum|data|def|global|test|import|memory)\b\s*(?:"((?:[^"\\\n]|\\.)*)"|([A-Za-z_][A-Za-z0-9_-]*))?/;
 
 const HEAD_KIND: Record<string, SymbolKind> = {
   func: SymbolKind.Function,
@@ -157,7 +187,7 @@ export function leftOutSymbols(text: string, spans: Span[], positionAt: (offset:
     heads.forEach(({ at: start, m }, i) => {
       const end = heads[i + 1]?.at ?? span.end;
       const [head, exported, keyword, quoted, ident] = m;
-      const name = keyword === 'test' ? (quoted !== undefined ? `test "${quoted}"` : 'test') : keyword === 'import' ? `import "${quoted ?? ''}"` : keyword === 'memory' ? 'memory' : ident;
+      const name = keyword === 'test' ? (quoted !== undefined ? `test ${spellString(quotedText(quoted))}` : 'test') : keyword === 'import' ? `import "${quoted ?? ''}"` : keyword === 'memory' ? 'memory' : ident;
       if (!name) return;
       const at = ident !== undefined ? start + head.length - ident.length : start;
       const length = ident !== undefined ? ident.length : head.trimEnd().length;

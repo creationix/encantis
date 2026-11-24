@@ -797,4 +797,53 @@ test "t" {
     expect(def(source.indexOf('apply(g') + 6)).toBe(line(source.indexOf('func g')))
     expect(def(source.indexOf('apply(plus') + 6)).toBe(line(source.indexOf('func plus')))
   })
+
+  // A nested function in an if, an else or a match arm at the top of a test
+  // is one as in a loop's body there; a function a test imports is defined
+  // at its import; an instance is named by its label; a test's name with a
+  // backtick in it keeps its code span whole
+  test('hover and definition at a test\'s functions in its blocks and at its imports', () => {
+    const blocks = `func apply(comptime f: () -> u32) -> u32 => f()
+func gapply(comptime f: (u32) -> u32, x: u32) -> u32 {
+  func gh(y: u32) -> u32 => f(y)
+  return gh(x)
+}
+test "a\`b" {
+  let z: u32 = 1
+  import "env" "hostg" func hostg() -> u32
+  if z == 1 {
+    func inif() -> u32 => z
+    assert apply(inif) == 1
+  } else {
+    func inelse() -> u32 => z
+    assert inelse() == 1
+  }
+  match z {
+    1 => {
+      func inarm() -> u32 => z
+      assert inarm() == 1
+    }
+    _ => { }
+  }
+  func plus(x: u32) -> u32 => x + z
+  assert apply(hostg) + gapply(plus, 1) > 0
+}
+`
+    const hover = hoverIn(blocks)
+    const ask = serverFor(blocks)
+    const line = (offset: number) => blocks.slice(0, offset).split('\n').length - 1
+    const def = (offset: number) => (ask('onDefinition', offset) as Location | null)?.range.start.line
+    const refs = (offset: number) => (ask('onReferences', offset, { context: { includeDeclaration: true } }) as Location[] | null)?.map((l) => l.range.start.line)
+    expect(hover(blocks.indexOf('inif()'))).toContain('nested in ``test "a`b"``; captures z')
+    expect(hover(blocks.indexOf('inif)'))).toContain('nested in ``test "a`b"``; captures z')
+    expect(def(blocks.indexOf('inif)'))).toBe(line(blocks.indexOf('func inif')))
+    expect(hover(blocks.indexOf('inelse() ->'))).toContain('captures z')
+    expect(def(blocks.indexOf('inelse() == 1'))).toBe(line(blocks.indexOf('func inelse')))
+    expect(hover(blocks.indexOf('inarm() ->'))).toContain('captures z')
+    expect(refs(blocks.indexOf('inarm() ->'))).toEqual([line(blocks.indexOf('func inarm')), line(blocks.indexOf('inarm() == 1'))])
+    expect(hover(blocks.indexOf('apply(hostg') + 6)).toContain('func hostg() -> u32')
+    expect(def(blocks.indexOf('apply(hostg') + 6)).toBe(line(blocks.indexOf('func hostg')))
+    expect(refs(blocks.indexOf('hostg() -> u32'))).toEqual([line(blocks.indexOf('func hostg')), line(blocks.indexOf('apply(hostg'))])
+    expect(hover(blocks.indexOf('gh(y'))).toContain('nested in ``gapply(f = test "a`b".plus)``')
+  })
 })

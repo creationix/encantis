@@ -153,11 +153,21 @@ function hintDetails(hint: MetaHint, meta: MetaOutput): string {
 function nestedDetails(analysis: Analysis, offset: number): string {
   const found = queryHover(analysis.text, analysis.module, analysis.check, offset);
   const parts = [
-    ...(found?.nestedIn !== undefined ? [`nested in \`${found.nestedIn}\``] : []),
+    ...(found?.nestedIn !== undefined ? [`nested in ${codeSpan(found.nestedIn)}`] : []),
     ...(found?.captures !== undefined ? [`captures ${found.captures}`] : []),
-    ...(found?.capturedFrom !== undefined ? [`captured from \`${found.capturedFrom}\``] : []),
+    ...(found?.capturedFrom !== undefined ? [`captured from ${codeSpan(found.capturedFrom)}`] : []),
   ];
   return parts.length > 0 ? `\n\n${parts.join('; ')}` : '';
+}
+
+// Markdown code of `text`, which may hold backticks (a test's name is any
+// string): delimited by a run of backticks longer than any in it, and set
+// apart by a space where it starts or ends with one (CommonMark)
+function codeSpan(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(longest + 1);
+  const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${text}${pad}${fence}`;
 }
 
 // An analysis of a document's text, for the queries

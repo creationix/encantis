@@ -338,6 +338,9 @@ class MetaBuilder {
         case 'DefDecl':
           this.collectDef(item)
           break
+        case 'ImportDecl':
+          this.collectImport(item)
+          break
         case 'LetStmt':
           this.collectLocal(item.pattern)
           break
@@ -350,11 +353,15 @@ class MetaBuilder {
       if (item.item.kind === 'ImportFunc') {
         const name = item.item.ident ?? item.name
         const known = this.checkResult.funcNames.get(item.item) ?? name
-        const sym = this.checkResult.symbols.get(known)
+        // One whose name a test took over has its own type and uses, as a
+        // function does (see collectFunc), and so does a test's import
+        const own = this.checkResult.takenOver.get(item.item.span.start)
+        const sym = own ?? this.checkResult.symbols.get(known)
         if (sym && sym.kind === 'func') {
           // Find the position of the function name in the import
           const offset = this.findImportFuncOffset(item, name)
-          this.addSymbol(name, 'func', sym.type, offset, undefined, undefined, known)
+          const recorded = this.checkResult.references.has(item.item.span.start) ? item.item.span.start : undefined
+          this.addSymbol(name, 'func', sym.type, offset, undefined, undefined, known, recorded)
         } else if (sym?.kind === 'generic') {
           // Another module's generic is listed as one of this module's is,
           // with the signature written here: the editor then finds its name
@@ -1048,6 +1055,8 @@ class MetaBuilder {
       if (item.kind !== 'FuncDecl' && 'body' in item && item.body.kind === 'Block') {
         this.collectLocalsFromBlock(item.body)
       }
+      // The blocks of an if or a match, as in a function's body
+      if (item.kind === 'ExpressionStmt') this.collectLocalsFromExpr(item.expr)
     }
     for (const item of decl.children) {
       switch (item.kind) {
@@ -1065,6 +1074,8 @@ class MetaBuilder {
           this.generateHintsForDef(item)
           break
         case 'ImportDecl':
+          this.generateHintsForImport(item)
+          break
         case 'TypeFuncDecl':
           break
         default:
