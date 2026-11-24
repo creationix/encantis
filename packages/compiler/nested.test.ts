@@ -123,6 +123,37 @@ func f(n: u32) -> u32 {
       ])
     })
 
+    test('a third declaration of the name is told the place of the first (3.3)', () => {
+      expect(errorsOf(`
+func helper() -> u32 => 1
+import "env" "ext" func ext() -> u32
+func f() -> u32 {
+  func s() { }
+  func s() { }
+  func s() { }
+  func helper() -> u32 => 2
+  if true { func helper() -> u32 => 3 }
+  func ext() -> u32 => 4
+  func ok(ext: u32) -> u32 => ext
+  return helper() + ok(1)
+}
+test "t" {
+  let k: u32 = 1
+  func c1() -> u32 => k
+  func c1() -> u32 => k + 1
+  func c1() -> u32 => k + 2
+  assert c1() == 1
+}`)).toEqual([
+        "'s' is already declared: a nested function cannot reuse the name of a nested function in scope (first declared at 5:8)",
+        "'s' is already declared: a nested function cannot reuse the name of a nested function in scope (first declared at 5:8)",
+        "'helper' is already declared: a nested function cannot reuse the name of a function of the module (first declared at 2:6)",
+        "'helper' is already declared: a nested function cannot reuse the name of a function of the module (first declared at 2:6)",
+        "'ext' is already declared: a nested function cannot reuse the name of an import (first declared at 3:25)",
+        "'c1' is already declared: a function that uses its test's variables cannot reuse the name of a nested function in scope (first declared at 16:8)",
+        "'c1' is already declared: a function that uses its test's variables cannot reuse the name of a nested function in scope (first declared at 16:8)",
+      ])
+    })
+
     test('a variable declared after it cannot take its name, in any block', () => {
       expect(errorsOf(`
 func g() -> u32 {

@@ -10638,6 +10638,11 @@ class CheckContext {
   // declared (N9): a variable of a function around it, a nested function, a
   // comptime parameter of the instance it is in
   private capturableKind(sym: Symbol): string | null {
+    // A nested function refused its name leaves the name with what had it:
+    // an import or a function of the module, which a parameter may hide, or
+    // the nested function declared first
+    const first = this.firstOf(sym)
+    if (first !== sym && sym.kind === 'func' && sym.nested) return this.capturableKind(first)
     if (sym.kind === 'func' && sym.nested) return 'a nested function in scope'
     // A variable whose declaration was refused is what the first of its
     // name is (see firstOf)
@@ -10769,7 +10774,13 @@ class CheckContext {
       this.error(nameAt, `the results are ${given} registers with the variables '${name}' writes, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — give a large value back through a pointer`)
     }
     if (kind && existing?.kind !== 'func') nested.unbound = true
-    else this.currentScope.symbols.set(name, sym)
+    else {
+      // Refused for a function's name, it is the name all the same, so that
+      // its calls say nothing more; a later clash with the name is told the
+      // place of the first declaration of it (see firstOf)
+      if (kind) this.clashed(sym, existing, true)
+      this.currentScope.symbols.set(name, sym)
+    }
     this.recordDefinition(name, nameAt, sym)
     return nested
   }
