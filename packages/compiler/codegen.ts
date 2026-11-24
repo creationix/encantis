@@ -91,6 +91,9 @@ export interface CodegenContext {
   variants?: Map<AST.Expr, number>
   payloads?: Map<AST.CallExpr, AST.TupleExpr>
   patternVariants?: Map<AST.MatchPattern, number>
+  // The locals of each name a variant pattern binds, by where it is written
+  // (see collectLocals)
+  patternLocals?: Map<number, string[]>
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -403,7 +406,7 @@ function enumOf(type: ResolvedType | undefined): RT.EnumRT {
 // the program is compiled, to the bits the conversion gives at run time: a
 // global's initializer is a constant instruction.
 function toSlot(wat: string, from: string, to: string, way: 'into' | 'out'): string {
-  const ops = RT.slotConversion(way === 'into' ? from : to, way === 'into' ? to : from)[way]
+  const ops = RT.slotConversion(from, to)[way]
   if (ops.length === 0) return wat
   const folded = foldConversion(wat, ops)
   if (folded) return folded
@@ -2350,6 +2353,16 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
 // value each branch leaves on the stack.
 function ifLetArmToWat(arm: AST.IfExpr | AST.ElifBranch, ctx: CodegenContext, resultStr: string, otherwise: () => string): string {
   const pattern = arm.pattern
+  // A variant pattern: the value's tag is tested, as a match arm's is.
+  if (pattern && (pattern.kind === 'variant' || pattern.kind === 'constructor')) {
+    const e = enumOf(lookupExprType(arm.condition, ctx))
+    const [setup, regs] = enumRegisters(arm.condition, e, ctx)
+    const sets = patternBindingsToWat(pattern, e, regs, ctx)
+    const thenBody = withPatternBindings(pattern, ctx, () => bodyToWat(arm.thenBranch, ctx, resultStr !== ''))
+    const elseBody = otherwise()
+    const test = `(if ${resultStr} ${variantTest(pattern, regs[0], ctx)} (then ${[...sets, thenBody].join(' ')})${elseBody ? ` (else ${elseBody})` : ''})`
+    return setup ? `${setup}\n${test}` : test
+  }
   if (!pattern || pattern.kind !== 'binding') {
     throw new Error('Invalid if-let expression')
   }
@@ -2809,6 +2822,8 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
 }
 
 function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
+  const enumType = lookupExprType(expr.subject, ctx)
+  if (enumType && unwrap(enumType).kind === 'enum') return matchEnumToWat(expr, enumOf(enumType), ctx)
   let subject = exprToWat(expr.subject, ctx)
   const subjectType = lookupExprType(expr.subject, ctx)
   const subjectTypes = subjectType ? typeToWasm(subjectType) : ['i32']
@@ -2876,6 +2891,114 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
   }
 
   return setup + result
+}
+
+// A value of an enum as registers that can be read more than once (a
+// variable's, a global's, a field of one held by value, as they are; anything
+// else, a subject in memory among them, evaluated once into scratch locals,
+// last register first), and what sets those
+function enumRegisters(value: AST.Expr, e: RT.EnumRT, ctx: CodegenContext): [string, string[]] {
+  const wat = exprToWat(value, ctx)
+  const wasm = typeToWasm(e)
+  const parts = trySplitMultiValue(wat, wasm.length)
+  if (parts?.every((p) => /^\((?:local\.get|global\.get) [^\s()]+\)$/.test(p))) return ['', parts]
+  const temps = wasm.map((w) => scratchLocal(ctx, w))
+  return [[wat, ...[...temps].reverse().map((t) => `(local.set ${t})`)].join('\n'), temps.map((t) => `(local.get ${t})`)]
+}
+
+// The test that a value is the variant a pattern names
+function variantTest(pattern: AST.MatchPattern, tag: string, ctx: CodegenContext): string {
+  const k = ctx.patternVariants?.get(pattern)
+  if (k === undefined) throw new Error('a variant pattern the checker did not resolve')
+  return `(i32.eq ${tag} (i32.const ${k}))`
+}
+
+// The sets of the names a variant pattern binds, each from its slots
+function patternBindingsToWat(pattern: AST.MatchPattern, e: RT.EnumRT, regs: string[], ctx: CodegenContext): string[] {
+  if (pattern.kind !== 'constructor') return []
+  const k = ctx.patternVariants?.get(pattern)
+  if (k === undefined) return []
+  const fields = e.variants[k].fields ?? []
+  const slots = RT.enumSlots(e)
+  // Where each field's values start among the slots
+  const starts: number[] = []
+  let at = 0
+  for (const f of fields) {
+    starts.push(at)
+    at += typeToWasm(f.type).length
+  }
+  const sets: string[] = []
+  const bind = (j: number, offset: number) => {
+    const names = ctx.patternLocals?.get(offset)
+    if (!names) throw new Error(`Missing locals for the binding at offset ${offset}`)
+    const from = typeToWasm(fields[j].type)
+    names.forEach((name, i) => {
+      const slot = starts[j] + i
+      sets.push(`(local.set $${name} ${toSlot(regs[1 + slot], from[i], slots[slot], 'out')})`)
+    })
+  }
+  pattern.elements.forEach((part, position) => {
+    if (part.kind === 'positional') {
+      if (part.pattern.kind === 'binding') bind(position, part.pattern.span.start)
+      return
+    }
+    const j = fields.findIndex((f) => f.name === part.field)
+    if (part.kind === 'namedShort') bind(j, part.span.start)
+    else if (part.pattern.kind === 'binding') bind(j, part.pattern.span.start)
+  })
+  return sets
+}
+
+// Runs `emit` with the names a pattern binds standing for their locals
+function withPatternBindings<T>(pattern: AST.MatchPattern, ctx: CodegenContext, emit: () => T): T {
+  const bound: [string, string[]][] = []
+  const visit = (p: AST.MatchPattern) => {
+    if (p.kind !== 'constructor') return
+    for (const part of p.elements) {
+      const at = part.kind === 'namedShort' ? part.span.start : part.pattern.kind === 'binding' ? part.pattern.span.start : null
+      const name = part.kind === 'namedShort' ? part.field : part.pattern.kind === 'binding' ? part.pattern.name : null
+      const names = at === null ? undefined : ctx.patternLocals?.get(at)
+      if (name && names) bound.push([name, names])
+    }
+  }
+  visit(pattern)
+  const run = (i: number): T => (i >= bound.length ? emit() : withBinding(ctx, bound[i][0], bound[i][1], () => run(i + 1)))
+  return run(0)
+}
+
+// A match on an enum (reference 5.4): the subject is evaluated once; the arms
+// are nested ifs, the first outermost, each testing the tag for the variants
+// its patterns name (or-ed for several), its then setting its bindings from
+// their slots and then running its body. The first arm that lists _ is the
+// else of the arm before it, and the arms after it are not compiled; with
+// none, the innermost else is (unreachable): a tag no variant has traps.
+function matchEnumToWat(expr: AST.MatchExpr, e: RT.EnumRT, ctx: CodegenContext): string {
+  const [setup, regs] = enumRegisters(expr.subject, e, ctx)
+  const tag = regs[0]
+  const type = lookupExprType(expr, ctx)
+  const resultTypes = type ? typeToWasm(type) : []
+  const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
+  const bodyOf = (arm: AST.MatchArm) =>
+    arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody'
+      ? bodyToWat(arm.body, ctx, resultTypes.length > 0)
+      : resultTypes.length > 0 ? exprToWat(arm.body, ctx) : discardedExprToWat(arm.body, ctx)
+  const last = expr.arms.findIndex((arm) => arm.patterns.some((p) => p.kind === 'wildcard'))
+  const arms = last < 0 ? expr.arms : expr.arms.slice(0, last + 1)
+  let result = '(unreachable)'
+  for (let i = arms.length - 1; i >= 0; i--) {
+    const arm = arms[i]
+    if (i === last) {
+      result = bodyOf(arm)
+      continue
+    }
+    const tests = arm.patterns.map((p) => variantTest(p, tag, ctx))
+    const cond = tests.reduce((acc, c) => `(i32.or ${acc} ${c})`)
+    const only = arm.patterns.length === 1 ? arm.patterns[0] : null
+    const sets = only ? patternBindingsToWat(only, e, regs, ctx) : []
+    const body = only ? withPatternBindings(only, ctx, () => bodyOf(arm)) : bodyOf(arm)
+    result = `(if ${resultStr} ${cond}\n(then ${[...sets, body].join(' ')})\n(else ${result}))`
+  }
+  return setup ? `${setup}\n${result}` : result
 }
 
 function sizeofToWat(expr: AST.SizeofExpr, ctx: CodegenContext): string {
@@ -3847,9 +3970,25 @@ function collectLocals(
     }
   }
 
+  // The locals of the names a variant pattern binds, each of its field's
+  // type: seen in its arm or branch only.
+  function patternLocals(pattern: AST.MatchPattern, kind: string) {
+    if (pattern.kind !== 'constructor') return
+    for (const part of pattern.elements) {
+      const at = part.kind === 'namedShort' ? part.span.start : part.pattern.kind === 'binding' ? part.pattern.span.start : null
+      const name = part.kind === 'namedShort' ? part.field : part.pattern.kind === 'binding' ? part.pattern.name : null
+      if (at === null || name === null) continue
+      const type = checkResult.types.get(typeKey(at, 'Binding'))
+      if (!type) continue
+      ctx.patternLocals ??= new Map()
+      ctx.patternLocals.set(at, claimLocals(ctx, name, type, locals, true, kind))
+    }
+  }
+
   // The locals of an `if let` or `elif let` branch: its binding's, and the
   // scratch locals its test uses.
   function ifLetLocals(arm: AST.IfExpr | AST.ElifBranch) {
+    if (arm.pattern?.kind === 'constructor') patternLocals(arm.pattern, 'if let ')
     if (arm.pattern?.kind !== 'binding') return
     const elemType = checkResult.types.get(typeKey(arm.condition.span.start, 'IfLetBinding'))
     if (!elemType) return
@@ -3949,6 +4088,7 @@ function collectLocals(
       }
       visitExpr(expr.subject)
       for (const arm of expr.arms) {
+        if (arm.patterns.length === 1) patternLocals(arm.patterns[0], 'match ')
         if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') visitBody(arm.body)
         else visitExpr(arm.body)
       }

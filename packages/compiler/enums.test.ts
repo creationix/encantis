@@ -853,3 +853,156 @@ data xs: *[?]Dir = [North, East]
     expect(text).toContain('spot: *mut [1]Color')
   })
 })
+
+describe('match, if let and elif let on an enum (5.1 to 5.8)', () => {
+  const SOURCE = `${COLOR}${JSON_ENUM}enum Dir { North, East, South, West }
+export func red-part(c: Color) -> u8 => match c {
+  Red => 255
+  Rgb(r, _, _) => r
+  Grey(b) => b
+  _ => 0
+}
+func pick() -> Json => Number(2.5)
+export func as-number(j: Json) -> f64 => match j {
+  Number(x) => x
+  Boolean(b) => if b { 1.0 } else { 0.0 }
+  _ => 0.0
+}
+export func picked() -> f64 => match pick() {
+  Number(x) => x
+  _ => 0.0
+}
+export func turn(d: Dir) -> Dir => match d {
+  North => East
+  East => South
+  South => West
+  West => North
+}
+export func level(p: *Color) -> u8 => match p.* {
+  Grey(b) => b
+  _ => 0
+}
+export func grey-of(c: Color) -> u8 => if let Grey(b) = c { b } elif let Rgb(g:) = c { g } else { 0 }
+export func is-red-at(p: *Color) -> bool => if let Red = p.* { true } else { false }
+export func dir-at(p: *mut u8) -> u32 => match (p as *mut Dir).* {
+  North => 1
+  East => 2
+  South => 3
+  West => 4
+}
+export func dir-or(p: *mut u8) -> u32 => match (p as *mut Dir).* {
+  North => 1
+  East => 2
+  South => 3
+  West => 4
+  _ => 5
+}
+export func light(c: Color) -> u8 => match c {
+  Red, Blue, Green => 128
+  Rgb(r:, g:, b:) => max(r, max(g, b))
+  Hsl(l:) => l
+  Grey(b) => b
+  Darker(c: inner) => light(inner.*) / 2
+}
+export memory 1
+`
+
+  test('the arms are nested ifs on the tag; bindings are set from their slots', () => {
+    expect(watOf(SOURCE, '(func $red-part')).toBe(lines(
+      '(func $red-part (param $c_tag i32) (param $c_0 i32) (param $c_1 i32) (param $c_2 i32) (result i32)',
+      '(local $r i32)',
+      '(local $b i32)',
+      '(if (result i32) (i32.eq (local.get $c_tag) (i32.const 0))',
+      '(then (i32.const 255))',
+      '(else (if (result i32) (i32.eq (local.get $c_tag) (i32.const 3))',
+      '(then (local.set $r (local.get $c_0)) (local.get $r))',
+      '(else (if (result i32) (i32.eq (local.get $c_tag) (i32.const 5))',
+      '(then (local.set $b (local.get $c_0)) (local.get $b))',
+      '(else (i32.const 0)))))))',
+      ')',
+    ))
+    expect(watOf(SOURCE, '(func $as-number')).toBe(lines(
+      '(func $as-number (param $j_tag i32) (param $j_0 i64) (param $j_1 i32) (result f64)',
+      '(local $x f64)',
+      '(local $b i32)',
+      '(if (result f64) (i32.eq (local.get $j_tag) (i32.const 2))',
+      '(then (local.set $x (f64.reinterpret_i64 (local.get $j_0))) (local.get $x))',
+      '(else (if (result f64) (i32.eq (local.get $j_tag) (i32.const 1))',
+      '(then (local.set $b (i32.wrap_i64 (local.get $j_0))) (if (result f64) (local.get $b) (then (f64.const 1)) (else (f64.const 0))))',
+      '(else (f64.const 0)))))',
+      ')',
+    ))
+  })
+
+  test('a subject that is no variable is evaluated once, into scratch locals', () => {
+    expect(watOf(SOURCE, '(func $picked')).toBe(lines(
+      '(func $picked  (result f64)',
+      '(local $x f64)',
+      '(local $__tmp_0 i32)',
+      '(local $__tmp_1 i64)',
+      '(local $__tmp_2 i32)',
+      '(call $pick)',
+      '(local.set $__tmp_2)',
+      '(local.set $__tmp_1)',
+      '(local.set $__tmp_0)',
+      '(if (result f64) (i32.eq (local.get $__tmp_0) (i32.const 2))',
+      '(then (local.set $x (f64.reinterpret_i64 (local.get $__tmp_1))) (local.get $x))',
+      '(else (f64.const 0)))',
+      ')',
+    ))
+  })
+
+  test('a subject in memory is loaded whole, then matched', () => {
+    const level = watOf(SOURCE, '(func $level')
+    expect(level).toContain('(local.tee $__tmp_0 (i32.load8_u (local.get $p)))')
+    expect(level).toMatch(/\(local\.set \$__tmp_4\)\n\(local\.set \$__tmp_3\)\n\(local\.set \$__tmp_2\)\n\(local\.set \$__tmp_1\)\n\(if \(result i32\) \(i32\.eq \(local\.get \$__tmp_1\) \(i32\.const 5\)\)\n\(then \(local\.set \$b \(local\.get \$__tmp_2\)\) \(local\.get \$b\)\)\n\(else \(i32\.const 0\)\)\)/)
+    expect(watOf(SOURCE, '(func $is-red-at')).toContain('(if (result i32) (i32.eq (local.get $__tmp_1) (i32.const 0)) (then (i32.const 1)) (else (i32.const 0)))')
+  })
+
+  test('an exhaustive match tests every variant, the last too, and traps on a tag no variant has', () => {
+    expect(watOf(SOURCE, '(func $turn')).toContain('(i32.eq (local.get $d) (i32.const 3))\n(then (i32.const 0))\n(else (unreachable))')
+    expect(watOf(SOURCE, '(func $grey-of')).toContain('(if (result i32) (i32.eq (local.get $c_tag) (i32.const 5)) (then (local.set $b (local.get $c_0)) (local.get $b)) (else (if (result i32) (i32.eq (local.get $c_tag) (i32.const 3)) (then (local.set $g (local.get $c_1)) (local.get $g)) (else (i32.const 0)))))')
+  })
+
+  test('the same modules as the numbers written out', async () => {
+    const same = async (a: string, b: string) => expect(Buffer.from(await binary(a)).equals(Buffer.from(await binary(b)))).toBe(true)
+    await same(
+      'enum Dir { North, East, South, West }\nexport func turn(d: Dir) -> Dir => match d {\n  North => East\n  East => South\n  South => West\n  West => North\n}\n',
+      'export func turn(d: u32) -> u32 => match d {\n  0 => 1\n  1 => 2\n  2 => 3\n  3 => 0\n}\n',
+    )
+    await same(
+      `${JSON_ENUM}export func classify(j: Json) -> u32 => match j {\n  Null => 0\n  Number(_) => 1\n  _ => 2\n}\n`,
+      'export func classify(tag: u32, a: u64, b: u32) -> u32 => match tag {\n  0 => 0\n  2 => 1\n  _ => 2\n}\n',
+    )
+  })
+
+  test('a tag no variant has traps in a match, unless a _ arm takes it', async () => {
+    const exports = await instance(SOURCE)
+    const memory = new Uint8Array((exports.memory as WebAssembly.Memory).buffer)
+    const call = (name: string, ...args: (number | bigint)[]) => (exports[name] as (...a: (number | bigint)[]) => unknown)(...args)
+    memory[100] = 2
+    expect(call('dir-at', 100)).toBe(3)
+    memory[100] = 9
+    expect(() => call('dir-at', 100)).toThrow()
+    expect(call('dir-or', 100)).toBe(5)
+    expect(call('red-part', 9, 0, 0, 0)).toBe(0)
+    expect(() => call('light', 9, 0, 0, 0)).toThrow()
+  })
+
+  test('what each arm gives, run', async () => {
+    const exports = await instance(SOURCE)
+    const memory = new Uint8Array((exports.memory as WebAssembly.Memory).buffer)
+    const call = (name: string, ...args: (number | bigint)[]) => (exports[name] as (...a: (number | bigint)[]) => unknown)(...args)
+    expect([call('red-part', 0, 0, 0, 0), call('red-part', 3, 7, 8, 9), call('red-part', 5, 6, 0, 0), call('red-part', 1, 0, 0, 0)]).toEqual([255, 7, 6, 0])
+    expect(call('picked')).toBe(2.5)
+    expect(call('as-number', 1, 1n, 0)).toBe(1)
+    expect([call('turn', 0), call('turn', 3)]).toEqual([1, 0])
+    memory.set([5, 33, 0, 0, 0], 200)
+    expect(call('level', 200)).toBe(33)
+    memory.set([4, 1, 2, 30, 0], 210)
+    expect([call('grey-of', 5, 4, 0, 0), call('grey-of', 3, 1, 2, 3), call('grey-of', 0, 0, 0, 0)]).toEqual([4, 2, 0])
+    expect([call('is-red-at', 200), call('light', 4, 1, 2, 30)]).toEqual([0, 30])
+    memory.set([3, 10, 40, 20, 0], 220)
+    expect(call('light', 6, 220, 0, 0)).toBe(20)
+  })
+})
