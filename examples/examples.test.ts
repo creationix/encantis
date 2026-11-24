@@ -63,8 +63,8 @@ for (const file of entsFiles) {
     continue
   }
 
-  const { wat, testNames, testTitles } = result
-  if (testNames.length === 0) continue
+  const { wat, testExports, testTitles } = result
+  if (testExports.length === 0) continue
 
   const w = await wabt()
   let buffer: Uint8Array
@@ -92,13 +92,13 @@ for (const file of entsFiles) {
         }
       })
     }
-    for (const [t, name] of testNames.entries()) {
+    for (const [t, name] of testExports.entries()) {
       test(testTitles[t], async () => {
         let failedOffset = -1
         const host = createTestHost(mod, (offset) => { failedOffset = offset })
         const instance = await WebAssembly.instantiate(mod, host.imports)
         host.attach(instance)
-        const fn = instance.exports[`test_${name}`] as Function
+        const fn = instance.exports[name] as Function
         fn()
         if (failedOffset >= 0) {
           const lines = source.split('\n')

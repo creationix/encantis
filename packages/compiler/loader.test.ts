@@ -223,22 +223,22 @@ describe('generics across modules', () => {
   async function failingTests(entry: string): Promise<string[]> {
     const { load, check } = await program(entry, true)
     expect(check.errors).toEqual([])
-    const { wat, testNames } = programToWatWithTests(load.modules, check.results, entry)
+    const { wat, testExports } = programToWatWithTests(load.modules, check.results, entry)
     const w = await wabt()
     const parsed = w.parseWat('test.wat', wat, { simd: true, multi_value: true, bulk_memory: true })
     parsed.validate()
     const mod = await WebAssembly.compile(parsed.toBinary({}).buffer)
     parsed.destroy()
-    expect(testNames.length).toBeGreaterThan(0)
+    expect(testExports.length).toBeGreaterThan(0)
     const failed: string[] = []
-    for (const name of testNames) {
+    for (const name of testExports) {
       let failedAt = -1
       const host = createTestHost(mod, (offset) => {
         failedAt = offset
       })
       const instance = await WebAssembly.instantiate(mod, host.imports)
       host.attach(instance)
-      ;(instance.exports[`test_${name}`] as () => void)()
+      ;(instance.exports[name] as () => void)()
       if (failedAt >= 0) failed.push(name)
     }
     return failed

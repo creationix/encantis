@@ -46,8 +46,8 @@ describe('compileToWat', () => {
 
   test('includes the tests only when asked', async () => {
     const main = join(examples, 'modular/main.ents')
-    expect(await watOf(main)).not.toContain('test_')
-    expect(await watOf(main, fromDisk, true)).toContain('test_')
+    expect(await watOf(main)).not.toContain('(export "test:')
+    expect(await watOf(main, fromDisk, true)).toContain('(export "test:')
   })
 })
 

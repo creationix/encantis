@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { argValue, ungroupedType } from './ast'
-import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, testsToRun, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -3806,18 +3806,23 @@ function usesMemory(checkResult: TypeCheckResult): boolean {
   return false
 }
 
+// A test's function is $__test<n> in the WAT, the nth test of the build,
+// and a function it declares $__test<n>.<name>, so that no two tests' names
+// meet, whatever the tests are called. Nor do they meet a name of the
+// program's: the entry module's begin with a lowercase letter, another
+// module's are its tag, $ and the name, and the compiler's helpers are not
+// __test and a digit. Its export name is the checker's (testsToRun).
 function emitTestDecl(
   decl: AST.TestDecl,
-  prefix: string,
   ctx: CodegenContext,
   checkResult: TypeCheckResult,
   literalRefs: Map<number, { ptr: number; len: number }>,
   nameMap: Map<string, string>,
+  exportNames: Map<AST.TestDecl, string>,
+  count: { tests: number },
   parts: string[],
 ): void {
-  const myPrefix = decl.name
-    ? (prefix ? `${prefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_')
-    : prefix
+  const watId = `__test${++count.tests}`
 
   // Process defs and data decls first so they're available to functions and statements
   for (const item of decl.children) {
@@ -3839,7 +3844,7 @@ function emitTestDecl(
       // Handled at module level — skip here
     } else if (item.kind === 'FuncDecl') {
       // Emit shared helper function
-      const watName = item.ident ? `__test_${myPrefix}_${item.ident}` : `__test_${myPrefix}_anon`
+      const watName = `${watId}.${item.ident ?? 'anon'}`
       if (item.ident) {
         ctx.nameMap.set(item.ident, watName)
       }
@@ -3857,13 +3862,12 @@ function emitTestDecl(
     // Group: recurse into nested tests
     for (const item of decl.children) {
       if (item.kind === 'TestDecl') {
-        emitTestDecl(item, myPrefix, ctx, checkResult, literalRefs, nameMap, parts)
+        emitTestDecl(item, ctx, checkResult, literalRefs, nameMap, exportNames, count, parts)
       }
     }
   } else if (stmts.length > 0 && decl.name) {
     // Leaf test: emit as a function
     ctx.testMode = true
-    const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
     // Its locals are its own, named as a function's are (claimLocals).
     ctx.locals = new Map()
     ctx.claimed = new Map()
@@ -3881,9 +3885,10 @@ function emitTestDecl(
       return true
     })
     const localStr = declareUsedLocals(locals, body, ' ')
-    const testLabel = decl.name ? ` ;; test "${decl.name}"` : ''
-    parts.push(`(func $test_${safeName} ${localStr}${testLabel}\n  ${body}\n)`)
-    parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
+    // The name as a string literal would be written: a comment ends at a line end.
+    const testLabel = ` ;; test ${JSON.stringify(decl.name)}`
+    parts.push(`(func $${watId} ${localStr}${testLabel}\n  ${body}\n)`)
+    parts.push(`  (export "${exportNames.get(decl)}" (func $${watId}))`)
   }
 }
 
@@ -4397,15 +4402,17 @@ export function programToWat(
   // Test functions (only in test mode)
   if (options?.includeTests) {
     const filesToTest = options.testFiles ?? [entryPath]
+    const testCount = { tests: 0 }
     for (const testFilePath of filesToTest) {
       const testModule = modules.get(testFilePath)
       const testResult = checkResults.get(testFilePath)
       if (!testModule || !testResult) continue
       const testNameMap = buildFullNameMap(testFilePath)
       const ctx = createContext(testResult, refsOf(testFilePath), testNameMap, dataSection.totalSize)
+      const exportNames = new Map(testsToRun(testModule.module.decls).map((t) => [t.decl, t.exportName]))
       for (const decl of testModule.module.decls) {
         if (decl.kind !== 'TestDecl') continue
-        emitTestDecl(decl, '', ctx, testResult, refsOf(testFilePath), testNameMap, parts)
+        emitTestDecl(decl, ctx, testResult, refsOf(testFilePath), testNameMap, exportNames, testCount, parts)
       }
     }
   }
@@ -4426,7 +4433,7 @@ export function programToWat(
   parts.push(')')
   const wat = tidyRawWat(parts.join('\n'))
   if (options?.includeTests) {
-    return wat // caller uses testNames from the return
+    return wat // caller uses testExports from the return
   }
   return wat
 }
@@ -4436,39 +4443,22 @@ export function programToWatWithTests(
   checkResults: Map<string, TypeCheckResult>,
   entryPath: string,
   testFiles?: string[],
-): { wat: string; testNames: string[]; testTitles: string[]; standIns: { module: string; name: string }[] } {
-  // testNames are the exported function suffixes (test_<name>); testTitles are
-  // the names as written, nested ones joined with ' > ', for display.
-  const testNames: string[] = []
+): { wat: string; testExports: string[]; testTitles: string[]; standIns: { module: string; name: string }[] } {
+  // testExports are the names the tests are exported under (test:<name>), in
+  // the order to run them; testTitles are the names as written, nested ones
+  // joined with ' > ', for display.
+  const testExports: string[] = []
   const testTitles: string[] = []
-
-  function collectTestNames(decl: AST.TestDecl, prefix: string, titlePrefix: string) {
-    const myPrefix = decl.name
-      ? (prefix ? `${prefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_')
-      : prefix
-    const myTitle = decl.name ? (titlePrefix ? `${titlePrefix} > ${decl.name}` : decl.name) : titlePrefix
-    const hasNested = decl.children.some(c => c.kind === 'TestDecl')
-    if (hasNested) {
-      for (const child of decl.children) {
-        if (child.kind === 'TestDecl') collectTestNames(child, myPrefix, myTitle)
-      }
-    } else if (decl.name) {
-      testNames.push(myPrefix)
-      testTitles.push(myTitle)
-    }
-  }
-
   const filesToTest = testFiles ?? [entryPath]
   for (const filePath of filesToTest) {
-    const mod = modules.get(filePath)
-    if (!mod) continue
-    for (const decl of mod.module.decls) {
-      if (decl.kind === 'TestDecl') collectTestNames(decl, '', '')
+    for (const { exportName, title } of testsToRun(modules.get(filePath)?.module.decls ?? [])) {
+      testExports.push(exportName)
+      testTitles.push(title)
     }
   }
   // The imported globals of a plain host type: a test host gives each one a
   // value that is not null (createTestHost), as the host promises to.
   const standIns: { module: string; name: string }[] = []
   const wat = programToWat(modules, checkResults, entryPath, { includeTests: true, testFiles: filesToTest, standIns })
-  return { wat, testNames, testTitles, standIns }
+  return { wat, testExports, testTitles, standIns }
 }

@@ -7499,6 +7499,21 @@ export name 'hash' is used twice: give one an explicit name, as in export "hash_
 
 <!-- spec:end -->
 
+An export name cannot begin with `test:`, which the test build gives the module's tests ([12.6](#126-the-test-host)), so no export of a module is ever named as one of its tests is. Only a name written in quotes can begin so, since a declaration's own name holds no `:`; the rule holds for every `export "..."`, of a function, a generic, a global or the memory, in every module of a program, tests or none. A name that merely starts with `test`, such as `test_xor` or `"test"`, is like any other:
+
+<!-- spec:begin compile -->
+
+```ents
+export func test_xor(a: u32, b: u32) -> u32 => a ^ b
+export "test:xor" func xor(a: u32, b: u32) -> u32 => a ^ b
+```
+
+```errors
+export name 'test:xor' begins with 'test:', which the test build gives its tests: give it another name
+```
+
+<!-- spec:end -->
+
 Only the entry module's exports reach the host. In a module that another imports, `export` makes a name importable and nothing more; the memory is the exception, since a program has one ([7.3](#73-memory-declarations)). An exported function is still an ordinary function of its module, called from it like any other.
 
 A generic function or generic type is never exported to the host, since there is no one function of it (and nothing of a generic type exists at run time): its `export` makes it importable by other source modules, and in an entry module it emits nothing, so a library of generics compiles on its own to a module with none of them. To export an instance, write a wrapper: `export func push_u32(v: *mut Vec(u32), x: u32) { push(v, x) }`.
@@ -10008,7 +10023,40 @@ Tests run without the program's host. `encantis test` gives each import of the m
 - Any other imported function throws when it is called, which fails the test that called it. The functions that do not reach it are tested as usual.
 - An imported global is the zero of its type: 0 for a number, none for an optional host reference. One of a plain host type, which is never null, is a stand-in object ([2.13](#213-host-references)).
 
-In the test build each test is a function exported as `test_` followed by its name, the names of a group and its tests joined by `__`, and each character that is not a letter, a digit or `_` replaced by `_`. Two tests whose names are the same, or become the same this way, make a module that does not assemble (a known bug): give each test a name of its own.
+In the test build each test that is run, one with a name that holds no tests, is a function exported as `test:` followed by its name: the names of its groups and its own joined by `__`, with each character that is not an ASCII letter, a digit or `_` replaced by `_`. A character is a code point, so `é` and `😀` are one `_` each. The test `rectangles > one row` of [12.5](#125-running-tests) is exported as `test:rectangles__one_row`. A test without a name adds nothing to the names of the tests it holds. A group is not exported, so a group and a test beside it can share a name. Two tests exported under one name are an error at the second, whether their names are the same or become the same this way (`tests "a b" and "a_b" are both exported as 'test:a_b' in the test build: give each test a name of its own`). As any error in a test, it is reported where the tests are checked, by `encantis check` and `encantis test`, and not by `encantis compile`. The exports of the tests come in the order the tests run, so a host can run the tests itself: it calls each export whose name begins with `test:`, in turn.
+
+No export of the module begins with `test:` ([7.2](#72-exports)), and in the WAT the functions of the tests, and those the tests declare, have names that no function of the module can have. So the module names its functions and exports as it likes: a function `test_xor` and an export `"test_and"` stand beside the tests `"xor"` and `"and"`:
+
+<!-- spec:begin compile -->
+
+```ents
+export func test_xor(a: u32, b: u32) -> u32 => a ^ b
+export "test_and" func both(a: u32, b: u32) -> u32 => a & b
+
+test "xor" {
+  assert test_xor(5, 3) == 6
+}
+test "and" {
+  assert both(5, 3) == 1
+}
+```
+
+```ents
+test "a b" { assert true }
+test "a_b" { assert true }
+test "rectangles" {
+  test "one row" { assert true }
+}
+test "rectangles__one_row" { assert true }
+test "rectangles" { assert true }
+```
+
+```errors
+tests "a b" and "a_b" are both exported as 'test:a_b' in the test build: give each test a name of its own
+tests "rectangles > one row" and "rectangles__one_row" are both exported as 'test:rectangles__one_row' in the test build: give each test a name of its own
+```
+
+<!-- spec:end -->
 
 A test that holds neither statements nor tests, `test "todo" {}` or one that only declares, fails (`fn is not a function`), and a test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives: both are known bugs.
 
