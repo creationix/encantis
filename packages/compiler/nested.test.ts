@@ -2,7 +2,13 @@
 // Nested functions (reference 3.4, Nested Functions): what the checker says
 // of them, what they capture and write, and how they compile.
 import { describe, expect, test } from 'bun:test'
-import { typecheck, type TypeCheckResult } from './checker'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { typecheck, typecheckProgram, type TypeCheckResult } from './checker'
+import { programToWatWithTests } from './codegen'
+import { loadModule } from './loader'
+import { createTestHost } from './test-host'
 import { parse } from './parser'
 import { runTestsOfSource, wasmOfWat, watOfSource } from './test-utils'
 
@@ -1111,4 +1117,284 @@ test "left to right" {
 }
 `)
   expect(failed).toEqual([])
+})
+
+// Builds the program of `main.ents` among `files`, with its tests, and runs
+// them, as `encantis test` does
+async function runProgram(files: Record<string, string>): Promise<{ ran: string[]; failed: string[]; wat: string }> {
+  const dir = await mkdtemp(join(tmpdir(), 'encantis-nested-'))
+  try {
+    for (const [name, source] of Object.entries(files)) await writeFile(join(dir, name), source)
+    const path = join(dir, 'main.ents')
+    const load = await loadModule(path, { includeTests: true })
+    if (load.errors.length > 0) throw new Error(load.errors.map((e) => e.message).join('\n'))
+    const check = typecheckProgram(load.modules, path, { includeTests: true })
+    if (check.errors.length > 0) throw new Error(check.errors.map((e) => e.message).join('\n'))
+    const { wat, testNames, testTitles, standIns } = programToWatWithTests(load.modules, check.results, path)
+    const bytes = await wasmOfWat(wat)
+    const module = await WebAssembly.compile(bytes)
+    const host = createTestHost(module, () => {}, undefined, bytes, standIns)
+    const instance = await WebAssembly.instantiate(module, host.imports)
+    host.attach(instance)
+    const failed: string[] = []
+    for (const [i, name] of testNames.entries()) {
+      try {
+        ;(instance.exports[`test_${name}`] as () => void)()
+      } catch {
+        failed.push(testTitles[i])
+      }
+    }
+    return { ran: testTitles, failed, wat }
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+}
+
+const SORT = `func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  let p = xs.ptr
+  for i in xs.len {
+    let x = p[i]
+    let j = i
+    while j > 0 && before(x, p[j - 1]) {
+      p[j] = p[j - 1]
+      j -= 1
+    }
+    p[j] = x
+  }
+}
+`
+const signatureOf = (wat: string, name: string) => wat.split('\n').find((line) => line.trim().startsWith(`(func $${name} `))?.trim()
+
+describe('nested functions: comptime function parameters (N29 to N37)', () => {
+  test('a nested function that captures, given for a comptime function parameter (E10)', async () => {
+    const source = `${SORT}
+export func by_distance(xs: []mut i32, center: i32) -> u32 {
+  let compared: u32 = 0
+  func closer(a: i32, b: i32) -> bool {
+    compared += 1
+    return abs(a - center) < abs(b - center)
+  }
+  xs.sort(closer)
+  return compared
+}
+data nums = mut [5:i32, -1, 8, 3]
+test "sorted" {
+  assert by_distance(nums, 4) == 6
+  assert nums[0] == 5 && nums[1] == 3 && nums[2] == 8 && nums[3] == -1
+}`
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.instances.map((i) => [i.name, i.label])).toEqual([['sort<i32|by_distance.closer>', 'sort(T = i32, before = by_distance.closer)']])
+    const wat = watOfSource(source)
+    expect(signatureOf(wat, 'sort<i32|by_distance.closer>')).toBe('(func $sort<i32|by_distance.closer> (param $xs_ptr i32) (param $xs_len i32) (param $center i32) (param $compared i32) (result i32)')
+    expect(signatureOf(wat, 'by_distance.closer')).toBe('(func $by_distance.closer (param $a i32) (param $b i32) (param $center i32) (param $compared i32) (result i32 i32)')
+    expect((await runTestsOfSource(source)).failed).toEqual([])
+  })
+
+  test('a nested function of a generic calls the function given for its parameter (E25)', async () => {
+    const source = `func each_twice(comptime visit: (u32) -> (), xs: []u32) {
+  func both(x: u32) {
+    visit(x)
+    visit(x)
+  }
+  for x in xs { both(x) }
+}
+export func total_twice(xs: []u32) -> u32 {
+  let total: u32 = 0
+  func add(x: u32) { total += x }
+  each_twice(add, xs)
+  return total
+}
+test "twice" { assert total_twice([1, 2, 3]) == 12 }`
+    expect(signatureOf(watOfSource(source), 'each_twice<total_twice.add>.both')).toBe('(func $each_twice<total_twice.add>.both (param $x i32) (param $total i32) (result i32)')
+    expect((await runTestsOfSource(source)).failed).toEqual([])
+  })
+
+  test('own captures first, then the hidden ones, through two generics (count_seen)', async () => {
+    const source = `func count_if(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> (n: u32) {
+  for x in xs {
+    if keep(x) { n += 1 }
+  }
+}
+func count_seen(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> u32 {
+  let seen: u32 = 0
+  func k2(x: T) -> bool {
+    seen += 1
+    return keep(x)
+  }
+  return xs.count_if(k2) + seen
+}
+export func over_limit(xs: []u32, limit: u32) -> u32 {
+  func big(x: u32) -> bool => x > limit
+  return xs.count_seen(big)
+}
+test "t" { assert over_limit([1, 5, 9], 4) == 5 }`
+    const wat = watOfSource(source)
+    expect(signatureOf(wat, 'count_seen<u32|over_limit.big>.k2')).toBe('(func $count_seen<u32|over_limit.big>.k2 (param $x i32) (param $seen i32) (param $limit i32) (result i32 i32)')
+    expect(signatureOf(wat, 'count_if<u32|count_seen<u32|over_limit.big>.k2>')).toBe('(func $count_if<u32|count_seen<u32|over_limit.big>.k2> (param $xs_ptr i32) (param $xs_len i32) (param $seen i32) (param $limit i32) (result i32 i32)')
+    expect((await runTestsOfSource(source)).failed).toEqual([])
+  })
+
+  test('two functions given with an overlapping capture: one copy, in parameter order', () => {
+    const wat = watOfSource(`func pair(comptime f: () -> u32, comptime g: () -> u32) -> u32 => f() + g()
+export func go(a: u32, b: u32) -> u32 {
+  let c: u32 = 1
+  func one() -> u32 => b + a
+  func two() -> u32 {
+    c += a
+    return c
+  }
+  return pair(one, two) + c
+}`)
+    expect(signatureOf(wat, 'pair<go.one|go.two>')).toBe('(func $pair<go.one|go.two> (param $a i32) (param $b i32) (param $c i32) (result i32 i32)')
+  })
+
+  test('each instance of a generic has its own nested functions (E11)', async () => {
+    const source = `func count_if(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> (n: u32) {
+  for x in xs {
+    if keep(x) { n += 1 }
+  }
+}
+func over(comptime T: type, xs: []T, limit: T) -> u32 {
+  func big(x: T) -> bool => x > limit
+  return xs.count_if(big)
+}
+data small = [1:u32, 5, 9]
+data wide = [0.5, 2.5]
+test "own" {
+  assert over(small, 4:u32) == 2
+  assert over(wide, 1.0) == 1
+}`
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.instances.map((i) => i.name).sort()).toEqual(['count_if<f64|over<f64>.big>', 'count_if<u32|over<u32>.big>', 'over<f64>', 'over<u32>'])
+    expect((await runTestsOfSource(source)).failed).toEqual([])
+  })
+
+  test('two calls giving one nested function share an instance; two nested functions are two', () => {
+    const result = check(`func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+export func go(n: u32) -> u32 {
+  func a(x: u32) -> u32 => x + n
+  func b(x: u32) -> u32 => x + n
+  let t: u32 = 0
+  for i in 3 { t += apply(a, i) }
+  return t + apply(a, 1) + apply(b, 1)
+}`)
+    expect(result.errors).toEqual([])
+    expect(result.instances.map((i) => i.name)).toEqual(['apply<go.a>', 'apply<go.b>'])
+  })
+
+  test('a generic that gives its own nested function to itself stops at the limit', () => {
+    expect(errorsOf(`func start() { }
+func grow(comptime f: () -> ()) {
+  func again() { f() }
+  grow(again)
+}
+export func go() { grow(start) }`)[0]).toStartWith("too many nested instantiations (64) while instantiating 'grow'")
+  })
+
+  test('a nested function that gives itself to a generic it calls: one instance', async () => {
+    const source = `func each(comptime f: (u32) -> (), n: u32) {
+  for i in n { f(i) }
+}
+export func depth(n: u32) -> u32 {
+  let total: u32 = 0
+  func visit(k: u32) {
+    total += 1
+    if k > 0 { each(visit, k - 1) }
+  }
+  visit(n)
+  return total
+}
+test "visits" { assert depth(3) == 3 && depth(4) == 5 }`
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.instances.map((i) => i.name)).toEqual(['each<depth.visit>'])
+    expect((await runTestsOfSource(source)).failed).toEqual([])
+  })
+
+  test('functions declared in a test are given too (N37)', async () => {
+    const source = `${SORT}
+data nums = mut [5:i32, -1, 8, 3]
+test "a test sorts with a comparator that captures" {
+  let center: i32 = 4
+  func closer(a: i32, b: i32) -> bool => abs(a - center) < abs(b - center)
+  func desc(a: i32, b: i32) -> bool => a > b
+  nums.sort(closer)
+  assert nums[0] == 5 && nums[1] == 3 && nums[2] == 8 && nums[3] == -1
+  nums.sort(desc)
+  assert nums[0] == 8 && nums[3] == -1
+}`
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.instances.map((i) => [i.name, i.label])).toEqual([
+      ['sort<i32|test_a_test_sorts_with_a_comparator_that_captures.closer>', 'sort(T = i32, before = test_a_test_sorts_with_a_comparator_that_captures.closer)'],
+      ['sort<i32|__test_a_test_sorts_with_a_comparator_that_captures_desc>', 'sort(T = i32, before = desc)'],
+    ])
+    const { failed, ran } = await runTestsOfSource(source)
+    expect(ran.length).toBe(1)
+    expect(failed).toEqual([])
+  })
+
+  test('narrowing sees a write made through a comptime argument', () => {
+    expect(errorsOf(`data buf = [1:u32, 2, 3, 4]
+func apply(comptime f: () -> ()) { f() }
+func at(i: u32) -> u32 {
+  func far() { i = 100 }
+  if i < 4 {
+    apply(far)
+    return buf[i]
+  }
+  return 0
+}`).some((e) => e.startsWith("runtime index on *[4]u32 requires 'if let' or '??'"))).toBe(true)
+  })
+
+  test('across modules: the instance of another module\'s generic calls the nested function by its extern name (N33)', async () => {
+    const { failed, wat } = await runProgram({
+      'sorting.ents': `export ${SORT}`,
+      'main.ents': `import "./sorting" "sort" func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)
+export func by_distance(xs: []mut i32, center: i32) -> u32 {
+  let compared: u32 = 0
+  func closer(a: i32, b: i32) -> bool {
+    compared += 1
+    return abs(a - center) < abs(b - center)
+  }
+  xs.sort(closer)
+  return compared
+}
+data nums = mut [5:i32, -1, 8, 3]
+test "sorted" {
+  assert by_distance(nums, 4) == 6
+  assert nums[0] == 5 && nums[1] == 3 && nums[2] == 8 && nums[3] == -1
+}`,
+    })
+    expect(failed).toEqual([])
+    expect(signatureOf(wat, 'sorting$sort<i32|by_distance.closer@main>')).toBe('(func $sorting$sort<i32|by_distance.closer@main> (param $xs_ptr i32) (param $xs_len i32) (param $center i32) (param $compared i32) (result i32)')
+  })
+
+  test('across modules: count_seen in another module, the same order', async () => {
+    const { failed, wat } = await runProgram({
+      'lib.ents': `export func count_if(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> (n: u32) {
+  for x in xs {
+    if keep(x) { n += 1 }
+  }
+}
+export func count_seen(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> u32 {
+  let seen: u32 = 0
+  func k2(x: T) -> bool {
+    seen += 1
+    return keep(x)
+  }
+  return xs.count_if(k2) + seen
+}`,
+      'main.ents': `import "./lib" "count_seen" func count_seen(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> u32
+export func over_limit(xs: []u32, limit: u32) -> u32 {
+  func big(x: u32) -> bool => x > limit
+  return xs.count_seen(big)
+}
+test "t" { assert over_limit([1, 5, 9], 4) == 5 }`,
+    })
+    expect(failed).toEqual([])
+    expect(signatureOf(wat, 'lib$count_seen<u32|over_limit.big@main>.k2')).toBe('(func $lib$count_seen<u32|over_limit.big@main>.k2 (param $x i32) (param $seen i32) (param $limit i32) (result i32 i32)')
+  })
 })

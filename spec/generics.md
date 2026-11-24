@@ -2352,6 +2352,31 @@ test "passed on" {
 }
 ```
 
+A function that a test declares, given in the test: the instance calls it by the name its test gives it, and exists in the test build only. Also when it has the name of a function of the module: inside the test the name is the test's function, and the instance is another one.
+
+```ents
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }
+data space = mut [0:u8; 64]
+
+test "t" {
+  func by_low_bits(a: i32, b: i32) -> bool => (a & 7) < (b & 7)
+  sort((space as [*]mut i32)[0..4], by_low_bits)
+}
+```
+
+```ents
+func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
+func helper(x: u32) -> u32 => x + 1
+
+export func go() -> u32 => twice(helper, 1)
+
+test "t" {
+  func helper(x: u32) -> u32 => x + 10
+  assert twice(helper, 1) == 21
+  assert go() == 3
+}
+```
+
 An imported function, and a generic with no type parameter at all.
 
 ```ents
@@ -2441,38 +2466,6 @@ func one(x: f64) -> u32 => step(add, Acc(f64)(0.0, 0), x).n
 
 ```errors
 'add' is (Acc(f64), f64) -> (f64, u32), but 'step' needs f: (Acc(f64), f64) -> Acc(f64)
-```
-
-A function that a test declares is no function of the module.
-
-```ents
-func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }
-data space = mut [0:u8; 64]
-
-test "t" {
-  func by_low_bits(a: i32, b: i32) -> bool => (a & 7) < (b & 7)
-  sort((space as [*]mut i32)[0..4], by_low_bits)
-}
-```
-
-```errors
-argument 2 of 'sort' must be a function declared at module level: 'by_low_bits' is declared inside a test
-```
-
-Also when it has the name of a function of the module: inside the test the name is the test's function.
-
-```ents
-func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
-func helper(x: u32) -> u32 => x + 1
-
-test "t" {
-  func helper(x: u32) -> u32 => x + 10
-  assert twice(helper, 1) == 21
-}
-```
-
-```errors
-argument 1 of 'twice' must be a function declared at module level: 'helper' is declared inside a test
 ```
 
 The parameter used as a value.

@@ -3376,22 +3376,24 @@ export func g(a: u32, b: u32) -> u32 => both(divmod, a, b)`
     expect(instancesOf(div)).toEqual(['both<u32|divmod>'])
   })
 
-  test('a function a test declares cannot be given: it is no function of the module', () => {
+  // A function a test declares is given by the name its test gives it in
+  // the output, which is also its name in the instance's key (N37).
+  test('a function a test declares can be given, by the name its test gives it', () => {
     const source = `${SORT}data space = mut [0:u8; 64]
 test "t" {
   func by_low_bits(a: i32, b: i32) -> bool => (a & 7) < (b & 7)
   sort((space as [*]mut i32)[0..4], by_low_bits)
 }`
-    expect(check(source).errors.map(e => e.message)).toEqual([
-      "argument 2 of 'sort' must be a function declared at module level: 'by_low_bits' is declared inside a test",
-    ])
-    // It is used all the same: the call names it.
-    expect(check(source).warnings.map(w => w.message).filter(m => m.includes('by_low_bits'))).toEqual([])
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.instances.map((i) => [i.name, i.label])).toEqual([['sort<i32|__test_t_by_low_bits>', 'sort(T = i32, before = by_low_bits)']])
+    // It is used: the call names it.
+    expect(result.warnings.map(w => w.message).filter(m => m.includes('by_low_bits'))).toEqual([])
   })
 
-  // The test's function replaces the module's in scope. The instance would
-  // call the module's, a function other than the one the test named.
-  test("nor can a test's function that has the name of a function of the module", () => {
+  // The test's function replaces the module's in scope, and the instance it
+  // is given to is another one than the module's.
+  test("also a test's function that has the name of a function of the module", () => {
     const source = `func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
 func helper(x: u32) -> u32 => x + 1
 export func go() -> u32 => twice(helper, 1)
@@ -3400,9 +3402,8 @@ test "t" {
   assert helper(1) == 11
   assert twice(helper, 1) == 21
 }`
-    expect(check(source).errors.map(e => e.message)).toEqual([
-      "argument 1 of 'twice' must be a function declared at module level: 'helper' is declared inside a test",
-    ])
+    expect(check(source).errors).toEqual([])
+    expect(check(source).instances.map((i) => i.name)).toEqual(['twice<u32|helper>', 'twice<u32|__test_t_helper>'])
     expect(check(source, { includeTests: false }).errors).toEqual([])
   })
 

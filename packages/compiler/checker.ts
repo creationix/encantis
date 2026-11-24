@@ -273,6 +273,8 @@ export interface NestedFunc extends CaptureSets {
 // assigns back from its results (N23)
 export interface NestedCall extends CaptureSets {
   callee: string
+  // The callee's own results, which the call's value is
+  returns: ResolvedType[]
 }
 
 // A function being checked: a function of the module, an instance, a test's
@@ -631,6 +633,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     }
   }
 
+  for (const call of ctx.nestedCalls.values()) call.returns = call.returns.map(concrete)
   // A nested function nothing calls or gives (N20). In a generic's body the
   // first instance stands for the generic, as it does for the editor.
   for (const nested of ctx.nestedFuncs.values()) {
@@ -1168,6 +1171,9 @@ class CheckContext {
   // The same by symbol: a test's function that takes the name of one of the
   // module's replaces it in module scope, and its name is then no new name.
   testDeclared = new Set<Symbol>()
+  // The name the output gives each function a test declares at its top, by
+  // its symbol: what an instance given it calls (N37)
+  testFuncNames = new Map<Symbol, string>()
   // Names of generics that a later declaration tried to take
   contested = new Set<string>()
   // The module's generic types, in the order they are declared, and how deep
@@ -2961,7 +2967,8 @@ class CheckContext {
     this.testPrefix = prefix
     const isGroup = decl.children.some((item) => item.kind === 'TestDecl')
     const frame = {
-      kind: 'test' as const, shown: `test "${decl.name ?? ''}"`, path: `test_${prefix}`, shownPath: `test_${prefix}`,
+      kind: 'test' as const, shown: `test "${decl.name ?? ''}"`,
+      path: decl.name ? `test_${prefix}` : `__test_anon_${decl.span.start}`, shownPath: decl.name ? `test_${prefix}` : 'test',
       owner: decl, signature: null, body: decl.children, nested: null, instance: null, inTest: true,
     }
     try {
@@ -3037,7 +3044,10 @@ class CheckContext {
           // Not one that was refused the name: the module's functions keep it.
           if (item.ident && !this.shared(item.ident)) {
             const declared = this.moduleScope.symbols.get(item.ident)
-            if (declared?.kind === 'func') this.testDeclared.add(declared)
+            if (declared?.kind === 'func') {
+              this.testDeclared.add(declared)
+              this.testFuncNames.set(declared, `__test_${prefix}_${item.ident}`)
+            }
           }
           this.checkFuncBody(item, null, `__test_${prefix}_${item.ident ?? 'anon'}`)
           break
@@ -5831,14 +5841,14 @@ class CheckContext {
         // One that captures takes the variables the instance has for it (N30).
         if (sym.sets && sym.sets.captures.length > 0) {
           const lowered = this.calls.get(expr) as AST.CallExpr
-          this.nestedCalls.set(lowered, { callee: sym.alias, captures: sym.sets.captures, writes: sym.sets.writes })
+          this.nestedCalls.set(lowered, { callee: sym.alias, captures: sym.sets.captures, writes: sym.sets.writes, returns: sym.type.returns.map((r) => r.type) })
         }
       } else if (sym?.kind === 'func' && sym.nested) {
         // A nested function: a direct call of its wasm function, which
         // takes the variables it captures after the arguments (N23)
         named = sym
         this.recordReference(name, expr.callee.span.start)
-        this.nestedCalls.set(expr, { callee: sym.nested.path, captures: sym.nested.captures, writes: sym.nested.writes })
+        this.nestedCalls.set(expr, { callee: sym.nested.path, captures: sym.nested.captures, writes: sym.nested.writes, returns: sym.type.returns.map((r) => r.type) })
       } else if (sym?.kind === 'func' && sym === this.moduleScope.symbols.get(name)) {
         // Of functions that share the name, the arguments say which is
         // meant.
@@ -9411,12 +9421,30 @@ class CheckContext {
 
     // The arguments are the written call's own nodes, so the types and
     // conversions recorded for them are the ones the plain call is compiled with.
-    this.calls.set(expr, {
+    const lowered: AST.CallExpr = {
       kind: 'CallExpr',
       callee: { kind: 'IdentExpr', name: this.calleeOf(inst, sym, name), span: expr.callee.span },
       args: runtimeArgs,
       span: expr.span,
-    })
+    }
+    this.calls.set(expr, lowered)
+    // An instance given functions that capture takes their variables, and
+    // gives back those they write (N30): the call passes and assigns them.
+    if (inst.hidden.captures.length > 0) {
+      this.nestedCalls.set(lowered, { callee: lowered.callee.kind === 'IdentExpr' ? lowered.callee.name : inst.name, ...inst.hidden, returns: sig.returns.map((r) => r.type) })
+      const memo = new Map<ResolvedType, number>()
+      const count = (types: readonly ResolvedType[]) => types.reduce((a, t) => Math.min(a + (t === RECOVERY ? 0 : typeRegisters(t, memo)), Number.MAX_SAFE_INTEGER), 0)
+      const params = count(sig.params.map((p) => p.type))
+      const results = count(sig.returns.map((r) => r.type))
+      const taken = params + count(inst.hidden.captures.map((v) => v.type))
+      const given = results + count(inst.hidden.writes.map((v) => v.type))
+      if (params <= MAX_PARAM_REGISTERS && taken > MAX_PARAM_REGISTERS) {
+        this.error(expr.span.start, `the parameters are ${taken} registers with the variables the functions given capture, more than the ${MAX_PARAM_REGISTERS} a wasm function takes — pass a large value by pointer, in ${inst.label}`)
+      }
+      if (results <= MAX_RESULT_REGISTERS && given > MAX_RESULT_REGISTERS) {
+        this.error(expr.span.start, `the results are ${given} registers with the variables the functions given write, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — give a large value back through a pointer, in ${inst.label}`)
+      }
+    }
     // What the editor shows at the call: the signature of the instance, as
     // this call wrote its types
     this.exprTypes.set(expr.callee, sig)
@@ -9747,14 +9775,18 @@ class CheckContext {
         return null
       }
       this.recordReference(arg.name, arg.span.start)
-      // A function a test declares has a wasm name of its test's, which the
-      // instance, a function of the module, could not call.
-      const ofTest = this.testDeclared.has(target) || (this.testOnly.has(arg.name) && target === this.moduleScope.symbols.get(arg.name))
-      if (ofTest) {
-        this.error(arg.span.start, `${place} of '${callee}' must be a function declared at module level: '${arg.name}' is declared inside a test`)
-        return null
+      // A nested function is given by its path, with what it captures and
+      // writes, which the instance takes and gives back (N29, N30); a
+      // comptime parameter passed on brings those of the function it was
+      // given. A function a test declares is called by the name its test
+      // gives it, which is also its name in the instance's key (N37).
+      if (target.nested) {
+        const sets = target.nested.captures.length > 0 ? target.nested : undefined
+        return { kind: 'func', name: target.nested.path, type: target.type, inline: target.inline, sets, shown: target.nested.shown }
       }
-      return { kind: 'func', name: target.alias ?? arg.name, type: target.type, inline: target.inline }
+      const ofTest = this.testFuncNames.get(target)
+      if (ofTest) return { kind: 'func', name: ofTest, type: target.type, inline: target.inline, shown: arg.name }
+      return { kind: 'func', name: target.alias ?? arg.name, type: target.type, inline: target.inline, sets: target.sets }
     }
     const ast = this.typeApplied(arg)
     if (!ast) {
@@ -9846,7 +9878,7 @@ class CheckContext {
     }
     const shown = comptimeParams.map((p, i) => {
       const value = held[i]
-      const text = value.kind === 'type' ? typeToString(value.type) : value.kind === 'func' ? funcText(value.name) : value.kind === 'int' ? String(value.value) : ''
+      const text = value.kind === 'type' ? typeToString(value.type) : value.kind === 'func' ? value.shown ?? funcText(value.name) : value.kind === 'int' ? String(value.value) : ''
       return `${p.ident} = ${text.length > 60 ? `${text.slice(0, 57)}...` : text}`
     })
     const label = `${of.ident}(${shown.join(', ')})`
@@ -9988,7 +10020,7 @@ class CheckContext {
       const value = inst.args[i]
       if (value.kind !== 'func') return
       const name = param.ident as string
-      const sym: Symbol = { kind: 'func', type: value.type, inline: value.inline, alias: value.name }
+      const sym: Symbol = { kind: 'func', type: value.type, inline: value.inline, alias: value.name, sets: value.sets }
       scope.symbols.set(name, sym)
       // For the editor: the parameter is defined at its name, which stands
       // after the `comptime` its span starts with.

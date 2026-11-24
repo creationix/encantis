@@ -1236,8 +1236,7 @@ function nestedCallToWat(expr: AST.CallExpr, info: NestedCall, ctx: CodegenConte
   if (info.writes.length === 0) return call
   const sets = info.writes.flatMap((v) => captureRegsOf(v, ctx)).reverse().map((n) => `(local.set $${n})`).join(' ')
   if (statement) return `${call} ${sets}`
-  const type = lookupExprType(expr, ctx)
-  const own = type && type.kind !== 'void' ? typeToWasm(type) : []
+  const own = info.returns.flatMap((t) => typeToWasm(t))
   return `(block${own.length ? ` (result ${own.join(' ')})` : ''} ${call} ${sets})`
 }
 
@@ -2654,8 +2653,7 @@ function discardedExprToWat(expr: AST.Expr, ctx: CodegenContext): string {
   const nested = nestedCallOf(expr, ctx)
   if (nested && nested.info.writes.length > 0) {
     const wat = nestedCallToWat(nested.call, nested.info, ctx, true)
-    const type = lookupExprType(nested.call, ctx)
-    const slots = type && type.kind !== 'void' ? typeToWasm(type).length : 0
+    const slots = nested.info.returns.flatMap((t) => typeToWasm(t)).length
     return slots > 0 ? `${wat}\n${Array(slots).fill('(drop)').join('\n')}` : wat
   }
   const exprWat = exprToWat(expr, ctx)
@@ -4052,9 +4050,12 @@ function emitTestDecl(
     const localStr = declareUsedLocals(locals, body, ' ')
     const testLabel = decl.name ? ` ;; test "${decl.name}"` : ''
     parts.push(`(func $test_${safeName} ${localStr}${testLabel}\n  ${body}\n)`)
-    parts.push(...nestedToWat(decl, checkResult, literalRefs, ctx.nameMap, ctx.dataSectionSize, ctx.symbols))
     parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
   }
+  // The nested functions of the test's statements, after its function. A
+  // group's and an anonymous test's are emitted too, though their statements
+  // never run: an instance may have been given one (N36, N37).
+  parts.push(...nestedToWat(decl, checkResult, literalRefs, ctx.nameMap, ctx.dataSectionSize, ctx.symbols))
 }
 
 function collectTestLocals(
