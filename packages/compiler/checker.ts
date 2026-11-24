@@ -223,6 +223,20 @@ const RECOVERY: ResolvedType = primitive('i32')
 // with no type, where it is bound and where it is used.
 export const refusedBindingAt = (check: TypeCheckResult, offset: number): boolean => check.types.get(typeKey(offset, 'Binding')) === RECOVERY
 
+// The variant a variant pattern written at `offset` names where it is no
+// variant of the module's (of an enum another module declares, which a
+// function of it returns, or of one whose variant's name the module gave to
+// an enum declared first): the enum it takes apart and the variant's place
+// in it. The module has no declaration of it to go to.
+export function foreignVariantAt(check: TypeCheckResult, offset: number): { enumType: ResolvedType; variant: EnumVariantRT; index: number } | null {
+  const enumType = check.patternEnums.get(offset)
+  const e = enumType && unwrap(enumType)
+  if (!enumType || e?.kind !== 'enum' || check.symbolRefs.has(offset)) return null
+  const pattern = [...check.patternVariants].find(([p]) => (p.kind === 'variant' || p.kind === 'constructor') && p.span.start === offset)
+  if (!pattern) return null
+  return { enumType, variant: e.variants[pattern[1]], index: pattern[1] }
+}
+
 // Whether a type is a refused value's (a name of a refused pattern, a
 // variable given a refused operator's result, a type that did not resolve):
 // the editor has no type to show for it.
@@ -367,6 +381,10 @@ export interface TypeCheckResult {
   // The variant each accepted variant pattern of a match, an if let or an
   // elif let names, by its tag in the enum of the value it takes apart
   patternVariants: Map<AST.MatchPattern, number>
+  // The enum each accepted variant pattern takes apart, by where the
+  // pattern's name is written: the editor's answer there where the enum is
+  // not the module's own (another module's, which a function of it returns)
+  patternEnums: Map<number, ResolvedType>
   // Functions of other source modules that this module's code calls by a
   // name of its own (see CheckContext.externs): by that name, the path of
   // the module that has the function and the name it is known by there.
@@ -589,6 +607,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     variants: ctx.variants,
     payloads: ctx.payloads,
     patternVariants: ctx.patternVariants,
+    patternEnums: ctx.patternEnums,
     externs: ctx.externs,
     calledFromInstances: ctx.calledFromInstances,
     tag: ctx.moduleTag(),
@@ -972,6 +991,9 @@ class CheckContext {
   // The variants of the module's enums by name, whatever order they are
   // declared in: a type that names one is told it is a variant
   private variantNames = new Map<string, string>()
+  // The variants' names of the enums left out (declared second), which take
+  // no name: a use of one that names nothing else is a refused value
+  private leftOutVariants = new Set<string>()
   // The variants each enum of the module binds, by the enum's name
   private enumVariants = new Map<string, string[]>()
   // The variant each variant value and constructor is (see
@@ -982,6 +1004,8 @@ class CheckContext {
   payloads = new Map<AST.CallExpr, AST.TupleExpr>()
   // The variant each variant pattern names (see TypeCheckResult.patternVariants)
   patternVariants = new Map<AST.MatchPattern, number>()
+  // The enum each one takes apart (see TypeCheckResult.patternEnums)
+  patternEnums = new Map<number, ResolvedType>()
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
   statementExprs = new Set<AST.Expr>()
@@ -2099,9 +2123,15 @@ class CheckContext {
       else if (item.kind === 'TypeFuncDecl') declare(item.ident, this.nameAt(item.span.start), item)
       else if (item.kind === 'EnumDecl') {
         declare(item.ident, item.identSpan.start, item)
+        // An enum left out declares nothing, its variants no more than the
+        // rest: their names stay free for the module's other declarations.
+        if (this.declaredSecond.has(item)) {
+          for (const v of item.variants) this.leftOutVariants.add(v.name)
+          continue
+        }
         for (const v of item.variants) {
           declare(v.name, v.span.start, v)
-          if (!this.declaredSecond.has(item) && !this.variantNames.has(v.name)) this.variantNames.set(v.name, item.ident)
+          if (!this.variantNames.has(v.name)) this.variantNames.set(v.name, item.ident)
         }
       } else if (item.kind === 'ImportDecl') {
         for (const imported of item.items) {
@@ -5960,6 +5990,9 @@ class CheckContext {
         this.error(expr.span.start, `'${expr.name}' is a type; a type can only be passed for a comptime parameter`)
         return RECOVERY
       }
+      // A variant of an enum left out has the enum's error: its use is a
+      // refused value.
+      if (this.leftOutVariants.has(expr.name)) return RECOVERY
       this.error(expr.span.start, this.unknownIdentifier(expr.name))
       // A capitalised name stands for a variant or a type: called, it is
       // no function either.
@@ -9267,11 +9300,15 @@ class CheckContext {
       return { index: null, bindings: null }
     }
     const index = e.variants.findIndex((v) => v.name === pattern.type)
+    // An enum whose name is declared twice is the first declaration: a
+    // variant of the one left out has that error.
+    if (index < 0 && e.name !== undefined && this.contested.has(e.name)) return { index: null, bindings: null, unknown: true }
     if (index < 0) {
       error(`${typeToString(valueType)} has no variant '${pattern.type}': its variants are ${spoken(e.variants.map((v) => v.name))}`)
       return { index: null, bindings: null, unknown: true }
     }
     this.patternVariants.set(pattern, index)
+    this.patternEnums.set(pattern.span.start, stripMax(valueType))
     this.recordVariantUse(e, index, pattern.span.start)
     const variant = e.variants[index]
     if (pattern.kind === 'variant') return { index, bindings: [] }
@@ -9337,7 +9374,9 @@ class CheckContext {
   private recordVariantUse(e: EnumRT, index: number, at: number): void {
     const name = e.variants[index].name
     const sym = this.moduleScope.symbols.get(name)
-    if (sym?.kind === 'variant' && sym.index === index && unwrap(sym.type) === e) this.recordReference(name, at)
+    // The module's enum, or one alike (a module restates an enum it takes
+    // from another, which is the same type: identity is structural)
+    if (sym?.kind === 'variant' && sym.index === index && typeEquals(unwrap(sym.type), e)) this.recordReference(name, at)
   }
 
   // Runs `check` with an arm's bindings in a scope of its own, which its

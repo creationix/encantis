@@ -489,6 +489,87 @@ func g() -> u8 => f(mk(1)) + f(gl) + f(Red)
   })
 })
 
+describe('an enum: what the editor says where names meet', () => {
+  type Place = { uri?: string; range: { start: { line: number; character: number } }; kind?: number }
+  const at = (p: Place) => `${p.range.start.line}:${p.range.start.character}${p.kind === undefined ? '' : p.kind === 3 ? ':write' : ':read'}`
+  const hovered = (s: ReturnType<typeof server>, file: string, text: string, offset: number) =>
+    s.at<{ contents: { value: string } } | null>('onHover', file, text, offset)?.contents.value ?? null
+
+  test("a pattern on another module's enum is that enum's variant, not the module's of its name", async () => {
+    const json = 'file:///ws/json.ents'
+    const main = 'file:///ws/main.ents'
+    const jsonText = 'enum Json { None, Number(f64) }\nexport func num(x: f64) -> Json => Number(x)\n'
+    const mainText = 'import "./json.ents" "num" func num(x: f64) -> Json\nenum Token { None, Word([]u8) }\nexport func val(x: f64) -> f64 => match num(x) {\n  None => 0.0\n  Number(n) => n\n}\nexport func k() -> Token => None\n'
+    const files = new Map([[pathOf(json) as string, jsonText], [pathOf(main) as string, mainText]])
+    const s = server({ findFiles: async () => [json, main], readFile: async (path) => files.get(path) ?? null })
+    await s.open(main, mainText)
+    const pattern = mainText.indexOf('None =>')
+    expect(hovered(s, main, mainText, pattern)).toBe('```encantis\nvariant None:Json = 0\n```')
+    expect(s.at('onDefinition', main, mainText, pattern)).toBeNull()
+    expect(s.at('onReferences', main, mainText, pattern, { context: { includeDeclaration: true } })).toBeNull()
+    await expect(s.at<Promise<WorkspaceEdit>>('onRenameRequest', main, mainText, pattern, { newName: 'Nothing' })).rejects.toThrow(
+      "'None' here is a variant of Json that this module does not declare: rename it where it is declared",
+    )
+    // Token's None is used once, by k
+    expect(s.at<Place[]>('onReferences', main, mainText, mainText.indexOf('None,'), { context: { includeDeclaration: false } }).map(at)).toEqual(['6:28'])
+  })
+
+  test('a module that restates an enum takes apart a value of it with its own variants', async () => {
+    const json = 'file:///ws/json.ents'
+    const main = 'file:///ws/main.ents'
+    const jsonText = 'enum Json { None, Number(f64) }\nexport func num(x: f64) -> Json => Number(x)\n'
+    const mainText = 'import "./json.ents" "num" func num(x: f64) -> Json\nenum Json { None, Number(f64) }\nexport func val(x: f64) -> f64 => match num(x) {\n  None => 0.0\n  Number(n) => n\n}\n'
+    const files = new Map([[pathOf(json) as string, jsonText], [pathOf(main) as string, mainText]])
+    const s = server({ findFiles: async () => [json, main], readFile: async (path) => files.get(path) ?? null })
+    await s.open(main, mainText)
+    expect(s.at<Place[]>('onReferences', main, mainText, mainText.indexOf('None,'), { context: { includeDeclaration: true } }).map(at)).toEqual(['1:12', '3:2'])
+    expect(at(s.at<Place>('onDefinition', main, mainText, mainText.indexOf('Number(n)')))).toBe('1:18')
+  })
+
+  test('a bare variant is its own enum\'s, where another is expected', async () => {
+    const text = 'enum Light { Red, Green }\nenum Color { Blue }\nfunc c() -> Color => Green\n'
+    const s = server()
+    await s.open(uri, text)
+    expect(hovered(s, uri, text, text.indexOf('Green\n'))).toBe('```encantis\nvariant Green:Light = 1\n```')
+  })
+
+  test("a constructor's shorthand argument is the variable it reads; with a value, the field", async () => {
+    const text = 'enum Color { Red, Rgb(r: u8, g: u8, b: u8) }\nexport func m(r: u8, g: u8) -> Color => Rgb(r:, g:, b: 0)\n'
+    const s = server()
+    await s.open(uri, text)
+    const shorthand = text.indexOf('r:,')
+    expect(hovered(s, uri, text, shorthand)).toBe('```encantis\ninput r:u8\n```')
+    expect(at(s.at<Place>('onDefinition', uri, text, shorthand))).toBe('1:14')
+    expect(at(s.at<Place>('onDefinition', uri, text, text.indexOf('b: 0')))).toBe('0:36')
+  })
+
+  test("a type's name given for a comptime type parameter or as a receiver is the type", async () => {
+    const text = 'type Point = (x: i32, y: i32)\nfunc size-of(comptime T: type) -> u32 => sizeof(T)\nexport func f() -> u32 => size-of(Point) + Point.size-of()\n'
+    const s = server()
+    await s.open(uri, text)
+    for (const offset of [text.indexOf('Point)'), text.indexOf('Point.')]) {
+      expect(hovered(s, uri, text, offset)).toBe('```encantis\ntype Point = (x:i32, y:i32)\n```')
+      expect(at(s.at<Place>('onDefinition', uri, text, offset))).toBe('0:5')
+    }
+  })
+
+  test('a name of a refused pattern, and a variable given a refused value, are shown with no type', async () => {
+    const text = 'enum Color { Red, Grey(b: u8) }\nfunc b(c: Color) -> u8 => 0\nfunc a(c: Color, t: bool) -> u8 {\n  let x = -t\n  return match c {\n    Grey(b, extra) => b\n    _ => 0\n  }\n}\n'
+    const s = server()
+    await s.open(uri, text)
+    const bound = text.indexOf('b, extra')
+    const used = text.indexOf('=> b') + 3
+    for (const offset of [bound, used]) {
+      expect(hovered(s, uri, text, offset)).toBe('```encantis\nlet b\n```')
+      expect(at(s.at<Place>('onDefinition', uri, text, offset))).toBe('5:9')
+      expect(s.at<Place[]>('onDocumentHighlight', uri, text, offset).map(at)).toEqual(['5:9:write', '5:22:read'])
+    }
+    expect(hovered(s, uri, text, text.indexOf('x ='))).toBe('```encantis\nlet x\n```')
+    const hints = s.ask<{ label: string }[]>('onInlayHint', { textDocument: { uri }, range: { start: { line: 0, character: 0 }, end: { line: 9, character: 0 } } })
+    expect(hints.map((h) => h.label)).toEqual([])
+  })
+})
+
 describe('highlights', () => {
   type Highlight = { range: { start: { line: number; character: number } }; kind: number }
   const at = (h: Highlight) => `${h.range.start.line}:${h.range.start.character}:${h.kind === 3 ? 'write' : 'read'}`
@@ -506,6 +587,15 @@ describe('highlights', () => {
     await s.open(uri, text)
     const highlights = s.at<Highlight[]>('onDocumentHighlight', uri, text, text.indexOf('total == 4'))
     expect(highlights.map(at)).toEqual(['1:6:write', '2:2:write', '3:2:write', '3:10:read', '4:5:read', '5:9:read'])
+  })
+
+  test("a name before a match arm's => is read, not written", async () => {
+    const text = 'enum Color { Red, Grey(u8) }\ntype Point = (x: i32)\nfunc mk(a: i32) -> Point => Point(a)\nfunc f(c: Color) -> u8 => match c {\n  Red => 0\n  Grey => 1\n}\n'
+    const s = server()
+    await s.open(uri, text)
+    expect(s.at<Highlight[]>('onDocumentHighlight', uri, text, text.indexOf('Red =>')).map(at)).toEqual(['0:13:write', '4:2:read'])
+    expect(s.at<Highlight[]>('onDocumentHighlight', uri, text, text.indexOf('Grey =>')).map(at)).toEqual(['0:18:write', '5:2:read'])
+    expect(s.at<Highlight[]>('onDocumentHighlight', uri, text, text.indexOf('Point =>')).map(at)).toEqual(['1:5:write', '2:19:read', '2:28:read'])
   })
 
   test('a field and a builtin have none', async () => {

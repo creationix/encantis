@@ -2365,7 +2365,7 @@ A value is read only by `match`, `if let` and `elif let` ([6.3](#pattern-matchin
 
 #### How variants are named
 
-A variant's name is a name of its module, in the one namespace of the module's capitalised names: its types (host types among them), its enums, their variants, and its generic types, declared or imported. **Each of these names is declared once in its module.** The declarations are taken in source order, an enum's name before its variants, and one whose name an earlier one has is refused where its name is written, `'Red' is already declared (first declared at 1:14)`, before anything else of the module is checked. The first declaration stands everywhere: a `type`, enum or generic type declared second is left out (nothing in it is checked), and an enum one of whose variants is declared second keeps that variant in its type, so a pattern on a value of it still finds it, while the bare name is the first declaration's. So two enums of one module cannot both have a variant `Red`, and a variant cannot have the name of a type, of an enum (its own too) or of a generic type. A variant never meets a function, a global, a `def` or `data`, whose names start with a lower-case letter, and a type parameter cannot take a variant's name (`type parameter 'Red' has the name of a variant declared in this module`).
+A variant's name is a name of its module, in the one namespace of the module's capitalised names: its types (host types among them), its enums, their variants, and its generic types, declared or imported. **Each of these names is declared once in its module.** The declarations are taken in source order, an enum's name before its variants, and one whose name an earlier one has is refused where its name is written, `'Red' is already declared (first declared at 1:14)`, before anything else of the module is checked. The first declaration stands everywhere: a `type`, enum or generic type declared second is left out (nothing in it is checked). An enum left out declares no variants either, so their names are free for the module's other declarations, and a use of one that names nothing else is a refused value, as is a pattern on the enum that stands naming a variant it lacks: the clash is their one error. An enum one of whose variants is declared second keeps that variant in its type, so a pattern on a value of it still finds it, while the bare name is the first declaration's. So two enums of one module cannot both have a variant `Red`, and a variant cannot have the name of a type, of an enum (its own too) or of a generic type. A variant never meets a function, a global, a `def` or `data`, whose names start with a lower-case letter, and a type parameter cannot take a variant's name (`type parameter 'Red' has the name of a variant declared in this module`).
 
 <!-- spec:begin compile -->
 
@@ -2388,6 +2388,24 @@ func x(p: P) -> i32 => p.x
 'P' is already declared (first declared at 4:6)
 'Vec' is already declared (first declared at 6:6)
 'Json' is already declared (first declared at 8:6)
+```
+
+```ents
+enum Q { A }
+enum Q { B, C }
+enum R { B }
+
+func f() -> R => B
+func g() -> u32 { let x = C
+  return 0 }
+func h(q: Q) -> u32 => match q {
+  A => 1
+  C => 2
+}
+```
+
+```errors
+'Q' is already declared (first declared at 1:6)
 ```
 
 <!-- spec:end -->

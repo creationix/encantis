@@ -2,8 +2,8 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
-import { partBinding } from './ast'
-import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, isRefusedType, type TypeCheckResult } from './checker'
+import { argValue, partBinding } from './ast'
+import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, isRefusedType, foreignVariantAt, type TypeCheckResult } from './checker'
 import { ownName, callOf, memberIn, instancesListed, applicationsListed, genericAround, type GenericInfo } from './instances'
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow, enumText, variantSignature } from './types'
 import { LineMap } from './position'
@@ -1220,6 +1220,15 @@ class MetaBuilder {
     const variant = this.usedSymbol({ kind: 'IdentExpr', name: pattern.type, span: pattern.span })
     if (variant !== undefined && this.checkResult.symbolRefs.has(pattern.span.start)) {
       this.addHint(pattern.span.start, pattern.type.length, this.symbols[variant].type, variant)
+    } else {
+      // A variant of an enum the module does not declare (another module's)
+      // is shown as that enum's, and is no symbol of the module, whatever of
+      // the module is spelled like it.
+      const foreign = foreignVariantAt(this.checkResult, pattern.span.start)
+      if (foreign) {
+        const shown = variantSignature(foreign.variant, typeToString(foreign.enumType))
+        this.addHint(pattern.span.start, pattern.type.length, this.typeRegistry.registerText(shown), undefined, String(foreign.index), undefined, 'variant')
+      }
     }
     if (pattern.kind !== 'constructor') return
     for (const part of pattern.elements) {
@@ -1270,14 +1279,20 @@ class MetaBuilder {
           if (symbol) this.addHint(expr.span.start, expr.name.length, symbol.type, symbolIndex)
           break
         }
+        // A variant is its own enum's, whatever its place expects (where that
+        // is another enum, the error says so).
+        if (symbolIndex !== undefined && this.symbols[symbolIndex].kind === 'variant') {
+          this.addHint(expr.span.start, expr.name.length, this.symbols[symbolIndex].type, symbolIndex)
+          break
+        }
         // Check for builtin functions when no symbol is found
         const effectiveType = type ?? BUILTIN_SIGNATURES[expr.name]
         if (effectiveType) {
           const typeIndex = this.typeRegistry.register(effectiveType)
           this.addHint(expr.span.start, expr.name.length, typeIndex, symbolIndex)
-        } else if (symbolIndex !== undefined && this.symbols[symbolIndex].kind === 'variant') {
-          // The name a variant's constructor is called by, Rgb(1, 2, 3), has no
-          // type of its own: it is the variant, shown as its symbol is.
+        } else if (symbolIndex !== undefined && ['type', 'unique'].includes(this.symbols[symbolIndex].kind)) {
+          // A type's name given for a comptime type parameter, size-of(Point),
+          // has no type of its own: it is the type, shown as its symbol is.
           this.addHint(expr.span.start, expr.name.length, this.symbols[symbolIndex].type, symbolIndex)
         }
         break
@@ -1301,8 +1316,11 @@ class MetaBuilder {
 
       case 'CallExpr': {
         if (!this.generateHintsForCallee(expr)) this.generateHintsForExpr(expr.callee)
+        // A shorthand `r:` stands for the variable r, which it is shown as:
+        // the field it gives has its name after a point or before a value.
         for (const arg of expr.args) {
-          if (arg.value) this.generateHintsForExpr(arg.value)
+          const value = argValue(arg)
+          if (value) this.generateHintsForExpr(value)
         }
         break
       }

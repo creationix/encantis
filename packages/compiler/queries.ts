@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, refusedBindingAt, isRefusedType } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, refusedBindingAt, isRefusedType, foreignVariantAt } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, type ResolvedField, byteSize, unwrap, isValueArray, enumText, variantSignature } from './types'
 import { typeToWasm } from './codegen'
@@ -230,6 +230,9 @@ function definitionOf(
   name: string,
 ): number | undefined {
   const start = wordStart(source, offset)
+  // A variant pattern's name that is a variant of an enum the module does
+  // not declare is not declared here, whatever of the module is spelled like it.
+  if (foreignVariantAt(checkResult, start)) return undefined
   const declared = declaredAt(module, checkResult, start, name)
   if (declared !== undefined) return checkResult.symbolDefOffsets.get(declared)
   const value = valueDeclaredAt(module, start, name)
@@ -329,6 +332,9 @@ export function hover(
   // in terms of the type parameters, and with what it is in each instance (in
   // each application, for a generic type's).
   const start = wordStart(source, offset)
+  // A variant of an enum the module does not declare, as that enum has it
+  const foreign = foreignVariantAt(checkResult, start)
+  if (foreign) return { name, type: variantSignature(foreign.variant, typeToString(foreign.enumType)), kind: 'variant', value: String(foreign.index) }
   // A field after a point in a generic's body is a member in each instance.
   const member = memberIn(module, checkResult, start, shown)
   if (member?.type && member.kind) {
@@ -498,6 +504,10 @@ export function rename(
   const name = identAtOffset(source, offset)
   if (!name) return null
 
+  const foreign = foreignVariantAt(checkResult, wordStart(source, offset))
+  if (foreign) {
+    return { oldName: name, locations: [], refused: `'${name}' here is a variant of ${typeToString(foreign.enumType)} that this module does not declare: rename it where it is declared` }
+  }
   const defOffset = definitionOf(source, module, checkResult, offset, name)
   if (defOffset === undefined) return renameField(source, module, checkResult, wordStart(source, offset), name)
 

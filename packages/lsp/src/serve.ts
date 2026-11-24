@@ -1295,7 +1295,8 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     }
     const { symbol, uri, analysis } = found;
     if (analysis.recovered?.unseenNames.has(symbol.name)) return null;
-    const assigned = /^\s*(?:[-+*/%&|^]\|?|<<<?|>>>?)?=(?!=)/;
+    // An assignment's =, not == or a match arm's =>
+    const assigned = /^\s*(?:[-+*/%&|^]\|?|<<<?|>>>?)?=(?![=>])/;
     const lines = analysis.text.split('\n');
     return [symbol.def, ...symbol.refs].map((key, i) => {
       const { range } = locationOf(uri, symbol, key);
