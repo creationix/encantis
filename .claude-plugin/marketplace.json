@@ -1,0 +1,17 @@
+{
+  "name": "encantis",
+  "owner": {
+    "name": "Tim Caswell",
+    "url": "https://github.com/creationix"
+  },
+  "description": "Claude Code plugins for Encantis, a language that compiles to WebAssembly",
+  "plugins": [
+    {
+      "name": "encantis",
+      "source": "./plugins/encantis",
+      "description": "The Encantis language server for .ents files: errors after each edit, definitions, references, types and symbols",
+      "category": "development",
+      "tags": ["lsp", "language-server", "webassembly"]
+    }
+  ]
+}

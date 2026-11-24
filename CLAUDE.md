@@ -9,7 +9,7 @@ Encantis is a programming language that compiles to WebAssembly.
 
 ## Project Structure (Bun Monorepo)
 
-This is a bun workspace with three packages:
+This is a bun workspace with four packages:
 
 - **`packages/compiler/`** - Core language implementation (`@encantis/compiler`)
   - `parser.ts` - Parser (ohm-js based, matches grammar spec)
@@ -25,12 +25,19 @@ This is a bun workspace with three packages:
 
 - **`packages/cli/`** - Command-line interface (`@encantis/cli`)
   - `src/cli.ts` - CLI entry point
+  - Depends on `@encantis/compiler` and `@encantis/lsp` via workspace
+
+- **`packages/lsp/`** - Language server (`@encantis/lsp`): diagnostics, hover, completion, rename and the other language features
+  - `src/serve.ts` - `startServer(connection, options)`, on any transport; how files not open are read and the workspace's files found are the options
+  - `src/stdio.ts` - Over stdin and stdout, reading the file system: `encantis lsp`, for editors and agents other than VS Code
   - Depends on `@encantis/compiler` via workspace
 
 - **`packages/extension/`** - VS Code extension (`encantis-vscode-ext`)
-  - Dual-mode: Node.js desktop + WebWorker browser support
-  - LSP server with diagnostics, hover, and language features
-  - Depends on `@encantis/compiler` via workspace
+  - Dual-mode: Node.js desktop (`src/extension.ts`, `src/server.ts`) + WebWorker browser support (`src/web/`)
+  - Runs `@encantis/lsp`'s server, bundled with it; the editor finds the workspace's files for it (`encantis/findFiles`)
+  - Depends on `@encantis/compiler`, `@encantis/lsp` and `@encantis/cli` (`src/wasm.ts`, for the WAT preview) via workspace
+
+- **`plugins/encantis/`** - Claude Code plugin: gives Claude Code's LSP tool `encantis lsp` for `.ents` files (`lspServers` in `.claude-plugin/plugin.json`). The repo is its marketplace (`.claude-plugin/marketplace.json`). Check both with `claude plugin validate ./` and `claude plugin validate ./plugins/encantis`.
 
 - **`examples/`** - Example programs
 - **`docs/`** - Language documentation
@@ -52,6 +59,7 @@ encantis compile <file.ents>              # Output WAT to stdout
 encantis compile <file.ents> -o out.wat   # Output to file
 encantis ast <file.ents>                  # Output AST as JSON
 encantis check <file.ents>                # Check for errors
+encantis lsp                              # Language server on stdin/stdout
 ```
 
 ## Build Commands
@@ -63,6 +71,7 @@ bun run build:ext-web    # Bundle the web extension only
 bun run watch:ext        # Watch extension (Node.js)
 bun run watch:ext-web    # Watch extension (WebWorker)
 bun run reinstall:ext    # Package the .vsix and install it in VS Code
+node packages/extension/test/run.mjs desktop|web <file.vsix>   # Run a .vsix in VS Code, as CI does
 bun test                 # Run tests
 ```
 
@@ -83,6 +92,8 @@ bun test                 # Run tests
 **Generic types are aliases with parameters:** `func Vec(comptime T: type) -> type => (...)` is a `typefunc` symbol, and `Vec(u32)` (AST `TypeApply`) resolves to its body with the parameters replaced, wrapped in a `named` type for display only. No new `ResolvedType` kind exists, so an applied type is structurally the struct it names. A parameter `v: *Vec(T)` is matched against an argument by expanding the body (`expandTypeApply`). A type that is called (`Vec(T)(p, 0, cap)`, `T(a, b)` in an instance) is recorded in `TypeCheckResult.calls` as the `TupleExpr` of its arguments in field order.
 
 **Method calls are calls:** `x.f(a)` where `x` has no member `f` is recorded in `TypeCheckResult.calls` as the call `f(x, a)`, a `CallExpr` the checker builds with the receiver as the first argument that is not a comptime one, and then checks like any call (for a generic `f` that call is recorded as the call of an instance in turn, and codegen follows both steps). The built call starts at the method's name, not where the receiver does: the calls of a chain `a.f().g()` all start at `a`, and what is still keyed by a call's offset (a builtin's operand type, the call an instance was required from) needs an offset of its own. Members win, so whether `x.f(a)` is a method call depends on the type of `x`.
+
+**A field knows where it is declared:** a `ResolvedField` made from source has `at` (`FieldPlace`: the file of the module that writes it and the offset of its name, a generic body's own offset in an instance), set where a struct's fields are written (`declaredField`: a `type`, a generic type's body, a function's results, a literal that makes its own struct) and kept by every copy of the field: rebuild one as `{ ...f, type }`, never `field(f.name, …)`. Parameters are no fields (`typeToFields(…, declares = false)`). The checker records, per offset, the field each place names (`usedField`: `p.x`, a pattern, `checkFieldArgs`), and gives them as `TypeCheckResult.fieldNames`, which rename lists for a field. Two structs with the same fields are two structs: their fields are apart.
 
 **Functions that share a name are renamed:** the first function of a name is known by the name, each later one by the name and its parameter types (`hash:''u8`, in `symbols` and in WAT). `TypeCheckResult.funcNames` gives that name for a declaration (a `FuncDecl` or an `ImportFunc`); look a function's symbol up through it, never by `decl.ident` alone. A call of a shared name is recorded in `calls` as the call of the function that was meant. In an instance a call of the one function of a name is checked as any call; where its arguments are refused and each of them is something by itself, what was reported is replaced by one error (`no function 'eq' accepts (u32, u32), in index_of(T = u32)`). A function declared in a `test` cannot take a shared name.
 

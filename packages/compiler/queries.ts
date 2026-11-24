@@ -427,9 +427,19 @@ function calledFromElsewhere(checkResult: TypeCheckResult, defs: number[], name:
 
 export interface RenameResult {
   oldName: string
-  locations: Location[]
+  locations: RenameLocation[]
   // Why the name cannot be renamed here, where it cannot
   refused?: string
+  // Where the name renamed is a field's (a struct's, a named result's): the
+  // offset of its declaration, which other modules may name it by too
+  field?: number
+}
+
+export interface RenameLocation extends Location {
+  // Where the name is a field's (a struct's, or a named result's where the
+  // result is taken apart): there a shorthand `count:` keeps the variable it
+  // stands for, `total: count`.
+  field?: true
 }
 
 export function rename(
@@ -442,7 +452,7 @@ export function rename(
   if (!name) return null
 
   const defOffset = definitionOf(source, module, checkResult, offset, name)
-  if (defOffset === undefined) return null
+  if (defOffset === undefined) return renameField(source, module, checkResult, wordStart(source, offset), name)
 
   // A call spells the name and not which of the functions that share it is
   // meant, and a call in a generic's body means one or another by instance:
@@ -459,12 +469,50 @@ export function rename(
     return { oldName: name, locations: [], refused: `'${name}' is called by its name from instances of other modules' generics (${by}): renamed, they would no longer find it` }
   }
   const refs = new Set(defs.flatMap(def => checkResult.references.get(def) ?? []))
-  const locations: Location[] = [
+  const locations: RenameLocation[] = [
     ...defs.map(def => ({ offset: nameFrom(source, name, def), length: name.length })),
     ...[...refs].sort((a, b) => a - b).map(r => ({ offset: r, length: name.length })),
   ]
+  // A named result is also a field of what its function gives back, named
+  // where the result is taken apart (`pair(n).count`, `let (count:) =
+  // pair(n)`): renamed with it.
+  const named = new Set(locations.map(l => l.offset))
+  const fields = defs.flatMap(def => fieldUses(checkResult, def)).filter(at => !named.has(at))
+  locations.push(...fields.map(at => ({ offset: at, length: name.length, field: true as const })))
+  const field = defs.find(def => fieldUses(checkResult, def).length > 0)
 
-  return { oldName: name, locations }
+  return { oldName: name, locations, ...(field !== undefined ? { field } : {}) }
+}
+
+// The places that name the field this module declares where its name is
+// written at `declared`, the declaration among them, in order
+function fieldUses(checkResult: TypeCheckResult, declared: number): number[] {
+  return [...checkResult.fieldNames]
+    .filter(([, fields]) => fields.some(f => f.file === null && f.offset === declared))
+    .map(([at]) => at)
+    .sort((a, b) => a - b)
+}
+
+// Renaming the field named at `start`: where its struct declares it and
+// everywhere the module names it. The field of a named result is renamed as
+// the result is. Refused where the struct is another module's, which names it
+// in its own source, or where the name is in a generic's body and is a field
+// of a struct of each instance's own.
+function renameField(source: string, module: AST.Module, checkResult: TypeCheckResult, start: number, name: string): RenameResult | null {
+  const fields = checkResult.fieldNames.get(start)
+  if (!fields || fields.length === 0) return null
+  if (fields.length > 1) {
+    return { oldName: name, locations: [], refused: `'${name}' here is a field of a different struct in each instance of the generic: rename it where each struct is declared` }
+  }
+  const [field] = fields
+  if (field.file !== null) {
+    return { oldName: name, locations: [], refused: `'${name}' is a field of a struct that ${field.file.replace(/^.*[\\/]/, '')} declares: rename it there` }
+  }
+  // A named result's field is declared where the result is, a name of its
+  // function's
+  if (checkResult.references.has(field.offset)) return rename(source, module, checkResult, field.offset)
+  const locations = fieldUses(checkResult, field.offset).map(at => ({ offset: at, length: name.length, field: true as const }))
+  return { oldName: name, locations, field: field.offset }
 }
 
 // Where a name is written at a definition: a function's is recorded where its

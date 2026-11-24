@@ -529,22 +529,22 @@ describe('parser', () => {
 
 describe('how deep source may nest', () => {
   const nested = (source: string) => parse(source).errors.map((e) => ({ at: e.span.start, message: e.shortMessage }))
-  const deep = (at: number) => [{ at, message: 'nested more than 256 deep' }]
+  const deep = (at: number) => [{ at, message: 'nested more than 128 deep' }]
   const fn = 'export func f(a: i32) -> i32 => '
 
-  test('256 levels of brackets or prefixes parse, and one more is an error where it goes deeper', () => {
-    expect(nested(`${fn}${'('.repeat(256)}a${')'.repeat(256)}`)).toEqual([])
-    expect(nested(`${fn}${'('.repeat(257)}a${')'.repeat(257)}`)).toEqual(deep(fn.length + 256))
+  test('128 levels of brackets or prefixes parse, and one more is an error where it goes deeper', () => {
+    expect(nested(`${fn}${'('.repeat(128)}a${')'.repeat(128)}`)).toEqual([])
+    expect(nested(`${fn}${'('.repeat(129)}a${')'.repeat(129)}`)).toEqual(deep(fn.length + 128))
     // A prefix lasts until its operand, also one before a bracket
-    expect(nested(`${fn}${'- '.repeat(256)}a`)).toEqual([])
-    expect(nested(`${fn}${'-('.repeat(129)}a${')'.repeat(129)}`)).toEqual(deep(fn.length + 256))
-    const slices = `export func f(p: ${'[]'.repeat(257)}u8) -> u32 => 1`
-    // The 256th [] is one level deeper than the parentheses around it
-    expect(nested(slices)).toEqual(deep(slices.indexOf('[]') + 255 * 2))
-    const applied = `func V(comptime T: type) -> type => (p: [*]mut T)\nexport func f(p: *${'V('.repeat(300)}u8${')'.repeat(300)}) -> u32 => 1`
-    expect(nested(applied)[0].message).toBe('nested more than 256 deep')
+    expect(nested(`${fn}${'- '.repeat(128)}a`)).toEqual([])
+    expect(nested(`${fn}${'-('.repeat(65)}a${')'.repeat(65)}`)).toEqual(deep(fn.length + 128))
+    const slices = `export func f(p: ${'[]'.repeat(129)}u8) -> u32 => 1`
+    // The 128th [] is one level deeper than the parentheses around it
+    expect(nested(slices)).toEqual(deep(slices.indexOf('[]') + 127 * 2))
+    const applied = `func V(comptime T: type) -> type => (p: [*]mut T)\nexport func f(p: *${'V('.repeat(150)}u8${')'.repeat(150)}) -> u32 => 1`
+    expect(nested(applied)[0].message).toBe('nested more than 128 deep')
     // Inside a template literal's ${ }
-    expect(nested(`${fn}\`x\${${'('.repeat(256)}a${')'.repeat(256)}}y\``)[0].message).toBe('nested more than 256 deep')
+    expect(nested(`${fn}\`x\${${'('.repeat(128)}a${')'.repeat(128)}}y\``)[0].message).toBe('nested more than 128 deep')
   })
 
   test('what follows one another does not nest', () => {
