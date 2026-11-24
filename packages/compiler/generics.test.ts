@@ -3386,7 +3386,7 @@ test "t" {
 }`
     const result = check(source)
     expect(result.errors).toEqual([])
-    expect(result.instances.map((i) => [i.name, i.label])).toEqual([['sort<i32|__test1.by_low_bits>', 'sort(T = i32, before = by_low_bits)']])
+    expect(result.instances.map((i) => [i.name, i.label])).toEqual([['sort<i32|__test1.by_low_bits>', 'sort(T = i32, before = test "t".by_low_bits)']])
     // It is used: the call names it.
     expect(result.warnings.map(w => w.message).filter(m => m.includes('by_low_bits'))).toEqual([])
   })

@@ -4596,15 +4596,16 @@ export function programToWat(
 
   const testNames = testBuildNames(tested, modules, checkResults, sourceImportNames, globals, (path) => prefixes.get(path) ?? '')
   const left = untestedInstances(checkResults, tested)
-  // A function a test imports, by the name the checker gives it as it does
-  // a function the test declares (testIds), which an instance given it
-  // calls: the import's name in the WAT, from the host or another module
+  // A function a test imports from the host, by the name the checker gives
+  // it as it does a function the test declares (testIds), which an instance
+  // given it calls: the import's name in the WAT. One from another module is
+  // given by that module's name for it (externs).
   for (const [path, loaded] of modules) {
     const own = perModuleNameMap.get(path)
     if (!own) continue
     for (const [test, id] of testIds(loaded.module.decls)) {
       for (const item of test.children) {
-        if (item.kind !== 'ImportDecl') continue
+        if (item.kind !== 'ImportDecl' || isSourceImport(item.module)) continue
         for (const imported of item.items) {
           const wat = testNames.imports.get(imported)
           if (imported.item.kind === 'ImportFunc' && wat !== undefined) own.set(`${id}.${importedAs(imported)}`, wat)

@@ -95,12 +95,13 @@ export type ComptimeValue =
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
   // `alias`: a comptime function parameter inside an instance, which stands
-  // for the function of that name. `host`: imported from the host, whose
+  // for the function of that name, and `shown`, how its label shows that
+  // function (ComptimeValue). `host`: imported from the host, whose
   // results come in from outside the module.
   // `nested`: a function declared in a body (reference 3.4). `sets`: what a
   // call of it captures and writes, for a nested function and for a
   // comptime function parameter given a function that captures (N13, N30).
-  | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string; host?: true; nested?: NestedFunc; sets?: CaptureSets }
+  | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string; host?: true; nested?: NestedFunc; sets?: CaptureSets; shown?: string }
   // `fromHost`: imported from the host, which gives its value once: an
   // immutable wasm global, read-only here
   | { kind: 'global'; type: ResolvedType; fromHost?: true }
@@ -1234,14 +1235,20 @@ class CheckContext {
   // The same by symbol: a test's function that takes the name of one of the
   // module's replaces it in module scope, and its name is then no new name.
   testDeclared = new Set<Symbol>()
-  // The test that put each of those in module scope, and the tests being
-  // checked, the current one last after the groups around it: a name another
-  // test declared is no name of the module's for this one (see ofAnotherTest)
+  // The test that put each of those in module scope, what it replaced there
+  // (nothing for a name only tests declare), and the tests being checked,
+  // the current one last after the groups around it: the name means the
+  // test's in those tests alone (see seenAs)
   private declaredInTest = new WeakMap<Symbol, AST.TestDecl>()
+  private replacedByTest = new WeakMap<Symbol, Symbol | undefined>()
   private openTests: AST.TestDecl[] = []
-  // The name the output gives each function a test declares at its top, by
-  // its symbol: what an instance given it calls (N37)
-  testFuncNames = new Map<Symbol, string>()
+  // The name the output gives each function a test declares at its top, or
+  // imports from the host, by its symbol: what an instance given it calls
+  // (N37). `shown`: as messages and the editor name it, test "t".helper
+  testFuncNames = new Map<Symbol, { name: string; shown: string }>()
+  // Where a function a test imports from another module is exported, by its
+  // symbol, as origins has a module's imports
+  private testOrigins = new WeakMap<Symbol, string>()
   // Names of generics that a later declaration tried to take
   contested = new Set<string>()
   // The module's generic types, in the order they are declared, and how deep
@@ -1985,6 +1992,7 @@ class CheckContext {
   // and the name it is exported under. Importing one function twice is no
   // second function: the import is the same one again, as it always was.
   private declareFunc(decl: AST.FuncDecl | AST.ImportFunc, name: string, sym: Symbol & { kind: 'func' }, inTest: boolean, origin?: string): void {
+    if (origin !== undefined && inTest) this.testOrigins.set(sym, origin)
     if (inTest && this.sharedByModule(name, decl.span.start)) {
       // Its own test goes on calling it by the name, and says nothing more.
       this.currentScope.symbols.set(name, sym)
@@ -3164,15 +3172,18 @@ class CheckContext {
     const id = this.testIdOf.get(decl) ?? '__test'
     const isGroup = decl.children.some((item) => item.kind === 'TestDecl')
     // Messages, hover and an instance's label name what it declares under
-    // the test as its source does, test "t".helper, not by __test<n>
-    const shown = `test "${decl.name ?? ''}"`
+    // the test as the test runner names it, its groups' names and its own,
+    // written as a string is: test "t".helper, test "g > t".helper, and
+    // `test` alone for one without a name (12.5), not by __test<n>
+    const title = [...this.openTests, decl].flatMap((t) => (t.name ? [t.name] : [])).join(' > ')
+    const shown = title ? `test ${JSON.stringify(title)}` : 'test'
     const frame = {
       kind: 'test' as const, shown, path: id, shownPath: shown,
       owner: decl, signature: null, body: decl.children, nested: null, instance: null, inTest: true,
     }
     this.openTests.push(decl)
     try {
-      this.inFrame(frame, false, () => this.checkTestItems(decl, testScope, id, isGroup))
+      this.inFrame(frame, false, () => this.checkTestItems(decl, testScope, id, shown, isGroup))
     } finally {
       this.openTests.pop()
     }
@@ -3186,7 +3197,7 @@ class CheckContext {
     this.variables = prevVariables
   }
 
-  private checkTestItems(decl: AST.TestDecl, testScope: Scope, id: string, isGroup: boolean): void {
+  private checkTestItems(decl: AST.TestDecl, testScope: Scope, id: string, shown: string, isGroup: boolean): void {
     // The variables of a group, which its nested tests cannot use
     const groupVars = () => {
       const vars = new Set<string>()
@@ -3210,15 +3221,17 @@ class CheckContext {
         case 'ImportDecl': {
           const from = this.errors.length
           const known = new Map(this.moduleScope.symbols)
+          const knownAt = new Map(this.symbolDefOffsets)
           this.collectImport(item, true)
           for (const [name, sym] of this.moduleScope.symbols) {
             if (!known.has(name)) this.testOnly.add(name)
             if (known.get(name) === sym) continue
-            this.declaredInTest.set(sym, decl)
-            // An imported function is named under the test as one the test
-            // declares is: what an instance given it calls (N37), which the
-            // test build maps to the import (programToWat)
-            if (sym.kind === 'func') this.testFuncNames.set(sym, `${id}.${name}`)
+            this.declaredByTest(sym, name, decl, known.get(name), knownAt.get(name))
+            // A function imported from the host is named under the test as
+            // one the test declares is: what an instance given it calls
+            // (N37), which the test build maps to the import (programToWat).
+            // One from another module is that module's (testOrigins).
+            if (sym.kind === 'func' && sym.host) this.testFuncNames.set(sym, { name: `${id}.${name}`, shown: `${shown}.${name}` })
           }
           for (const imported of item.items) {
             if (imported.item.kind === 'ImportFunc') once(imported.item.ident ?? imported.name, imported.span.start, from)
@@ -3233,7 +3246,9 @@ class CheckContext {
             this.error(item.span.start, `a generic function is declared at module level, not inside a test`)
             // Known by name all the same, so that its calls say nothing more.
             if (item.ident && !this.moduleScope.symbols.has(item.ident)) {
-              this.moduleScope.symbols.set(item.ident, { kind: 'generic', decl: item, owner: this, instances: new Map(), valid: false })
+              const stub: Symbol = { kind: 'generic', decl: item, owner: this, instances: new Map(), valid: false }
+              this.moduleScope.symbols.set(item.ident, stub)
+              this.declaredInTest.set(stub, decl)
             }
             break
           }
@@ -3271,18 +3286,18 @@ class CheckContext {
           {
             const from = this.errors.length
             const before = item.ident ? this.moduleScope.symbols.get(item.ident) : undefined
+            const beforeAt = item.ident ? this.symbolDefOffsets.get(item.ident) : undefined
             this.collectFunc(item, true)
             const after = item.ident ? this.moduleScope.symbols.get(item.ident) : undefined
-            if (after && after !== before) this.declaredInTest.set(after, decl)
-            once(item.ident ?? undefined, item.span.start, from)
-          }
-          // Not one that was refused the name: the module's functions keep it.
-          if (item.ident && !this.shared(item.ident)) {
-            const declared = this.moduleScope.symbols.get(item.ident)
-            if (declared?.kind === 'func') {
-              this.testDeclared.add(declared)
-              this.testFuncNames.set(declared, `${id}.${item.ident}`)
+            // Not one that was refused the name: what had it keeps it.
+            if (item.ident && after && after !== before) {
+              this.declaredByTest(after, item.ident, decl, before, beforeAt)
+              if (after.kind === 'func') {
+                this.testDeclared.add(after)
+                this.testFuncNames.set(after, { name: `${id}.${item.ident}`, shown: `${shown}.${item.ident}` })
+              }
             }
+            once(item.ident ?? undefined, item.span.start, from)
           }
           this.checkFuncBody(item, null, `${id}.${item.ident ?? 'anon'}`)
           break
@@ -3292,7 +3307,9 @@ class CheckContext {
           this.error(item.span.start, `a generic type is declared at module level, not inside a test`)
           // Known by name all the same, so that its uses say nothing more.
           if (!this.moduleScope.symbols.has(item.ident)) {
-            this.moduleScope.symbols.set(item.ident, { kind: 'typefunc', decl: item, owner: this, cache: new Map(), valid: false })
+            const stub: Symbol = { kind: 'typefunc', decl: item, owner: this, cache: new Map(), valid: false }
+            this.moduleScope.symbols.set(item.ident, stub)
+            this.declaredInTest.set(stub, decl)
           }
           break
         case 'DataDecl':
@@ -3306,6 +3323,18 @@ class CheckContext {
           break
       }
     }
+  }
+
+  // A symbol a test put in module scope under `name`, in place of `before`
+  // (see seenAs), declared at `before`'s place before. Where each of the two
+  // is declared is kept: a later clash with the name, where it is seen and
+  // no longer in module scope, is told that place.
+  private declaredByTest(sym: Symbol, name: string, test: AST.TestDecl, before: Symbol | undefined, beforeAt: number | undefined): void {
+    this.declaredInTest.set(sym, test)
+    this.replacedByTest.set(sym, before)
+    const at = this.symbolDefOffsets.get(name)
+    if (at !== undefined && !this.declaredAt.has(sym)) this.declaredAt.set(sym, at)
+    if (before && beforeAt !== undefined && !this.declaredAt.has(before)) this.declaredAt.set(before, beforeAt)
   }
 
   // A many-pointer is refused where it's written through; memcpy may read from one.
@@ -3403,7 +3432,9 @@ class CheckContext {
       kind: nested ? ('nested' as const) : ('func' as const),
       shown: `'${shownName ?? 'anonymous'}'`,
       path: nested?.path ?? path ?? inst?.name ?? this.funcNames.get(decl) ?? decl.ident ?? 'anonymous',
-      shownPath: nested?.shown ?? inst?.name ?? shownName ?? 'anonymous',
+      // A function of a test is shown under it, as what it declares is
+      // (test "t".helper.inner)
+      shownPath: nested?.shown ?? inst?.name ?? (path !== undefined && this.frame ? `${this.frame.shownPath}.${shownName ?? 'anonymous'}` : shownName ?? 'anonymous'),
       owner: decl, signature: decl.signature, body: decl.body, nested, instance: inst,
       // A function a test declares is "inside a test" in what it is told
       inTest: this.frame?.inTest ?? false,
@@ -10091,7 +10122,13 @@ class CheckContext {
     if (!isTypeParam(param)) {
       // A function parameter is given a function of the module by its name,
       // or, inside an instance, a comptime function parameter passed on.
-      const target = arg.kind === 'IdentExpr' ? this.lookup(arg.name) : undefined
+      const found = arg.kind === 'IdentExpr' ? this.lookup(arg.name) : undefined
+      // A name a test put in module scope (#74) is the test's function in
+      // that test and the tests it holds alone: module code, a generic's
+      // instances and the other tests give the module's function of the
+      // name (12.4), where the module has one.
+      const own = found && arg.kind === 'IdentExpr' && found === this.moduleScope.symbols.get(arg.name) ? this.seenAs(found) : found
+      const target = own?.kind === 'func' ? own : found
       if (arg.kind !== 'IdentExpr' || target?.kind !== 'func') {
         this.error(arg.span.start, `${place} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter`)
         return null
@@ -10107,15 +10144,25 @@ class CheckContext {
       // A nested function is given by its path, with what it captures and
       // writes, which the instance takes and gives back (N29, N30); a
       // comptime parameter passed on brings those of the function it was
-      // given. A function a test declares is called by the name its test
-      // gives it, which is also its name in the instance's key (N37).
+      // given, and how it is shown. A function a test declares, or imports
+      // from the host, is called by the name its test gives it, which is
+      // also its name in the instance's key (N37). One a test imports from
+      // another module is that module's function, as a module's import is:
+      // every name of one function makes one instance (8.4).
       if (target.nested) {
         const sets = target.nested.captures.length > 0 ? target.nested : undefined
         return { kind: 'func', name: target.nested.path, type: target.type, inline: target.inline, sets, shown: target.nested.shown }
       }
+      const imported = this.testOrigins.get(target)
+      const origin = imported === undefined ? null : this.originAt(imported)
+      if (origin) {
+        const name = this.externName(origin)
+        if (origin.ctx !== this) this.externs.set(name, { module: origin.ctx.filePath as string, name: origin.name })
+        return { kind: 'func', name, type: target.type, inline: target.inline }
+      }
       const ofTest = this.testFuncNames.get(target)
-      if (ofTest) return { kind: 'func', name: ofTest, type: target.type, inline: target.inline, shown: arg.name }
-      return { kind: 'func', name: target.alias ?? arg.name, type: target.type, inline: target.inline, sets: target.sets }
+      if (ofTest) return { kind: 'func', name: ofTest.name, type: target.type, inline: target.inline, shown: ofTest.shown }
+      return { kind: 'func', name: target.alias ?? arg.name, type: target.type, inline: target.inline, sets: target.sets, shown: target.shown }
     }
     const ast = this.typeApplied(arg)
     if (!ast) {
@@ -10276,14 +10323,21 @@ class CheckContext {
     const target = extern && this.program?.get(extern.module)
     if (extern && target) return target.originOf(extern.name)
     const origin = this.origins.get(known)
-    if (origin === undefined || !this.filePath || !this.program) return { ctx: this, name: known }
+    return (origin !== undefined && this.originAt(origin)) || { ctx: this, name: known }
+  }
+
+  // The module a function exported as `origin` (path:name, see origins)
+  // is declared in, and the name it is known by there; null where that is
+  // not known
+  private originAt(origin: string): { ctx: CheckContext; name: string } | null {
+    if (!this.filePath || !this.program) return null
     const cut = origin.lastIndexOf(':')
     const depPath = resolveModulePath(origin.slice(0, cut), this.filePath)
     const dep = this.program.get(depPath)
     const exported = this.moduleExports?.get(depPath)?.get(origin.slice(cut + 1))
-    if (!dep || !exported) return { ctx: this, name: known }
+    if (!dep || !exported) return null
     for (const [name, sym] of dep.moduleScope.symbols) if (sym === exported) return dep.originOf(name)
-    return { ctx: this, name: known }
+    return null
   }
 
   // A short name for this module where names of several modules meet: the
@@ -10349,7 +10403,7 @@ class CheckContext {
       const value = inst.args[i]
       if (value.kind !== 'func') return
       const name = param.ident as string
-      const sym: Symbol = { kind: 'func', type: value.type, inline: value.inline, alias: value.name, sets: value.sets }
+      const sym: Symbol = { kind: 'func', type: value.type, inline: value.inline, alias: value.name, sets: value.sets, shown: value.shown }
       scope.symbols.set(name, sym)
       // For the editor: the parameter is defined at its name, which stands
       // after the `comptime` its span starts with.
@@ -10708,14 +10762,20 @@ class CheckContext {
     return null
   }
 
-  // Whether a name the module scope has is one a test declared, outside it:
-  // outside every test, or in another test than the one being checked and
-  // the groups around it (12.4: two tests each declare a function of a name)
-  private ofAnotherTest(sym: Symbol, name: string): boolean {
-    if (sym !== this.moduleScope.symbols.get(name) || !this.testOnly.has(name)) return false
-    if (!this.frame?.inTest) return true
-    const by = this.declaredInTest.get(sym)
-    return by !== undefined && !this.openTests.includes(by)
+  // What a symbol a test put in module scope (#74) is where its name is
+  // looked up: itself in that test and the tests it holds, and elsewhere
+  // what it replaced there, down to the module's own declaration of the
+  // name (12.4); nothing for a name only other tests declare. So a name a
+  // group declares is the group's in each of its tests, whichever of them
+  // declared it since.
+  private seenAs(sym: Symbol): Symbol | undefined {
+    let seen: Symbol | undefined = sym
+    while (seen) {
+      const by = this.declaredInTest.get(seen)
+      if (!by || this.openTests.includes(by)) return seen
+      seen = this.replacedByTest.get(seen)
+    }
+    return undefined
   }
 
   // The variables a nested function captures and writes, and the uses of
@@ -10793,10 +10853,13 @@ class CheckContext {
     const nameAt = this.funcNameAt(decl)
     // Its name is new where it is declared (N7), and its own in its function (N8)
     const what = testTop ? 'a function that uses its test\'s variables' : 'a nested function'
-    const existing = this.lookup(name)
+    // What a test declared is not seen outside it (see seenAs): two tests
+    // can each declare a function of a name (12.4)
+    const found = this.lookup(name)
+    const existing = found && found === this.moduleScope.symbols.get(name) ? this.seenAs(found) : found
     // A variable whose declaration was refused is what the first of its
     // name is (see firstOf)
-    const kind = existing && !this.ofAnotherTest(existing, name) ? this.declarationKind(this.firstOf(existing), name) : null
+    const kind = existing ? this.declarationKind(this.firstOf(existing), name) : null
     const own = (this.ownNames(frame).get(name) ?? []).filter((e) => e.func !== decl)
     const ownFirst = kind && existing ? undefined : firstOwnBefore(own, nameAt)
     if (kind && existing) {

@@ -945,6 +945,45 @@ test "group" {
     expect(await runTestsOfSource(fine)).toEqual({ ran: ['plain', 'imports', 'capturing'], failed: [] })
   })
 
+  // An earlier nested test of the group that declares the name too leaves
+  // it the group's in the next one (a plain one replaces it in its own test)
+  test('a capturing one takes no name its group declares, whichever nested test declared it since', () => {
+    expect(errorsOf(`
+test "g" {
+  func helper() -> u32 => 1
+  import "env" "ext" func ext() -> u32
+  test "t1" {
+    func helper() -> u32 => 2
+    func ext() -> u32 => 2
+    assert helper() + ext() == 4
+  }
+  test "t2" {
+    let k: u32 = 3
+    func helper() -> u32 => k
+    func ext() -> u32 => k
+    assert helper() + ext() == 6
+  }
+}`)).toEqual([
+      "'helper' is already declared: a function that uses its test's variables cannot reuse the name of a function of the module (first declared at 3:8)",
+      "'ext' is already declared: a function that uses its test's variables cannot reuse the name of an import (first declared at 4:27)",
+    ])
+  })
+
+  // The earlier test's function took the name over in module scope (#74),
+  // and is not seen in the later test: the module's function is
+  test('a capturing one in a later test is told the place of the module\'s function, not an earlier test\'s', () => {
+    expect(errorsOf(`func helper() -> u32 => 1
+test "a" {
+  func helper() -> u32 => 2
+  assert helper() == 2
+}
+test "b" {
+  let k: u32 = 3
+  func helper() -> u32 => k
+  assert helper() == 3
+}`)).toEqual(["'helper' is already declared: a function that uses its test's variables cannot reuse the name of a function of the module (first declared at 1:6)"])
+  })
+
   // codegen put a test's def or data in place of the name for the tests
   // after it, and found it for another test's function of the name
   test('a test\'s function may have the name of another test\'s data or def', async () => {
@@ -1909,7 +1948,7 @@ test "a test sorts with a comparator that captures" {
     expect(result.errors).toEqual([])
     expect(result.instances.map((i) => [i.name, i.label])).toEqual([
       ['sort<i32|__test1.closer>', 'sort(T = i32, before = test "a test sorts with a comparator that captures".closer)'],
-      ['sort<i32|__test1.desc>', 'sort(T = i32, before = desc)'],
+      ['sort<i32|__test1.desc>', 'sort(T = i32, before = test "a test sorts with a comparator that captures".desc)'],
     ])
     const { failed, ran } = await runTestsOfSource(source)
     expect(ran.length).toBe(1)
@@ -1941,6 +1980,83 @@ test "gives a nested function that calls one" {
     expect(wat).toContain('(call $slib$g (local.get $x))')
     expect(ran).toEqual(['gives a host import', 'gives a source import', 'gives a nested function that calls one'])
     expect(failed).toEqual([])
+  })
+
+  // A test's function or import takes the name over in module scope for
+  // what is checked after the test (#74), but module code, a generic's
+  // instances (checked after every test) and the other tests give the
+  // module's function of the name (12.4)
+  test('module code and other tests give the module\'s function where a test took its name over', async () => {
+    const source = `func helper(x: u32) -> u32 => x + 1
+func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+func outer(comptime T: type, x: T) -> u32 => apply(helper, 2)
+export func use(x: u32) -> u32 => outer(x)
+test "before them" { assert use(0) == 3 }
+test "declares" {
+  func helper(x: u32) -> u32 => x * 3
+  assert apply(helper, 2) == 6
+}
+test "imports" {
+  import "./slib.ents" ("g" func helper(x: u32) -> u32)
+  assert apply(helper, 2) == 6
+}
+test "from the host" {
+  import "env" "helper" func helper(x: u32) -> u32
+  let k: u32 = 0
+  if k == 1 { assert apply(helper, 2) == 6 }
+}
+export func later(x: u32) -> u32 => apply(helper, x)
+func wrap(comptime T: type, x: T) -> T => apply(helper, x)
+test "after them" {
+  assert later(2) == 3
+  assert wrap(2:u32) == 3
+  assert apply(helper, 2) == 3
+}`
+    const { ran, failed, wat } = await runProgram({ 'main.ents': source, 'slib.ents': 'export func g(x: u32) -> u32 => x * 3' })
+    expect(failed).toEqual([])
+    expect(ran.length).toBe(5)
+    expect(wat.match(/\(func \$apply<[^ ]*/g)).toEqual(['(func $apply<__test2.helper>', '(func $apply<__test4.helper>', '(func $apply<g@slib>', '(func $apply<helper>'])
+  })
+
+  // As a module's import of it is: every name of one function makes one
+  // instance (8.4)
+  test('a function a test imports from another module makes the one instance of that function', async () => {
+    const source = `import "./slib.ents" ("g" func g(x: u32) -> u32)
+func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+export func use(x: u32) -> u32 => apply(g, x)
+test "a" {
+  import "./slib.ents" ("g" func g(x: u32) -> u32)
+  assert apply(g, 2) == 6 && use(2) == 6
+}
+test "b" {
+  import "./slib.ents" ("g" func tri(x: u32) -> u32)
+  assert apply(tri, 3) == 9
+}
+export func later(x: u32) -> u32 => apply(g, x) + 1`
+    const { failed, wat } = await runProgram({ 'main.ents': source, 'slib.ents': 'export func g(x: u32) -> u32 => x * 3' })
+    expect(failed).toEqual([])
+    expect(wat.match(/\(func \$apply<[^ ]*/g)).toEqual(['(func $apply<g@slib>'])
+  })
+
+  test('across modules: the importer\'s tests call the module\'s function where the module\'s test took its name over', async () => {
+    const lib = `func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+func helper(x: u32) -> u32 => x + 1
+test "declares" {
+  func helper(x: u32) -> u32 => x + 100
+  assert apply(helper, 2) == 102
+}
+test "imports" {
+  import "./slib.ents" ("g" func helper(x: u32) -> u32)
+  assert apply(helper, 2) == 6
+}
+export func later(x: u32) -> u32 => apply(helper, x)
+test "after them" { assert later(2) == 3 }`
+    const main = `import "./lib.ents" ("later" func later(x: u32) -> u32)
+test "main" { assert later(2) == 3 }`
+    const { ran, failed } = await runProgram({ 'main.ents': main, 'lib.ents': lib, 'slib.ents': 'export func g(x: u32) -> u32 => x * 3' })
+    expect(ran).toEqual(['main'])
+    expect(failed).toEqual([])
+    expect(await runTestsOfSource(lib, { 'slib.ents': 'export func g(x: u32) -> u32 => x * 3' })).toEqual({ ran: ['declares', 'imports', 'after them'], failed: [] })
   })
 
   test('narrowing sees a write made through a comptime argument', () => {
@@ -2172,6 +2288,98 @@ test "one" {
     expect(hoverText(hover(src, module, result, src.indexOf('g()'))!)).toBe('func g: func() -> u32 — nested in test "one".step; captures y')
     expect(result.instances.map((i) => [i.name, i.label])).toEqual([['apply<__test1.step>', 'apply(f = test "one".step)']])
     expect([...result.nested.values()].map((n) => n.path)).toEqual(['__test1.step', '__test1.step.g'])
+  })
+
+  // Passed on to another generic, the comptime parameter keeps the label of
+  // the function given, in messages and hover too
+  test('an instance a test\'s function reaches through another generic names the test', () => {
+    const src = `func apply(comptime f: (u32) -> u32, x: u32) -> u32 {
+  let y: u8 = f(x)
+  return y
+}
+func outer(comptime f: (u32) -> u32, x: u32) -> u32 => apply(f, x) + 1
+test "t" {
+  func plain(x: u32) -> u32 => x + 1
+  let k: u32 = 1
+  func cap(x: u32) -> u32 => x + k
+  import "env" "h" func hf(x: u32) -> u32
+  assert outer(plain, 1) + outer(cap, 1) == 6
+  if k == 2 { assert outer(hf, 1) == 3 }
+}`
+    const module = parse(src).module!
+    const result = typecheck(module, { source: src, includeTests: true })
+    expect(result.errors.map((e) => e.message)).toEqual([
+      'cannot assign u32 to u8, in apply(f = test "t".plain)',
+      'cannot assign u32 to u8, in apply(f = test "t".cap)',
+      'cannot assign u32 to u8, in apply(f = test "t".hf)',
+    ])
+    expect(result.instances.map((i) => i.label).filter((l) => l.startsWith('apply'))).toEqual([
+      'apply(f = test "t".plain)', 'apply(f = test "t".cap)', 'apply(f = test "t".hf)',
+    ])
+    expect(hoverText(hover(src, module, result, src.indexOf('f(x)'))!)).toContain('in apply(f = test "t".cap): test "t".cap(x: u32) -> u32')
+  })
+
+  // As the test runner names a test: its groups' names before its own, a
+  // name written as a string is, and a test without a name as `test`
+  test('the test is named as the runner names it, with its groups, its name written as a string', () => {
+    const src = `func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+test {
+  let k: u32 = 1
+  func step(x: u32) -> u32 => x + k
+  assert apply(step, 1) == 2
+}
+test "g1" {
+  test "inner" {
+    let k: u32 = 2
+    func step(x: u32) -> u32 => x + k
+    assert apply(step, 1) == 3
+  }
+}
+test "g2" {
+  test "inner" {
+    let k: u32 = 3
+    func step(x: u32) -> u32 => x + k
+    assert apply(step, 1) == 4
+  }
+}
+test "say \\"hi\\"" {
+  let k: u32 = 4
+  func step(x: u32) -> u32 => x + k
+  assert apply(step, 1) == 5
+}`
+    const module = parse(src).module!
+    const result = typecheck(module, { source: src, includeTests: true })
+    expect(result.errors).toEqual([])
+    expect(result.instances.map((i) => [i.name, i.label])).toEqual([
+      ['apply<__test1.step>', 'apply(f = test.step)'],
+      ['apply<__test3.step>', 'apply(f = test "g1 > inner".step)'],
+      ['apply<__test5.step>', 'apply(f = test "g2 > inner".step)'],
+      ['apply<__test6.step>', 'apply(f = test "say \\"hi\\"".step)'],
+    ])
+    expect(hoverText(hover(src, module, result, src.lastIndexOf('step(x'))!)).toBe('func step: func(x: u32) -> u32 — nested in test "say \\"hi\\""; captures k')
+  })
+
+  // A function of a test that captures nothing is the test's too: it and
+  // what is nested in it are shown under the test
+  test('a test\'s plain function, and what is nested in it, are shown under the test', () => {
+    const src = `func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+test "one" {
+  func twice(x: u32) -> u32 => x * 2
+  func helper(x: u32) -> u32 {
+    let y = x + 1
+    func inner(z: u32) -> u32 => y + z
+    return apply(twice, 1) + apply(inner, 0)
+  }
+  assert helper(1) == 4
+}`
+    const module = parse(src).module!
+    const result = typecheck(module, { source: src, includeTests: true })
+    expect(result.errors).toEqual([])
+    expect(result.instances.map((i) => [i.name, i.label])).toEqual([
+      ['apply<__test1.twice>', 'apply(f = test "one".twice)'],
+      ['apply<__test1.helper.inner>', 'apply(f = test "one".helper.inner)'],
+    ])
+    expect(hoverText(hover(src, module, result, src.indexOf('inner(z'))!)).toBe('func inner: func(z: u32) -> u32 — nested in test "one".helper; captures y')
   })
 
   test('document symbols list it after its function, by its path', () => {
