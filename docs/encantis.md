@@ -3977,7 +3977,7 @@ test "a let without a value starts at zero and is never reset" {
 
 `counts` shows the rule; it is no way to write a loop. A value carried from one pass to the next is declared before the loop (`let seen: u32 = 0` above the `for`), where a reader sees that it lives across passes.
 
-A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The first branch of an `if let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in an `elif` or `else` branch of an `if let`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The error ends with where the first declaration of the name is, as the line and column of the name there (the name a `let`, a parameter or a binding declares; the name after the keywords of a declaration of the module, the `k` of `def k`; an import's local name): `'t' is already declared in this scope (first declared at 3:9)`, also where that declaration is in a block that has ended, as in `pick` below. So do the errors of a loop variable, an `if let` binding and a match binding that take a name already seen ([5.2](#52-loops)), and of a parameter or a named result with a def's name ([3.4](#34-functions)). In an instance of a generic the place is in the generic's source; told in another module, as the error of an instance of an imported generic is told at the call that asked for it ([8.8](#88-generics-across-modules)), it names its file, `(first declared at lib.ents:3:7)`. The variables of a loop, an `if let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
+A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The first branch of an `if let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in an `elif` or `else` branch of an `if let`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The error ends with where the first declaration of the name is, as the line and column of the name there (the name a `let`, a parameter or a binding declares; the name after the keywords of a declaration of the module, the `k` of `def k`; an import's local name): `'t' is already declared in this scope (first declared at 3:9)`, also where that declaration is in a block that has ended, as in `pick` below. So do the errors of a loop variable, an `if let` binding and a match binding that take a name already seen ([5.2](#52-loops)), and of a parameter or a named result with a def's name ([3.4](#34-functions)). A third declaration of the name, and every later one, is told the place of the first, not of the one refused before it. In an instance of a generic the place is in the generic's source; told in another module, as the error of an instance of an imported generic is told at the call that asked for it ([8.8](#88-generics-across-modules)), it names its file, `(first declared at lib.ents:3:7)`. The variables of a loop, an `if let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
 
 <!-- spec:begin compile -->
 
@@ -4016,6 +4016,10 @@ func widest(xs: []u32, ys: []u32) -> u32 {
     let d = y * 3                // a second d of the function
     w = max(w, d)
   }
+  for z in xs {
+    let d = z * 4                // a third: the first is still the one said
+    w = max(w, d)
+  }
   return w
 }
 ```
@@ -4023,6 +4027,48 @@ func widest(xs: []u32, ys: []u32) -> u32 {
 ```errors
 't' is already declared in this scope (first declared at 3:9)
 'd' is already declared in this scope (first declared at 12:9)
+'d' is already declared in this scope (first declared at 12:9)
+```
+
+A declaration of the module's that a name clashes with is said where its name is written, an import's local name too, from the host or from another module, and a function a `test` declares as well:
+
+```ents
+import "env" (
+  "width" global width: i32
+  "log" func log(x: i32)
+)
+import "./lib" "total" global total: u32
+
+def limit = 8
+global count: u32 = 0
+
+func f() -> u32 {
+  let width = 1
+  let log = 2
+  let total = 3
+  let limit = 4
+  let count = 5
+  return 0
+}
+test "t" {
+  func helper() -> u32 => 1
+  let helper = 2
+}
+func g(comptime T: type, x: T) -> u32 {
+  let x = 1
+  return 0
+}
+func use() -> u32 => g(u32, 5)
+```
+
+```errors
+'width' is already declared in this scope (first declared at 2:18)
+'log' is already declared in this scope (first declared at 3:14)
+'total' is already declared in this scope (first declared at 5:31)
+'limit' is already declared in this scope (first declared at 7:5)
+'count' is already declared in this scope (first declared at 8:8)
+'helper' is already declared in this scope (first declared at 19:8)
+'x' is already declared in this scope (first declared at 22:26), in g(T = u32)
 ```
 
 <!-- spec:end -->

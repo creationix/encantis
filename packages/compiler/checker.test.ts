@@ -4337,6 +4337,41 @@ describe('a name declared again says where the first declaration is', () => {
     // A let that takes its names from fields
     expect(errs('type P = (x: u32, y: u32)\nfunc f(p: P, x: u32) -> u32 {\n  let (x:, y:) = p\n  return y\n}'))
       .toEqual(["'x' is already declared in this scope (first declared at 2:14)"])
+    // Imported globals, from the host and from another module, at their
+    // local names, as imported functions are
+    const imports = 'import "env" (\n  "width" global width: i32\n  "log" func log(x: i32)\n)\nimport "env" "h" global height: i32\nimport "./lib" "total" global total: u32\n'
+    expect(errs(`${imports}func f() {\n  let width = 1\n  let log = 2\n  let height = 3\n  let total = 4\n}`)).toEqual([
+      "'width' is already declared in this scope (first declared at 2:18)",
+      "'log' is already declared in this scope (first declared at 3:14)",
+      "'height' is already declared in this scope (first declared at 5:25)",
+      "'total' is already declared in this scope (first declared at 6:31)",
+    ])
+  })
+
+  test('a third declaration, and every later one, names the first', () => {
+    const src = 'func f(c: bool) -> u32 {\n  let t: u32 = 1\n  if c {\n    let t: u32 = 2\n  } else {\n    let t: u32 = 3\n  }\n  for t in 3 { }\n  return t\n}'
+    expect(errs(src)).toEqual([
+      "'t' is already declared in this scope (first declared at 2:7)",
+      "'t' is already declared in this scope (first declared at 2:7)",
+      "'t' is already declared: a loop variable cannot reuse the name of a variable in scope (first declared at 2:7)",
+    ])
+    // Field lets, and a binding after a refused let, which says what the
+    // first is
+    expect(errs('type P = (x: i32, y: i32)\nfunc f(p: P) -> i32 {\n  let (x:, y:) = p\n  let x = 1\n  let (y:, x:) = p\n  return x\n}')).toEqual([
+      "'x' is already declared in this scope (first declared at 3:8)",
+      "'y' is already declared in this scope (first declared at 3:12)",
+      "'x' is already declared in this scope (first declared at 3:8)",
+    ])
+    expect(errs('func g(o: ?*u32, k: u32) -> u32 {\n  if let v = o {\n    let v = 3\n    return match k { v => v }\n  }\n  return 0\n}')).toEqual([
+      "'v' is already declared in this scope (first declared at 2:10)",
+      "'v' is already declared: a match binding cannot reuse the name of an if let binding in scope (first declared at 2:10)",
+      'cannot assign i32 to u32',
+    ])
+    // A let refused since a function has the name: a loop variable, which
+    // may hide a function, may take it after it
+    expect(errs('import "env" "log" func log(x: i32)\nfunc f() {\n  let log = 2\n  for log in 3 { }\n}')).toEqual([
+      "'log' is already declared in this scope (first declared at 1:25)",
+    ])
   })
 
   test('a loop variable, an if let binding and a match binding', () => {

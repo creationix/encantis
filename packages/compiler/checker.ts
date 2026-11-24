@@ -1035,6 +1035,10 @@ class CheckContext {
   // instance too (localDefs keeps the generic's own only): what a message
   // refusing a second declaration of its name says (see declaredFirst).
   declaredAt = new Map<Symbol, number>()
+  // A variable whose declaration was refused, since its name was taken, is
+  // declared all the same: the declaration it clashed with, the first of
+  // the name, is the one a later clash with the name says (see firstOf).
+  clashedWith = new WeakMap<Symbol, Symbol>()
   // Functions and imports declared inside test blocks. They are registered in
   // module scope, and exist in test builds only.
   testOnly = new Set<string>()
@@ -1402,7 +1406,8 @@ class CheckContext {
   // refuses another declaration of the name: a variable's where it was bound,
   // a name of the module's where it is declared (an import where it is
   // imported). Nothing where that is not known.
-  declaredFirst(name: string, sym: Symbol): string {
+  declaredFirst(name: string, found: Symbol): string {
+    const sym = this.firstOf(found)
     const at = this.declaredAt.get(sym) ?? this.localDefs.get(sym) ??
       (this.moduleScope.symbols.get(name) === sym ? this.symbolDefOffsets.get(name) : undefined)
     if (at !== undefined) return this.firstDeclared(at)
@@ -1414,6 +1419,19 @@ class CheckContext {
       if (there !== undefined) return other.firstDeclared(there, fileName(path))
     }
     return ''
+  }
+
+  // The first declaration of the name a symbol has (see clashedWith)
+  firstOf(sym: Symbol): Symbol {
+    return this.clashedWith.get(sym) ?? sym
+  }
+
+  // A variable a declaration of a name declares, where `existing` is what
+  // the name was before it (see clashedWith): where the declaration was
+  // refused, the first of the name; checked again, what it was refused for.
+  private clashed(sym: Symbol, existing: Symbol | undefined, refused: boolean): void {
+    const first = existing && (refused ? this.firstOf(existing) : this.clashedWith.get(existing))
+    if (first) this.clashedWith.set(sym, first)
   }
 
   // Where the first declaration of a name is, said after a message that
@@ -1515,6 +1533,8 @@ class CheckContext {
             const type = this.resolveHeld(item.item.type)
             this.moduleScope.symbols.set(item.item.ident, isSource ? { kind: 'global', type } : { kind: 'global', type, fromHost: true })
           }
+          // Defined at its local name, as an imported function is
+          this.recordDefinition(item.item.ident, item.item.span.start)
           break
         }
       }
@@ -3724,13 +3744,18 @@ class CheckContext {
     this.currentScope = scope
     const existing = this.lookup(name)
     this.currentScope = outer
-    const taken = existing && takenName(existing)
+    // A variable whose declaration was refused is what the first of its
+    // name is: a binding may hide a function a refused let took the name of.
+    const taken = existing && takenName(this.firstOf(existing))
     if (taken && !this.declared.has(node)) {
       const what = kind === 'loop' ? 'a loop variable' : kind === 'if let' ? 'an if let binding' : 'a match binding'
       this.error(at, `'${name}' is already declared: ${what} cannot reuse the name of ${taken}${this.declaredFirst(name, existing)}`)
     }
     if (!type) return
     const sym: Symbol = { kind: 'local', type, binding: kind }
+    // Its body's scope is new each time it is checked: what it is refused
+    // for is the same each time.
+    if (taken) this.clashed(sym, existing, true)
     scope.symbols.set(name, sym)
     this.types.set(typeKey(defAt, 'Binding'), type)
     this.recordDefinition(name, defAt, sym)
@@ -3741,11 +3766,13 @@ class CheckContext {
     switch (pattern.kind) {
       case 'IdentPattern': {
         const existing = this.lookup(pattern.name)
-        if (existing && !this.declared.has(pattern)) {
+        const refused = !!existing && !this.declared.has(pattern)
+        if (refused) {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope${this.declaredFirst(pattern.name, existing)}`)
         }
         this.declare(pattern)
         const sym: Symbol = { kind: 'local', type }
+        this.clashed(sym, existing, refused)
         this.letScope().symbols.set(pattern.name, sym)
         this.letAt.set(sym, pattern.span.start)
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
@@ -3806,11 +3833,13 @@ class CheckContext {
     // Its name is its own, as a plain let's is: taking a variable's
     // would change that variable (a loop's counter, say).
     const existing = this.lookup(varName)
-    if (existing && !this.declared.has(element)) {
+    const refused = !!existing && !this.declared.has(element)
+    if (refused) {
       this.error(pattern.span.start, `'${varName}' is already declared in this scope${this.declaredFirst(varName, existing)}`)
     }
     this.declare(element)
     const sym: Symbol = { kind: 'local', type }
+    this.clashed(sym, existing, refused)
     this.letScope().symbols.set(varName, sym)
     const at = namedPartAt(element)
     this.letAt.set(sym, at)
