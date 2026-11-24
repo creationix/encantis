@@ -7665,7 +7665,7 @@ A memory declaration, `memory`, then optionally a minimum and a maximum in pages
 - The maximum is how far the memory may grow. Without one, none is written in the module, and the engine's own limit applies.
 - A program that uses memory and declares none gets that memory with the minimum the data needs, no maximum, and no export. The declaration is needed only to choose the sizes or to export the memory.
 - The numbers are integer literals, in any base: `memory 0x10` is 16 pages (a dozenal `0d10` is read wrong, a known bug). A name, even a `def`'s, an expression, or a number with a type (`memory pages`, `memory 1 + 1`, `memory 2:u32`) is a syntax error. They must satisfy `min <= max <= 65536` (65536 pages are 4 GiB), and the minimum is at least what the data needs. The compiler does not check these (a known bug): a module that breaks one fails when it is assembled, or when it is instantiated (`segment is too big` for a minimum too small for its data). Leave the minimum out unless the program needs more than its data.
-- A program has one memory declaration at most, in any one of its modules. Where it is, its sizes and its export are the program's memory's, also in a module that another imports. Two are meant to be an error; the checker accepts them and the compiler then stops with an internal error (a known bug).
+- A program has one memory declaration at most, in any one of its modules. Where it is, its sizes and its export are the program's memory's, also in a module that another imports. A second one is an error where it is written, and the error says where the first is: `memory is already declared: a program has one memory declaration at most (first declared at 1:1)` in the same module, `(first declared at lib.ents:1:1)` in another. Of two modules, the one checked later has the error: a module is checked after the modules it imports, and those in the order its imports are written, so with `main.ents` importing `lib.ents` it is `main.ents`'s, and with `main.ents` importing `a.ents` and then `b.ents`, it is `b.ents`'s. A module that only a `test` block imports is part of the program only where the tests are built ([12.4](#124-declarations-in-a-test)): `encantis check` and `encantis test` report a memory declared there as well, and `encantis wasm` does not.
 
 The host sees the memory only when it is exported. Exporting it is what lets a host read a string a function returns or write an array it passes in, and WASI needs it under the name `memory` ([Starting and running](#starting-and-running)).
 
@@ -7687,6 +7687,17 @@ test "the data ends at sizeof data" {
   assert fill(7) == 7
   assert sizeof data == 100008
 }
+```
+
+```ents
+memory 1
+export memory 2 16
+
+export func one() -> u32 => 1
+```
+
+```errors
+memory is already declared: a program has one memory declaration at most (first declared at 1:1)
 ```
 
 <!-- spec:end -->

@@ -660,6 +660,13 @@ export function typecheckProgram(
     ctx.tag = alike === 0 ? fileTag(path) : `${fileTag(path)}~${alike + 1}`
     program.set(path, ctx)
     ctx.checkModule(loaded.module)
+    // A program has one memory, declared in one module at most: the
+    // modules are checked in order, each after those it imports.
+    const memory = checked.find((earlier) => earlier.ctx.memoryAt !== null)
+    if (memory && ctx.memoryAt !== null) {
+      const at = memory.ctx.memoryAt as number
+      ctx.error(ctx.memoryAt, `${MEMORY_TWICE}${memory.ctx.firstDeclared(at, fileName(memory.path))}`)
+    }
     checked.push({ path, ctx, module: loaded.module })
     const grown = drain()
     settleSites()
@@ -675,6 +682,8 @@ export function typecheckProgram(
   checkModuleSize(checked.map(({ path, ctx, module }) => ({ ctx, module, entry: path === entryPath })))
   return { results, errors: [...results.values()].flatMap((result) => result.errors) }
 }
+
+const MEMORY_TWICE = 'memory is already declared: a program has one memory declaration at most'
 
 // A path's last part, the name of the file
 function fileName(path: string): string {
@@ -974,6 +983,9 @@ class CheckContext {
   // Multi-module support
   filePath?: string
   moduleExports?: Map<string, Map<string, Symbol>>
+  // Where the module's memory is declared (its first memory declaration):
+  // a program has one at most, in any of its modules.
+  memoryAt: number | null = null
   options: TypecheckOptions = DEFAULT_OPTIONS
   // In a program of several modules, every module's context by its path (see
   // typecheckProgram): an instance of a generic is checked in the module
@@ -1358,10 +1370,31 @@ class CheckContext {
         this.collectGlobal(decl)
         break
       case 'MemoryDecl':
+        this.collectMemory(decl.span.start)
         break
       case 'TestDecl':
         break
     }
+  }
+
+  // A second memory declaration of the module: the first is its memory.
+  private collectMemory(at: number): void {
+    if (this.memoryAt === null) {
+      this.memoryAt = at
+      return
+    }
+    this.error(at, `${MEMORY_TWICE}${this.firstDeclared(this.memoryAt)}`)
+  }
+
+  // Where the first declaration of a name is, said after a message that
+  // refuses a second one: ` (first declared at 3:5)`, as line:column of this
+  // module, or of `file`, the module that has it, ` (... at lib.ents:3:5)`.
+  // An instance's offsets are the generic's own. Without the module's text
+  // only the other module's name is said, and nothing for this one.
+  firstDeclared(offset: number, file?: string): string {
+    const at = offset % INSTANCE_STRIDE
+    if (this.source) return ` (first declared at ${file ? `${file}:` : ''}${lineAndColumn(this.source, at)})`
+    return file ? ` (first declared in ${file})` : ''
   }
 
   collectImport(decl: AST.ImportDecl, inTest = false): void {
@@ -1600,6 +1633,8 @@ class CheckContext {
         this.collectGlobal(decl.item)
         break
       case 'MemoryDecl':
+        this.collectMemory(decl.span.start)
+        break
       case 'TypeFuncDecl':
         // Nothing to collect: a generic type is registered with the type names
         break

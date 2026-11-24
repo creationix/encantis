@@ -121,7 +121,9 @@ async function runCase(file: string, block: Block, expectations: Block[], rewrit
   const parseErrors = parsed.errors.map(e => e.message)
   let errors = parseErrors
   if (parseErrors.length === 0 && rule === 'Module') {
-    errors = typecheck(parsed.module as AST.Module).errors.map(e => e.message)
+    // With its text, as the command line checks a file: a message that says
+    // where something is says it as line:column of the example.
+    errors = typecheck(parsed.module as AST.Module, { source: block.content }).errors.map(e => e.message)
   }
 
   const errorBlock = expectations.find(e => e.lang === 'errors')

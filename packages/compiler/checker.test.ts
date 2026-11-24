@@ -3554,12 +3554,14 @@ describe('functions that share a name', () => {
       `export name 'x' is used twice: give one an explicit name, as in export "x_2" global g`,
     ])
     // Of several memory declarations only the first is the module's memory,
-    // so only its export is one.
-    expect(errs('export memory\nexport memory 8\nexport "mem" memory 8 256\nexport "mem" func f() { }')).toEqual([])
+    // so only its export is one: the others are refused as memory declared
+    // again (#40), not as names exported twice.
+    const twice = 'memory is already declared: a program has one memory declaration at most'
+    expect(errs('export memory\nexport memory 8\nexport "mem" memory 8 256\nexport "mem" func f() { }')).toEqual([twice, twice])
     expect(errs('export "memory" func f() { }\nexport memory 8')).toEqual([
       `export name 'memory' is used twice: give one an explicit name, as in export "memory_2" memory`,
     ])
-    expect(errs('memory 1\nexport "memory" func f() { }\nexport memory 8')).toEqual([])
+    expect(errs('memory 1\nexport "memory" func f() { }\nexport memory 8')).toEqual([twice])
   })
 
   test('the name of several functions is no function value', () => {
@@ -3891,6 +3893,58 @@ describe('the size of a function', () => {
     const copy = 'func copy(comptime T: type, p: *mut T, q: *T) { p.* = q.* }\n'
     expect(errs(`${copy}func f(p: *mut [600]u8, q: *[600]u8) { copy(p, q) }`)).toEqual([])
     expect(errs(`${copy}func f(p: *mut [60000]u8, q: *[60000]u8) { copy(p, q) }`)).toEqual([`${over('[60000]u8 is 60000', "function 'copy'")}, in copy(T = [60000]u8)`])
+  })
+})
+
+// #40: two memory declarations passed the check, and the compiler then
+// stopped with a stack trace.
+describe('a program declares its memory once', () => {
+  const twice = 'memory is already declared: a program has one memory declaration at most'
+  const errsOf = (src: string) => typecheck(parse(src).module!, { source: src }).errors.map((e) => e.message)
+  const programOf = (files: [string, string][], entry: string) => {
+    const modules = new Map(files.map(([path, src]) => [resolve(path), { module: parse(src).module!, source: src }]))
+    const program = typecheckProgram(modules, resolve(entry))
+    return [...program.results].flatMap(([path, r]) => r.errors.map((e) => `${path.replace(/^.*[\\/]/, '')}: ${e.message}`))
+  }
+
+  test('in one module, at the second, saying where the first is', () => {
+    const src = 'memory 1\nexport func f() -> u32 => 1\nexport memory 2 16\n'
+    const found = typecheck(parse(src).module!, { source: src }).errors
+    expect(found.map((e) => e.message)).toEqual([`${twice} (first declared at 1:1)`])
+    expect(found[0].offset).toBe(src.indexOf('export memory'))
+    // Exported twice, it is still this one error, not an export name used twice too.
+    expect(errsOf('export memory\nexport memory 2')).toEqual([`${twice} (first declared at 1:1)`])
+    // Three: each after the first
+    expect(errsOf('memory\nmemory 2\nmemory 3')).toEqual([`${twice} (first declared at 1:1)`, `${twice} (first declared at 1:1)`])
+  })
+
+  test('in two modules, in the one checked later, naming the other', () => {
+    // main imports lib: lib is checked first
+    expect(programOf([
+      ['/p/lib.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
+      ['/p/main.ents', 'import "./lib" ("one" func one() -> u32)\n\nmemory 4\nexport func two() -> u32 => one() + 1\n'],
+    ], '/p/main.ents')).toEqual([`main.ents: ${twice} (first declared at lib.ents:1:1)`])
+    // Two imports of the entry: the second one has it.
+    expect(programOf([
+      ['/p/a.ents', '// a\n\n  memory 2\nexport func one() -> u32 => 1\n'],
+      ['/p/b.ents', 'export memory\nexport func two() -> u32 => 2\n'],
+      ['/p/main.ents', 'import "./a" ("one" func one() -> u32)\nimport "./b" ("two" func two() -> u32)\nexport func f() -> u32 => one() + two()\n'],
+    ], '/p/main.ents')).toEqual([`b.ents: ${twice} (first declared at a.ents:3:3)`])
+    // One module with a memory declaration is no error, wherever it is.
+    expect(programOf([
+      ['/p/lib.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
+      ['/p/main.ents', 'import "./lib" ("one" func one() -> u32)\nexport func two() -> u32 => one() + 1\n'],
+    ], '/p/main.ents')).toEqual([])
+  })
+
+  test('a module only a test imports counts where the tests are built', () => {
+    const files: [string, string][] = [
+      ['/p/lib.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
+      ['/p/main.ents', 'memory 1\nexport func f() -> u32 => 1\ntest "t" {\n  import "./lib" ("one" func one() -> u32)\n  assert one() == 1\n}\n'],
+    ]
+    expect(programOf(files, '/p/main.ents')).toEqual([`main.ents: ${twice} (first declared at lib.ents:1:1)`])
+    const modules = new Map(files.map(([path, src]) => [resolve(path), { module: parse(src).module!, source: src }]))
+    expect(typecheckProgram(modules, resolve('/p/main.ents'), { includeTests: false }).errors).toEqual([])
   })
 })
 

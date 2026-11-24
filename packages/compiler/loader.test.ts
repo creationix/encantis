@@ -163,7 +163,13 @@ describe('unified codegen', () => {
     expect(load.errors).toEqual([])
     const entryPath = resolve(fixtures, 'mem-conflict.ents')
     const check = typecheckProgram(load.modules, entryPath)
-    expect(check.errors).toEqual([])
+    // The checker refuses the second, in the module checked later (#40)...
+    expect(check.errors.map((e) => e.message)).toEqual([
+      'memory is already declared: a program has one memory declaration at most (first declared at mem-util.ents:1:1)',
+    ])
+    expect(check.results.get(entryPath)?.errors).toHaveLength(1)
+    // ...and the compiler, given the program all the same, still will not
+    // choose one.
     expect(() => programToWat(load.modules, check.results, entryPath)).toThrow(/Multiple memory declarations/)
   })
 
