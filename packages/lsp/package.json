@@ -1,6 +1,6 @@
 {
   "name": "@encantis/lsp",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "description": "Encantis language server, for the VS Code extension and `encantis lsp`",
