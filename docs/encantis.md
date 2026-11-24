@@ -115,7 +115,6 @@ The compiler implements everything this reference describes except what this tab
 | `[_]` as a declared type, `data d: *[_]u8 = [1, 2, 3]`, and a `[_]T` held by value | `*[_]T` passes the checker and stops the compiler with an internal error where it is used; `[_]T` is refused (`cannot assign [2]i32 to [_]u8`). `[_]` in a literal's own type, `[95, 87, 42]:*[_]i32`, works | [2.4](#24-fixed-arrays-value-type) |
 | A framing combined with a dimension, `*[5x!]T`, `*[!x!]T`, `*[5x?]T` | Accepted, and neither laid out nor read as the framing says | [2.5](#25-pointer-types) |
 | On `i128` and wider: `/`, `%`, the bit counts, and casts to and from a float | Refused (`'/' on u128 is not supported yet`, `cannot cast u128 to f64: not supported yet`) | [2.2](#22-primitive-types), [2.10](#explicit-casts) |
-| `elif let` | Accepted, and binds nothing: a use of the name is an error, or the module does not assemble | [4.7](#if-let-bindings) |
 | Reading a `*[?]T` (elements after a LEB128 length) | Lays one out, and refuses indexing it and its `.len` (`... is not supported yet: its length prefix is not read`) | [2.5](#25-pointer-types) |
 | Joining a template literal into one `[]u8` (formatting text into a buffer) | A template is the array literal of its fragments, so where a `[]u8` is wanted each `${e}` is one byte, and a `[]u8` there is a type error (`cannot assign *[2]u8 to u8`) | [1.5](#template-literals) |
 | Compile-time `if`, `for` and `assert`; comptime parameters other than types, integers and functions (`comptime ok: bool`); generic functions that share a name; writing some comptime arguments and inferring the others; generic types whose body is several statements | Each is refused with an error | [8.9](#89-not-implemented), [8.10](#810-how-this-is-compile-time-evaluation) |
@@ -1263,7 +1262,7 @@ cannot assign u32 to u32#16
 
 **Narrowing.** Comparing an unsigned variable (a parameter, a named result, a `let`, a loop's variable or an `if let` binding) with a constant — a literal, a `def` (typed or not), a value parameter, `sizeof(T)`, the `.len` of a `*[N]T`, or arithmetic on these — narrows its range wherever the comparison is known to hold. Any of the six comparisons narrows, with the constant on either side: where they hold, `x < 12`, `x <= 11`, `12 > x` and `11 >= x` each make `x` a `u32#12`, and `x == 3` makes it a `u32#4`; `x >= 12`, `x > 11` and `x != 3` narrow where they are false. A condition is known to hold, or to be false, in these places and in the blocks nested in them, loop bodies too:
 
-- inside an `if` branch (it holds), and in the later `elif` and `else` branches (the earlier conditions are false);
+- inside an `if` or `elif` branch (it holds), and in the later `elif` and `else` branches (the earlier conditions are false), also in an `if` with `if let` or `elif let` branches, whose values are no conditions and narrow nothing;
 - in the rest of a block after `return ... when c`, `break when c` or `continue when c` (`c` is false);
 - in the rest of a block after an `if c { ... }` that has no `elif` and no `else` and whose branch always exits (`c` is false).
 
@@ -1301,6 +1300,32 @@ test "a comparison with a constant narrows" {
   assert get(40) == 0
   assert sum(3, 3) == 14
   assert total([3, 40, 3]) == 14
+}
+```
+
+An `if let` or `elif let` branch among them changes none of this: the conditions narrow in the branches as they would without it.
+
+```ents
+data buf = mut [0:u8; 12]
+
+// The byte p points at, else buf's at x.
+func at(p: ?*u8, x: u32) -> u8 {
+  if let b = p {
+    return b.*
+  } elif x < buf.len {
+    return buf[x]                // the elif's condition holds here
+  }
+  return 0
+}
+// buf's at x where x < 12 and p is none, else 0.
+func near(x: u32, p: ?*u8) -> u8 => if x >= buf.len { 0 } elif let b = p { 0 } else { buf[x] }
+
+test "an if let among the branches narrows nothing" {
+  buf[2] = 5
+  assert at(0, 2) == 5
+  assert at(0, 40) == 0
+  assert near(2, 0) == 5
+  assert near(2, &buf[0]) == 0
 }
 ```
 
@@ -3977,7 +4002,7 @@ test "a let without a value starts at zero and is never reset" {
 
 `counts` shows the rule; it is no way to write a loop. A value carried from one pass to the next is declared before the loop (`let seen: u32 = 0` above the `for`), where a reader sees that it lives across passes.
 
-A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The first branch of an `if let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in an `elif` or `else` branch of an `if let`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
+A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The branch of an `if let` or an `elif let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in another branch of the same `if`, a plain `elif` or the `else`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` or `elif let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
 
 <!-- spec:begin compile -->
 
@@ -5763,7 +5788,7 @@ test "an if let binding is a variable of its first branch" {
 
 <!-- spec:end -->
 
-It is an `if` in every other way: it can have `elif` and `else` branches, and with an `else` it's an expression whose branches widen to one type. An `elif let` branch is not implemented: it is accepted but binds nothing (a known bug), so write an `if let` inside the `else` branch instead.
+It is an `if` in every other way: it can have `elif` and `else` branches, and with an `else` it's an expression whose branches widen to one type, all of them together as an `if`'s do ([5.1](#51-conditionals)). A condition in an `elif` narrows as one in any `if` does ([Ranged Integers](#ranged-integers)); the value of an `if let` is no condition, and narrows nothing.
 
 <!-- spec:begin compile -->
 
@@ -5776,6 +5801,60 @@ test "if let gives a value" {
   assert score(1, false) == 87
   assert score(7, true) == 50
   assert score(7, false) == -1
+}
+```
+
+<!-- spec:end -->
+
+An `elif let name = value` branch is an `if let` in the place of an `elif`: it is tried when the branches before it were not taken, and its value is evaluated only then. It takes the values an `if let` takes, with the same checks and messages, and runs its branch where the value has one, with `name` bound to it. The binding, and a `let` in that branch, are seen in that branch only, as the first branch's are; the name is free again in the branches after it. An `if` can have any number of `elif let` branches, before, after and among its `elif` branches, and an `else`; with the `else` it gives a value as any `if` does. It compiles as an `elif` does, to the test of an `if let` in the `else` of the branch before it.
+
+<!-- spec:begin compile -->
+
+```ents
+type Node = (value: u32, next: ?*Node)
+
+data nodes = [Node(1, 0), Node(2, 0)]
+data cells = [7:u32, 8, 9]
+data names = ["ab", "cde"]
+
+// The cell at i, else the length of the name at j plus 100, else 0.
+func lookup(i: u32, j: u32) -> u32 {
+  if let c = cells[i] {
+    return c
+  } elif let n = names[j] {
+    return n.len + 100
+  }
+  return 0
+}
+
+// The value of a, else ten times b's, else 100 + i from 8 on, else the cell at i, else 0.
+func first(a: ?*Node, b: ?*Node, i: u32) -> u32 =>
+  if let n = a { n.value } elif let m = b { m.value * 10 } elif i >= 8 { 100 + i } elif let c = cells[i] { c } else { 0 }
+
+// Two branches bind one name, and each declares a t of its own.
+func measure(p: ?*u32, q: ?[]u8) -> u32 {
+  if let v = p {
+    let t = v.* as u64
+    return t as u32
+  } elif let v = q {
+    let t = v.len
+    return t + 1
+  }
+  return 0
+}
+
+test "elif let binds as an if let does" {
+  assert measure(&cells[1], 0) == 8
+  assert measure(0, names[1]) == 4
+  assert measure(0, 0) == 0
+  assert lookup(2, 0) == 9
+  assert lookup(7, 1) == 103
+  assert lookup(7, 5) == 0
+  assert first(&nodes[0], &nodes[1], 0) == 1
+  assert first(0, &nodes[1], 0) == 20
+  assert first(0, 0, 9) == 109
+  assert first(0, 0, 1) == 8
+  assert first(0, 0, 5) == 0
 }
 ```
 
@@ -6115,7 +6194,7 @@ Line 3, col 20
 
 ### 5.1 Conditionals
 
-`if condition body` is followed by any number of `elif condition body` and at most one `else body`. The conditions are evaluated in order, and the body of the first one that holds runs; the conditions after it are not evaluated. When none holds, the `else` body runs, if there is one. The keyword is `elif`: `else if` is a syntax error, since `else` takes a body (a block, or `=>` and an expression). An `if` compiles to a wasm `if`, and each `elif` to an `if` in the `else` of the one before.
+`if condition body` is followed by any number of `elif condition body` and at most one `else body`. The conditions are evaluated in order, and the body of the first one that holds runs; the conditions after it are not evaluated. When none holds, the `else` body runs, if there is one. In place of a condition, an `if` or an `elif` can take `let name = value`, which holds where the value has one, with `name` bound to it in that body ([`if let` Bindings](#if-let-bindings)). The keyword is `elif`: `else if` is a syntax error, since `else` takes a body (a block, or `=>` and an expression). An `if` compiles to a wasm `if`, and each `elif` to an `if` in the `else` of the one before.
 
 <!-- spec:begin compile -->
 
@@ -6233,7 +6312,7 @@ branches have different types: int(-1) and u32 (cast one explicitly)
 
 <!-- spec:end -->
 
-Used as a statement, an `if` has no value to agree on: its branches can end in anything, and a value one of them leaves is dropped. A `let` in a branch declares a variable of the function, seen after the `if` as well, but for the exceptions [3.3](#33-variables) lists; the binding of an `if let`, and a `let` in its first branch, are seen in that branch alone.
+Used as a statement, an `if` has no value to agree on: its branches can end in anything, and a value one of them leaves is dropped. A `let` in a branch declares a variable of the function, seen after the `if` as well, but for the exceptions [3.3](#33-variables) lists; the binding of an `if let` or `elif let`, and a `let` in its branch, are seen in that branch alone.
 
 ### 5.2 Loops
 
@@ -7136,9 +7215,9 @@ In the design, a `match` on an enum is exhaustive: every variant is handled, or 
 
 ### 6.4 If-Let Bindings
 
-`if let name = value { ... }` runs its first branch when `value` has a value, with `name` bound to it: an optional pointer, slice or host reference that is not none, or an index, range or element address that is in range. What it checks, the type of the binding, where the binding is seen, and how it works as a value are in [`if let` Bindings](#if-let-bindings).
+`if let name = value { ... }` runs its first branch when `value` has a value, with `name` bound to it: an optional pointer, slice or host reference that is not none, or an index, range or element address that is in range. `elif let name = value { ... }` does the same in the place of an `elif`. What they check, the type of the binding, where the binding is seen, and how they work as a value are in [`if let` Bindings](#if-let-bindings).
 
-The pattern of an `if let` is one name. Any other is refused, `_`, a literal, a tuple and a constructor alike (`if let only supports simple bindings`), and so is a value with nothing to check (`if let requires an optional expression or bounds-checked index`). An `elif let` branch is accepted but binds nothing (a known bug): write a second `if let` after the first, or inside its `else`.
+The pattern of an `if let` or `elif let` is one name. Any other is refused, `_`, a literal, a tuple and a constructor alike (`if let only supports simple bindings`), and so is a value with nothing to check (`if let requires an optional expression or bounds-checked index`), in an `elif let` as in an `if let`, where the error is reported at its `elif`.
 
 <!-- spec:begin compile -->
 
@@ -7192,6 +7271,31 @@ func c(n: u32) -> u32 {
 if let only supports simple bindings
 if let only supports simple bindings
 if let requires an optional expression or bounds-checked index
+```
+
+An `elif let` is checked as an `if let` is, and its binding is seen in its own branch only, not in the branches after it nor after the `if`:
+
+```ents
+data cells = [7:u32, 8, 9]
+
+func a(c: bool, p: ?*u32) -> u32 {
+  if c {
+    return 1
+  } elif let (x, y) = p {
+    return 2
+  }
+  return 0
+}
+
+func b(c: bool, n: u32) -> u32 => if c { 1 } elif let m = n { m } else { 0 }
+
+func d(c: bool, i: u32) -> i32 => if c { 1 } elif let v = cells[i] { 2 } else { v }
+```
+
+```errors
+if let only supports simple bindings
+if let requires an optional expression or bounds-checked index
+unknown identifier 'v'
 ```
 
 <!-- spec:end -->
@@ -9799,7 +9903,7 @@ A float truncates toward zero, and the `trunc` instructions trap on NaN, an infi
 
 | Encantis | WASM |
 |----------|------|
-| `if`/`elif`/`else` | `if`/`else`, an `elif` as an `if` in the `else`; `(if (result T) ...)` where it gives a value |
+| `if`/`elif`/`else` | `if`/`else`, an `elif` as an `if` in the `else` (an `elif let` as the test of an `if let` there); `(if (result T) ...)` where it gives a value |
 | `match` | one comparison per arm in the order written, as nested `if`/`else`; with no `_` arm the last `else` is `unreachable` |
 | `while c { ... }` | `(block $break (loop $continue (br_if $break (i32.eqz c)) ... (br $continue)))` |
 | `loop { ... }` | `(block $break (loop $continue ... (br $continue)))` |

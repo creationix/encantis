@@ -747,6 +747,42 @@ describe('expression codegen', () => {
       }`)
       expect(wat).toContain('(else (if  (local.get $c) (then (i32.const 2) (return)) (else (i32.const 3) (return))))')
     })
+
+    // Issue #43: an elif let was accepted and bound nothing.
+    test('an elif let tests its value and binds it as an if let does', async () => {
+      const { stmt, value, write, chain } = await run(`
+        data cells = mut [7:u32, 8, 9]
+        data names = ["ab", "cde"]
+        export func stmt(c: i32, i: u32, j: u32) -> u32 {
+          if c == 1 {
+            return 1
+          } elif let a = names[i] {
+            return a.len + 10
+          } elif let b = cells[j] {
+            return b + 100
+          }
+          return 0
+        }
+        export func value(c: i32, i: u32) -> u32 => if c == 1 { 1 } elif let p = &cells[i] { p.* + 20 } elif c == 2 { 2 } else { 0 }
+        export func write(c: i32, i: u32, v: u32) -> u32 {
+          if c == 1 { } elif let p = &cells[i] { p.* = v }
+          return cells[2]
+        }
+        export func chain(i: u32, j: u32) -> u32 => if let a = cells[i] { a } elif let s = names[j] { s.len * 1000 } else { 5 }
+      `)
+      expect([stmt(1, 0, 0), stmt(0, 1, 0), stmt(0, 9, 2), stmt(0, 9, 3)]).toEqual([1, 13, 109, 0])
+      expect([value(1, 0), value(0, 1), value(2, 7), value(0, 7)]).toEqual([1, 28, 2, 0])
+      expect([write(1, 2, 50), write(0, 2, 60), write(0, 3, 70)]).toEqual([9, 60, 60])
+      expect([chain(0, 0), chain(5, 0), chain(5, 1), chain(5, 2)]).toEqual([7, 2000, 3000, 5])
+    })
+
+    test('an elif let compiles to an if let in the else of the branch before it', () => {
+      const wat = funcWat(`func f(c: bool, p: ?*u8) -> u32 {
+        if c { return 1 } elif let q = p { return q.* as u32 }
+        return 0
+      }`)
+      expect(wat).toMatch(/\(if {2}\(local\.get \$c\) \(then \(i32\.const 1\) \(return\)\) \(else \(local\.set \$__iflet_ptr_\w+ \(local\.get \$p\)\)\n\(if {2}\(local\.get \$__iflet_ptr_\w+\) \(then \(local\.set \$q \(local\.get \$__iflet_ptr_\w+\)\)/)
+    })
   })
 })
 
