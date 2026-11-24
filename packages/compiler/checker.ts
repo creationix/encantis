@@ -475,6 +475,10 @@ export interface TypeCheckResult {
   // what the name is there and outside the test, which the symbols by name
   // no longer say (see seenAs)
   takenOver: Map<number, Symbol>
+  // The uses of a name a test put in module scope where it is no name at
+  // all (see seenAs), a comptime argument outside the test that names a
+  // function only the test declares: the editor finds nothing there
+  unseen: Set<number>
   // What each function the module or a test declares or imports is, by its
   // declaration: by name, a test's function of a module function's name, or
   // of another test's, would be the last one declared (#74), and the output
@@ -729,6 +733,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     nestedCalls: ctx.nestedCalls,
     instanceHidden: new Map(ctx.instances.filter((i) => i.hidden.captures.length > 0).map((i) => [i.name, i.hidden])),
     takenOver: ctx.takenOver,
+    unseen: ctx.unseen,
     funcSyms: ctx.funcSyms,
   }
 }
@@ -1290,6 +1295,8 @@ class CheckContext {
   private replacedByTest = new WeakMap<Symbol, Symbol | undefined>()
   // What each of those replaced, by where it was declared (TypeCheckResult)
   takenOver = new Map<number, Symbol>()
+  // Where a name is used that is none there (TypeCheckResult)
+  unseen = new Set<number>()
   // What each function declaration is (TypeCheckResult)
   funcSyms = new Map<AST.FuncDecl | AST.ImportFunc, Symbol>()
   private openTests: AST.TestDecl[] = []
@@ -10263,6 +10270,7 @@ class CheckContext {
       // there, as in a build without tests.
       const moduleLevel = !!found && arg.kind === 'IdentExpr' && found === this.moduleScope.symbols.get(arg.name)
       const target = moduleLevel ? this.seenAs(found) : found
+      if (moduleLevel && !target) this.unseen.add(arg.span.start % INSTANCE_STRIDE)
       if (arg.kind !== 'IdentExpr' || target?.kind !== 'func') {
         this.error(arg.span.start, `${place} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter`)
         return null
@@ -10390,7 +10398,7 @@ class CheckContext {
     const shown = comptimeParams.map((p, i) => {
       const value = held[i]
       const text = value.kind === 'type' ? typeToString(value.type) : value.kind === 'func' ? value.shown ?? funcText(value.name) : value.kind === 'int' ? String(value.value) : ''
-      return `${p.ident} = ${text.length > 60 ? `${text.slice(0, 57)}...` : text}`
+      return `${p.ident} = ${shortened(text, 60)}`
     })
     const label = `${of.ident}(${shown.join(', ')})`
     const inst: Instance = {
@@ -10622,6 +10630,7 @@ class CheckContext {
       // Which of the functions that share a name a call means is known only
       // in an instance: all of them count as used, until the instances say
       // which they call (see settleGuesses).
+      let none = true
       for (const known of this.overloads.get(name) ?? [name]) {
         // A name a test put in module scope (#74) is, in a generic's body,
         // the module's function of the name, as module code has it (12.4,
@@ -10629,11 +10638,13 @@ class CheckContext {
         const sym = this.moduleScope.symbols.get(known)
         const seen = sym && this.seenAs(sym)
         if (!seen) continue
+        none = false
         const resolved = seen === sym ? undefined : seen
         this.recordReference(known, offset, true, resolved)
         const def = resolved ? this.declaredAt.get(resolved) : this.symbolDefOffsets.get(known)
         if (called && def !== undefined) this.guessedCalls.push({ generic: decl, def, use: offset })
       }
+      if (none) this.unseen.add(offset)
     }
     // A type parameter is in no instance: the copy is made without it, and
     // with the type in the place of every use. Where it is declared and used
@@ -11324,8 +11335,10 @@ class CheckContext {
   // declares, as it always was. In a test it is the test's, and its uses
   // find it by its symbol (see recordReference).
   private recordDeclared(name: string, offset: number, sym: Symbol): void {
-    this.recordDefinition(name, offset)
-    if (this.currentScope !== this.moduleScope) this.localDefs.set(sym, offset)
+    // A test's is its own: by name it would take the module's place of the
+    // name, and the uses of the module's by code after the test with it
+    if (this.currentScope !== this.moduleScope) this.recordDefinition(name, offset, sym)
+    else this.recordDefinition(name, offset)
   }
 
   // Where a name is defined. A name of the module has one place, by name
@@ -12234,6 +12247,20 @@ export function testsToRun(items: readonly { kind: string }[]): { decl: AST.Test
   }
   for (const item of items) if (item.kind === 'TestDecl') visit(item as AST.TestDecl, '', '')
   return found
+}
+
+// Text of at most `max` characters, cut with ... after it where it is longer:
+// cut between characters, never inside a surrogate pair or an escape of a
+// spelled string (\u{1F600}, \n, \"), which a test's name holds
+function shortened(text: string, max: number): string {
+  if (text.length <= max) return text
+  const units = text.match(/\\u\{[0-9a-fA-F]+\}|\\x[0-9a-fA-F]{2}|\\.|[\s\S]/gu) ?? []
+  let kept = ''
+  for (const unit of units) {
+    if (kept.length + unit.length > max - 3) break
+    kept += unit
+  }
+  return `${kept}...`
 }
 
 // The name the output gives each test's function: __test<n> for the nth

@@ -53,6 +53,11 @@ export interface HoverResult {
   // captures, with what of that it writes (reference 3.4)
   nestedIn?: string
   captures?: string
+  // A nested function in a generic's body, which is nested in each of its
+  // instances, is nested in the generic, and captures in each instance what
+  // that one's functions capture: listed per instance, those that capture
+  // alike together (the instance labels, and what they capture)
+  capturesIn?: PerInstance[]
   // A variable a nested function uses, where it is used there: the function
   // that declares it
   capturedFrom?: string
@@ -65,6 +70,7 @@ export function hoverText(r: HoverResult): string {
   const parts = [
     ...(r.nestedIn !== undefined ? [`nested in ${r.nestedIn}`] : []),
     ...(r.captures !== undefined ? [`captures ${r.captures}`] : []),
+    ...(r.capturesIn ?? []).map((i) => `in ${i.in.join(', ')}: captures ${i.type}`),
     ...(r.capturedFrom !== undefined ? [`captured from ${r.capturedFrom}`] : []),
     ...(r.as !== undefined ? [r.as] : []),
     ...(r.calls !== undefined ? [`calls ${r.calls}`] : []),
@@ -114,8 +120,16 @@ function identAtOffset(source: string, offset: number): string | null {
   const start = wordStart(source, offset)
   let end = offset
   while (end < source.length && /[a-zA-Z0-9_\-]/.test(source[end])) end++
-  return start < end ? source.slice(start, end) : null
+  if (start >= end) return null
+  const word = source.slice(start, end)
+  // A keyword is no name. A declaration's first one is where the checker
+  // records the declaration (func, inline, export): by its place it would be
+  // taken for the name declared after it.
+  return DECLARATION_KEYWORDS.has(word) ? null : word
 }
+
+// The keywords a declaration starts with (grammar `keyword`)
+const DECLARATION_KEYWORDS: ReadonlySet<string> = new Set(['func', 'inline', 'export', 'data', 'def', 'global', 'memory', 'import', 'type', 'enum'])
 
 // The offset at which the identifier around `offset` begins. A name starts
 // with a letter: a minus before it negates it (-k).
@@ -219,6 +233,9 @@ function definitionOf(
   name: string,
 ): number | undefined {
   const start = wordStart(source, offset)
+  // A name that is none where it is used (a function only a test declares,
+  // given outside the test) is defined nowhere
+  if (checkResult.unseen?.has(start)) return undefined
   const decl = funcDeclaredAt(module, checkResult, start, name)
   if (decl) {
     // A function a test declared under a module function's name (#74), or
@@ -320,6 +337,30 @@ function nestedDefinedAt(checkResult: TypeCheckResult, defined: number): NestedF
   return undefined
 }
 
+// What hover says of a nested function where it is declared, called or given:
+// the function it is nested in, and what it captures. One in a generic's body
+// is one in each instance: nested in the generic (its path with the
+// generic's name for the instance's label), and what it captures in each,
+// those that capture alike listed together.
+function nestedHover(module: AST.Module, checkResult: TypeCheckResult, defined: number, nested: NestedFunc): Pick<HoverResult, 'nestedIn' | 'captures' | 'capturesIn'> {
+  const copies = [...checkResult.nested.values()].filter((n) => n.nameAt >= INSTANCE_STRIDE && n.nameAt % INSTANCE_STRIDE === defined)
+  const generic = genericAround(module, defined)
+  if (copies.length < 2 || !generic?.ident) {
+    const captures = capturesText(nested)
+    return { nestedIn: nestedParent(nested), ...(captures ? { captures } : {}) }
+  }
+  const labelOf = (n: NestedFunc) => checkResult.instances[Math.floor(n.nameAt / INSTANCE_STRIDE) - 1]?.label ?? ''
+  const label = labelOf(nested)
+  const parent = nestedParent(nested)
+  const nestedIn = label && parent.startsWith(label) ? `${generic.ident}${parent.slice(label.length)}` : parent
+  const groups = new Map<string, string[]>()
+  for (const n of copies) {
+    const text = capturesText(n) ?? 'nothing'
+    groups.set(text, [...(groups.get(text) ?? []), labelOf(n)])
+  }
+  return { nestedIn, capturesIn: [...groups].map(([text, labels]) => ({ in: labels, type: text })) }
+}
+
 // The innermost nested function whose declaration holds `offset`, of those
 // outside a generic's body
 function nestedAround(checkResult: TypeCheckResult, offset: number): NestedFunc | undefined {
@@ -377,6 +418,8 @@ export function hover(
   // in terms of the type parameters, and with what it is in each instance (in
   // each application, for a generic type's).
   const start = wordStart(source, offset)
+  // A name that is none where it is used is nothing (see definitionOf)
+  if (checkResult.unseen?.has(start)) return null
   // A field after a point in a generic's body is a member in each instance.
   const member = memberIn(module, checkResult, start, shown)
   if (member?.type && member.kind) {
@@ -398,15 +441,16 @@ export function hover(
   const defined = checkResult.symbolRefs.get(start) ?? (checkResult.references.has(start) ? start : undefined)
   // A nested function, where it is declared, called or given
   const nested = defined === undefined ? undefined : nestedDefinedAt(checkResult, defined)
-  if (nested) {
-    const captures = capturesText(nested)
-    return { name, type: typeToString(nested.type), kind: 'func', nestedIn: nestedParent(nested), ...(captures ? { captures } : {}) }
-  }
+  if (nested && defined !== undefined) return { name, type: typeToString(nested.type), kind: 'func', ...nestedHover(module, checkResult, defined, nested) }
   // A function whose name a test took over (#74), where it is the one
   // meant: a comptime argument outside the test
   const replaced = defined === undefined ? undefined : checkResult.takenOver.get(defined)
   if (replaced) return { name, type: symbolTypeString(replaced, source, name), kind: replaced.kind }
-  if (defined !== undefined && localDefinedAt(checkResult, defined)) {
+  // A def or a data block a test declares, where it is declared or used: the
+  // test's own, which the checker keeps under its name and place (name$offset)
+  const declaredHere = defined ?? valueDeclaredAt(module, start, name)
+  const testOwn = declaredHere === undefined ? undefined : checkResult.symbols.get(`${name}$${declaredHere}`)
+  if (!testOwn && defined !== undefined && localDefinedAt(checkResult, defined)) {
     const type = localType(checkResult, start) ?? localType(checkResult, defined)
     // Used in a nested function that does not declare it: captured
     const user = nestedAround(checkResult, start)
@@ -425,7 +469,7 @@ export function hover(
   // its own declaration, the one declared there, and so is one whose name a
   // test took over.
   const declaration = funcDeclaredAt(module, checkResult, start, name)
-  const sym = (declaration && checkResult.takenOver.get(declaration.span.start))
+  const sym = testOwn ?? (declaration && checkResult.takenOver.get(declaration.span.start))
     ?? checkResult.symbols.get(declaredAt(module, checkResult, start, name) ?? name)
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded

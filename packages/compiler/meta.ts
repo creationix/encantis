@@ -90,6 +90,9 @@ function simplifyExpr(expr: AST.Expr, source: string): string {
 
 // === Meta Output Types ===
 
+// What a test holds besides its statements
+const DECLARATION_ITEMS: ReadonlySet<string> = new Set<AST.TestItem['kind']>(['TestDecl', 'ImportDecl', 'DataDecl', 'DefDecl', 'FuncDecl', 'TypeFuncDecl'])
+
 export interface MetaOutput {
   $schema?: string
   src: string
@@ -580,9 +583,11 @@ class MetaBuilder {
       }
     }
 
-    // Collect locals from body
+    // Collect locals from body, an arrow body's blocks too
     if (decl.body.kind === 'Block') {
       this.collectLocalsFromBlock(decl.body)
+    } else {
+      this.collectLocalsIn(decl.body.expr)
     }
   }
 
@@ -614,19 +619,34 @@ class MetaBuilder {
         this.collectNested(stmt)
         continue
       }
-      if (stmt.kind === 'LetStmt') {
-        this.collectLocal(stmt.pattern)
-      }
-      // Collect for loop binding variables
-      if (stmt.kind === 'ForStmt') this.collectForBinding(stmt.binding)
-      // Recurse into nested blocks (while, loop, for)
-      if ('body' in stmt && stmt.body.kind === 'Block') {
-        this.collectLocalsFromBlock(stmt.body)
-      }
-      // Recurse into if/match expressions (they're expressions, not statements)
-      if (stmt.kind === 'ExpressionStmt') {
-        this.collectLocalsFromExpr(stmt.expr)
-      }
+      this.collectLocalsOfStmt(stmt)
+    }
+  }
+
+  // The variables and nested functions a statement declares, in it and in
+  // every block it holds: a loop's body, and the blocks of an if or a match
+  // wherever the statement has one, as its value (an ExpressionStmt), a
+  // let's or a set's value, a returned value, an assert's operand or an
+  // argument (reference, Nested Functions: a nested function is declared in
+  // any block)
+  private collectLocalsOfStmt(stmt: AST.Statement): void {
+    if (stmt.kind === 'LetStmt') this.collectLocal(stmt.pattern)
+    if (stmt.kind === 'ForStmt') this.collectForBinding(stmt.binding)
+    this.collectLocalsIn(stmt)
+  }
+
+  // collectLocalsFromBlock for each block a node of the syntax holds, at any
+  // depth outside other blocks (which hold their own)
+  private collectLocalsIn(node: unknown): void {
+    if (Array.isArray(node)) {
+      for (const n of node) this.collectLocalsIn(n)
+      return
+    }
+    if (!node || typeof node !== 'object') return
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'span' || !value || typeof value !== 'object') continue
+      if (!Array.isArray(value) && (value as { kind?: unknown }).kind === 'Block') this.collectLocalsFromBlock(value as AST.Block)
+      else this.collectLocalsIn(value)
     }
   }
 
@@ -635,28 +655,6 @@ class MetaBuilder {
     for (const { name, offset } of forNames(binding)) {
       const type = this.bindingType(offset, 'Binding')
       if (type) this.addSymbol(name, 'local', type, offset)
-    }
-  }
-
-  private collectLocalsFromExpr(expr: AST.Expr): void {
-    if (expr.kind === 'IfExpr') {
-      if (expr.thenBranch.kind === 'Block') {
-        this.collectLocalsFromBlock(expr.thenBranch)
-      }
-      for (const elif of expr.elifs) {
-        if (elif.thenBranch.kind === 'Block') {
-          this.collectLocalsFromBlock(elif.thenBranch)
-        }
-      }
-      if (expr.else_?.kind === 'Block') {
-        this.collectLocalsFromBlock(expr.else_)
-      }
-    } else if (expr.kind === 'MatchExpr') {
-      for (const arm of expr.arms) {
-        if (arm.body.kind === 'Block') {
-          this.collectLocalsFromBlock(arm.body)
-        }
-      }
     }
   }
 
@@ -703,8 +701,10 @@ class MetaBuilder {
   }
 
   private collectDef(decl: AST.DefDecl): void {
+    // A test's own is under its name and place: the module's of the name,
+    // where there is one, is another
     const mangledKey = `${decl.ident}$${decl.span.start}`
-    const sym = this.checkResult.symbols.get(decl.ident) ?? this.checkResult.symbols.get(mangledKey)
+    const sym = this.checkResult.symbols.get(mangledKey) ?? this.checkResult.symbols.get(decl.ident)
     if (!sym || sym.kind !== 'def') return
 
     // Find the def name offset (after "def" keyword)
@@ -734,8 +734,9 @@ class MetaBuilder {
   }
 
   private collectData(decl: AST.DataDecl): void {
+    // A test's own first, as for a def (see collectDef)
     const mangledKey = `${decl.ident}$${decl.span.start}`
-    const sym = this.checkResult.symbols.get(decl.ident) ?? this.checkResult.symbols.get(mangledKey)
+    const sym = this.checkResult.symbols.get(mangledKey) ?? this.checkResult.symbols.get(decl.ident)
     if (!sym || sym.kind !== 'def') return
 
     const offset = this.findDataIdentOffset(decl)
@@ -1047,16 +1048,9 @@ class MetaBuilder {
 
   private generateHintsForTestItems(decl: AST.TestDecl): void {
     // Collect locals from test body statements
+    // The blocks of a loop, an if or a match, as in a function's body
     for (const item of decl.children) {
-      if (item.kind === 'LetStmt') {
-        this.collectLocal(item.pattern)
-      }
-      if (item.kind === 'ForStmt') this.collectForBinding(item.binding)
-      if (item.kind !== 'FuncDecl' && 'body' in item && item.body.kind === 'Block') {
-        this.collectLocalsFromBlock(item.body)
-      }
-      // The blocks of an if or a match, as in a function's body
-      if (item.kind === 'ExpressionStmt') this.collectLocalsFromExpr(item.expr)
+      if (!DECLARATION_ITEMS.has(item.kind)) this.collectLocalsOfStmt(item as AST.Statement)
     }
     for (const item of decl.children) {
       switch (item.kind) {
@@ -1085,11 +1079,20 @@ class MetaBuilder {
     }
   }
 
+  // The symbol listed for the declaration the checker recorded at an offset,
+  // of a kind: the one a declaration's own name is, where another one of the
+  // name is listed after it (a test's function and its import of the name,
+  // the second refused)
+  private ownSymbolAt(offset: number, kind: MetaSymbol['kind']): number | undefined {
+    const index = this.checkResult.references.has(offset) ? this.symbolIndexByDef.get(offset) : undefined
+    return index !== undefined && this.symbols[index]?.kind === kind ? index : undefined
+  }
+
   private generateHintsForImport(decl: AST.ImportDecl): void {
     for (const item of decl.items) {
       if (item.item.kind === 'ImportFunc') {
         const name = item.item.ident ?? item.name
-        const symbolIndex = this.symbolIndexByName.get(this.checkResult.funcNames.get(item.item) ?? name)
+        const symbolIndex = this.ownSymbolAt(item.item.span.start, 'func') ?? this.symbolIndexByName.get(this.checkResult.funcNames.get(item.item) ?? name)
         if (symbolIndex !== undefined) {
           const offset = this.findImportFuncOffset(item, name)
           this.addHint(offset, name.length, this.symbols[symbolIndex].type, symbolIndex)
@@ -1105,9 +1108,11 @@ class MetaBuilder {
   }
 
   private generateHintsForFunc(decl: AST.FuncDecl): void {
-    // Handle named functions
+    // Handle named functions: by its declaration, where the checker recorded
+    // it there, and by its name otherwise (another declaration of the name
+    // in its test, refused, is listed after it, see ownSymbolAt)
     if (decl.ident) {
-      const symbolIndex = this.symbolIndexByName.get(this.checkResult.funcNames.get(decl) ?? decl.ident)
+      const symbolIndex = this.ownSymbolAt(this.checked(decl).span.start, 'func') ?? this.symbolIndexByName.get(this.checkResult.funcNames.get(decl) ?? decl.ident)
       if (symbolIndex !== undefined) {
         // Hint for function name
         const offset = this.findFuncIdentOffset(decl)
@@ -1260,6 +1265,9 @@ class MetaBuilder {
 
     switch (expr.kind) {
       case 'IdentExpr': {
+        // A name that is none where it is used (a function only a test
+        // declares, given outside the test) has nothing to show
+        if (this.checkResult.unseen?.has(expr.span.start)) break
         const symbolIndex = this.usedSymbol(expr)
         // Check for builtin functions when no symbol is found
         const effectiveType = type ?? BUILTIN_SIGNATURES[expr.name]

@@ -846,4 +846,160 @@ test "a\`b" {
     expect(refs(blocks.indexOf('hostg() -> u32'))).toEqual([line(blocks.indexOf('func hostg')), line(blocks.indexOf('apply(hostg'))])
     expect(hover(blocks.indexOf('gh(y'))).toContain('nested in ``gapply(f = test "a`b".plus)``')
   })
+
+  // A block of an if or a match anywhere in a statement holds nested
+  // functions as a statement's does: a let's value, a returned value, an
+  // arrow body, an assert's operand
+  test('hover, definition and references at a nested function in an if or match expression', () => {
+    const exprs = `export func m1(z: u32) -> u32 {
+  let r: u32 = if z == 1 {
+    func a() -> u32 => z + 1
+    a()
+  } else { 0 }
+  return r
+}
+export func m2(z: u32) -> u32 {
+  return match z {
+    1 => {
+      func b() -> u32 => z
+      b()
+    }
+    _ => 0
+  }
+}
+export func m3(z: u32) -> u32 => if z > 0 {
+  func c() -> u32 => z
+  c()
+} else { 0 }
+test "exprs" {
+  let z: u32 = 1
+  let r: u32 = if z == 1 {
+    func inlet() -> u32 => z + 1
+    inlet()
+  } else { 0 }
+  assert r == 2
+  assert (match z {
+    1 => {
+      func inmatch() -> u32 => z
+      inmatch()
+    }
+    _ => 0
+  }) == 1
+}
+`
+    const hover = hoverIn(exprs)
+    const ask = serverFor(exprs)
+    const line = (offset: number) => exprs.slice(0, offset).split('\n').length - 1
+    const def = (offset: number) => (ask('onDefinition', offset) as Location | null)?.range.start.line
+    const refs = (offset: number) => (ask('onReferences', offset, { context: { includeDeclaration: true } }) as Location[] | null)?.map((l) => l.range.start.line)
+    expect(hover(exprs.indexOf('a() ->'))).toContain('nested in `m1`; captures z')
+    expect(def(exprs.indexOf('a()\n'))).toBe(line(exprs.indexOf('func a')))
+    expect(refs(exprs.indexOf('a() ->'))).toEqual([line(exprs.indexOf('func a')), line(exprs.indexOf('a()\n'))])
+    expect(hover(exprs.indexOf('b() ->'))).toContain('nested in `m2`; captures z')
+    expect(hover(exprs.indexOf('c() ->'))).toContain('nested in `m3`; captures z')
+    expect(hover(exprs.indexOf('inlet() ->'))).toContain('nested in `test "exprs"`; captures z')
+    expect(def(exprs.indexOf('inlet()\n'))).toBe(line(exprs.indexOf('func inlet')))
+    expect(hover(exprs.indexOf('inmatch() ->'))).toContain('nested in `test "exprs"`; captures z')
+  })
+
+  // A label or a type that holds a backtick (a test's name) is a code span of
+  // its own in what hover lists: what it calls and what it is per instance
+  test('hover keeps each label and type with a backtick in it one code span', () => {
+    const ticks = `func gapply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+test "a\`b" {
+  let z: u32 = 1
+  func plus(x: u32) -> u32 => x + z
+  assert gapply(plus, 1) == 2
+}
+`
+    const hover = hoverIn(ticks)
+    expect(hover(ticks.indexOf('gapply(plus'))).toContain('calls ``gapply(f = test "a`b".plus)``')
+    expect(hover(ticks.indexOf('f(x)'))).toContain('- in ``gapply(f = test "a`b".plus)``: ``test "a`b".plus(x:u32) -> u32``')
+  })
+
+  // A function and an import of one name in a test: the second is refused,
+  // and at each declaration's own name is that declaration
+  test('definition at a test\'s function or import whose name the next declaration was refused', () => {
+    const funcFirst = `test "t" {
+  func c1() -> u32 => 4
+  import "env" "c1" func c1() -> u32
+  assert c1() == 4
+}
+`
+    const ask = serverFor(funcFirst)
+    const line = (text: string, offset: number) => text.slice(0, offset).split('\n').length - 1
+    const at = funcFirst.indexOf('c1() -> u32 =>')
+    expect((ask('onDefinition', at) as Location | null)?.range.start.line).toBe(line(funcFirst, at))
+    expect((ask('onReferences', at, { context: { includeDeclaration: true } }) as Location[] | null)?.map((l) => l.range.start.line)).toEqual([line(funcFirst, at)])
+    const importFirst = `test "t" {
+  import "env" "c1" func c1() -> u32
+  func c1() -> u32 => 4
+  assert c1() == 4
+}
+`
+    const ask2 = serverFor(importFirst)
+    const imported = importFirst.indexOf('c1() -> u32\n')
+    expect((ask2('onDefinition', imported) as Location | null)?.range.start.line).toBe(line(importFirst, imported))
+  })
+
+  // A nested function in a generic's body is one in each instance: hover
+  // names the generic and what it captures in each
+  test('hover at a nested function of a generic lists what it captures in each instance', () => {
+    const generic = `func gapply(comptime f: (u32) -> u32, x: u32) -> u32 {
+  let v: u32 = x
+  func gh(y: u32) -> u32 => f(y + v)
+  return gh(x)
+}
+func modf(x: u32) -> u32 => x + 1
+export func usemod(n: u32) -> u32 {
+  func addn(x: u32) -> u32 => x + n
+  return gapply(addn, 1) + gapply(modf, 2)
+}
+`
+    const hover = hoverIn(generic)
+    const shown = hover(generic.indexOf('gh(y'))
+    expect(shown).toContain('nested in `gapply`')
+    expect(shown).toContain('- in `gapply(f = usemod.addn)`: captures v, n')
+    expect(shown).toContain('- in `gapply(f = modf)`: captures v')
+  })
+
+  // A name only a test declares, given for a comptime function parameter
+  // outside the test, is no function there (12.4): hover finds nothing
+  test('hover at a comptime argument that names a function only a test declares', () => {
+    const only = `func apply(comptime k: () -> u32) -> u32 => k()
+test "declares tf" {
+  func tf() -> u32 => 2
+  assert apply(tf) == 2
+}
+export func below() -> u32 => apply(tf)
+`
+    const hover = hoverIn(only)
+    const ask = serverFor(only)
+    expect(hover(only.lastIndexOf('apply(tf') + 6)).toBeNull()
+    expect(ask('onDefinition', only.lastIndexOf('apply(tf') + 6)).toBeNull()
+    expect(hover(only.indexOf('apply(tf') + 6)).toContain('func tf() -> u32')
+  })
+
+  // A test's data and def are its own: in the test they are the test's, and
+  // module code after it has the module's, also for references
+  test('hover and references at a test\'s data and def named like the module\'s', () => {
+    const named = `data buf = [1:u8, 2, 3]
+def k = 4
+test "takes" {
+  data buf = [9:u16, 9]
+  def k = 5
+  assert buf[1] == 9 && k == 5
+}
+export func below() -> u32 => buf[2] as u32 + k
+`
+    const hover = hoverIn(named)
+    const ask = serverFor(named)
+    const line = (offset: number) => named.slice(0, offset).split('\n').length - 1
+    const refs = (offset: number) => (ask('onReferences', offset, { context: { includeDeclaration: true } }) as Location[] | null)?.map((l) => l.range.start.line)
+    expect(hover(named.indexOf('buf[1]'))).toContain('*[2]u16')
+    expect(hover(named.indexOf('k = 5'))).toContain('= 5')
+    expect(hover(named.indexOf('buf[2]'))).toContain('*[3]u8')
+    expect(refs(named.indexOf('buf ='))).toEqual([0, line(named.indexOf('buf[2]'))])
+    expect(refs(named.indexOf('buf = [9'))).toEqual([line(named.indexOf('buf = [9')), line(named.indexOf('buf[1]'))])
+  })
 })

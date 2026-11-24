@@ -133,14 +133,16 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
 // What a hint says beyond its type, below it: for x.f(a) the call it is, the
 // function a call calls (an instance of a generic), and what the name is in
 // each instance (each application, for a generic type).
+// The labels and types it names hold test names, which may hold backticks:
+// each is a code span of its own (codeSpan).
 function hintDetails(hint: MetaHint, meta: MetaOutput): string {
   const parts: string[] = [];
-  const call = hint.as !== undefined ? `the call \`${hint.as}\`` : '';
-  if (hint.calls !== undefined) parts.push(call ? `${call}, which calls \`${hint.calls}\`` : `calls \`${hint.calls}\``);
+  const call = hint.as !== undefined ? `the call ${codeSpan(hint.as)}` : '';
+  if (hint.calls !== undefined) parts.push(call ? `${call}, which calls ${codeSpan(hint.calls)}` : `calls ${codeSpan(hint.calls)}`);
   else if (call) parts.push(call);
   const listed = (hint.instances ?? []).map(i => {
     const type = formatLine(meta.types[i.type]?.type ?? 'unknown');
-    return `- in ${i.in.map(n => `\`${n}\``).join(', ')}: \`${type}\``;
+    return `- in ${i.in.map(n => codeSpan(n)).join(', ')}: ${codeSpan(type)}`;
   });
   if (hint.more !== undefined) listed.push(`- and ${hint.more} more instance${hint.more === 1 ? '' : 's'}`);
   if (listed.length > 0) parts.push(listed.join('\n'));
@@ -157,7 +159,9 @@ function nestedDetails(analysis: Analysis, offset: number): string {
     ...(found?.captures !== undefined ? [`captures ${found.captures}`] : []),
     ...(found?.capturedFrom !== undefined ? [`captured from ${codeSpan(found.capturedFrom)}`] : []),
   ];
-  return parts.length > 0 ? `\n\n${parts.join('; ')}` : '';
+  // One in a generic's body: what it captures in each instance
+  const listed = (found?.capturesIn ?? []).map((i) => `- in ${i.in.map((n) => codeSpan(n)).join(', ')}: captures ${i.type}`);
+  return (parts.length > 0 ? `\n\n${parts.join('; ')}` : '') + (listed.length > 0 ? `\n\n${listed.join('\n')}` : '');
 }
 
 // Markdown code of `text`, which may hold backticks (a test's name is any
@@ -774,6 +778,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     // Look up hint from meta FIRST (handles type punning and other resolved
     // types), in an analysis of the text as it is now that sees this name
     const cached = analysisOf(params.textDocument.uri, text);
+    // A name that is none where it is used (a function only a test declares,
+    // given outside the test) is nothing there, whatever has the name
+    if (cached?.check.unseen?.has(wordInfo.start)) return null;
     const known = cached !== null && answersAt(cached, wordInfo.start);
     if (cached && known) {
       const { meta } = cached;

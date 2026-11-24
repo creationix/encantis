@@ -3197,4 +3197,138 @@ test "grp2" {
       await rm(dir, { recursive: true })
     }
   })
+
+  // The editor at a name that is none where it is used, a function only a
+  // test declares given outside the test (12.4), finds nothing
+  test('hover, definition and references find nothing at a function only a test declares, given outside it', () => {
+    const source = `func apply(comptime k: () -> u32) -> u32 => k()
+test "declares tf" {
+  func tf() -> u32 => 2
+  assert apply(tf) == 2
+}
+export func below() -> u32 => apply(tf)
+func gen(comptime T: type) -> u32 => apply(tf)
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    for (const at of [source.indexOf('apply(tf)\n') + 6, source.lastIndexOf('apply(tf)') + 6]) {
+      expect(hover(source, parsed.module!, result, at)).toBeNull()
+      expect(gotoDefinition(source, parsed.module!, result, at)).toBeNull()
+      expect(findReferences(source, parsed.module!, result, at)).toBeNull()
+      expect(rename(source, parsed.module!, result, at)).toBeNull()
+    }
+    // In the test it is the test's
+    expect(hover(source, parsed.module!, result, source.indexOf('apply(tf)') + 6)?.name).toBe('tf')
+  })
+
+  // A test's data or def is its own: module code after the test uses the
+  // module's, and the editor finds the module's there
+  test('references of the module\'s data are those of module code after a test declares its own', () => {
+    const source = `data buf = [1:u8, 2, 3]
+test "takes" {
+  data buf = [9:u16, 9]
+  def k = 5
+  assert buf[1] == 9 && k == 5
+}
+export func below() -> u32 => buf[2] as u32
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    const lines = (r: ReturnType<typeof findReferences>) => r?.references.map((l) => source.slice(0, l.offset).split('\n').length)
+    expect(lines(findReferences(source, parsed.module!, result, source.indexOf('buf ')))).toEqual([7])
+    expect(lines(findReferences(source, parsed.module!, result, source.indexOf('buf = [9')))).toEqual([5])
+    expect(hover(source, parsed.module!, result, source.indexOf('buf[1]'))?.type).toBe('*[2]u16')
+    expect(hover(source, parsed.module!, result, source.indexOf('k == 5'))?.value).toBe('5')
+    expect(hover(source, parsed.module!, result, source.indexOf('buf[2]'))?.type).toBe('*[3]u8')
+  })
+
+  // A keyword is no name: the first keyword of a declaration, where the
+  // checker records it, is not the name declared after it
+  test('hover, definition and rename find nothing at a declaration\'s keyword', () => {
+    const source = `export inline func helper(x: u32) -> u32 => x + 1
+test "t" {
+  func helper(x: u32) -> u32 => x + 100
+  assert helper(1) == 101
+}
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    for (const word of ['export', 'inline', 'func']) {
+      const at = source.indexOf(word)
+      expect(hover(source, parsed.module!, result, at)).toBeNull()
+      expect(gotoDefinition(source, parsed.module!, result, at)).toBeNull()
+      expect(rename(source, parsed.module!, result, at)).toBeNull()
+    }
+    expect(hover(source, parsed.module!, result, source.indexOf('helper'))?.name).toBe('helper')
+  })
+
+  // A label is cut between characters and outside a string's escapes
+  test('a long label is cut between characters', () => {
+    const name = `${'x'.repeat(46)}\u{1F600}\u{1F600}\u{1F600}\u{1F600}`
+    const source = `func gapply(comptime f: (u32) -> u32, x: u32) -> u32 {
+  func gh(y: u32) -> u32 => f(y)
+  return gh(x)
+}
+test "${name}" {
+  let z: u32 = 1
+  func plus(x: u32) -> u32 => x + z
+  assert gapply(plus, 1) == 2
+}
+test "${'y'.repeat(44)}\\u{1}\\u{1}\\u{1}" {
+  let z: u32 = 1
+  func plus2(x: u32) -> u32 => x + z
+  assert gapply(plus2, 1) == 2
+}`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    const labels = result.instances.map((i) => i.label)
+    expect(labels).toEqual([
+      `gapply(f = test "${'x'.repeat(46)}\u{1F600}\u{1F600}...)`,
+      // Not \u{1}\u, which cut 57 characters from the start
+      `gapply(f = test "${'y'.repeat(44)}\\u{1}...)`,
+    ])
+    expect(labels.every((label) => label.isWellFormed())).toBe(true)
+  })
+
+  // At a nested function in a generic's body: nested in the generic, and
+  // what it captures in each instance
+  test('hover at a nested function of a generic names what it captures in each instance', () => {
+    const source = `func gapply(comptime f: (u32) -> u32, x: u32) -> u32 {
+  let v: u32 = x
+  func gh(y: u32) -> u32 => f(y + v)
+  return gh(x)
+}
+func modf(x: u32) -> u32 => x + 1
+export func usemod(n: u32) -> u32 {
+  func addn(x: u32) -> u32 => x + n
+  return gapply(addn, 1) + gapply(modf, 2)
+}
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    expect(hoverText(hover(source, parsed.module!, result, source.indexOf('gh(y'))!)).toBe(
+      'func gh: func(y: u32) -> u32 — nested in gapply; in gapply(f = usemod.addn): captures v, n; in gapply(f = modf): captures v',
+    )
+  })
+
+  // A function of another module given for a comptime parameter is named by
+  // its name there and its file, as the instance's label names it
+  test('hover names a function of another module given to a generic by its name and file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-nested-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), 'export func g(x: u32) -> u32 => x + 1')
+      const source = `import "./lib.ents" ("g" func mg(x: u32) -> u32)
+func gapply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+export func m() -> u32 => gapply(mg, 1)
+`
+      const path = join(dir, 'main.ents')
+      await writeFile(path, source)
+      const load = await loadModule(path, { includeTests: true })
+      const result = typecheckProgram(load.modules, path, { includeTests: true }).results.get(path)!
+      const module = load.modules.get(path)!.module
+      expect(hover(source, module, result, source.indexOf('f(x)'))?.instances).toEqual([{ in: ['gapply(f = g (lib.ents))'], type: 'g (lib.ents)(x: u32) -> u32' }])
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
 })

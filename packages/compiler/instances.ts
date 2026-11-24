@@ -461,8 +461,13 @@ export function ownName(
     const list = listing(views, (v) => v.info.label, (v) => {
       const value = v.bound.get(name)
       // A nested function, or a function of a test, by the name its source
-      // gives it (by_low_bits, by_distance.closer), not its WAT name
-      return value?.kind === 'func' ? signed(value.shown ?? declaredName(value.name), value.type) : undefined
+      // gives it (by_low_bits, by_distance.closer), not its WAT name, and a
+      // function of another module by its name there and its file, as the
+      // instance's label names it: inc (b.ents), not inc@b
+      if (value?.kind !== 'func') return undefined
+      const extern = value.shown === undefined ? check.externs.get(value.name) : undefined
+      const shown = value.shown ?? (extern ? `${extern.name} (${extern.module.replace(/^.*[\\/]/, '')})` : declaredName(value.name))
+      return signed(shown, value.type)
     })
     return { kind: 'comptime parameter', type: source.slice(param.type.span.start, param.type.span.end), ...listed(list) }
   }
