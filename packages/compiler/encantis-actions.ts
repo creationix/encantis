@@ -439,6 +439,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
       kind: 'FuncDecl',
       inline: inlineOpt.sourceString !== '',
       ident: first(identOpt),
+      ...(identOpt.children[0] ? { identSpan: span(identOpt.children[0]) } : {}),
       signature: sig.toAST(),
       body: body.toAST(),
       span: span(this),

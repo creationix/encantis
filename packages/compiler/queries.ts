@@ -623,8 +623,8 @@ function nestedSymbols(source: string, checkResult: TypeCheckResult, decl: AST.F
       const inner = node as AST.FuncDecl
       if (!inner.ident) return
       const nested = typed.get(inner.span.start)
-      const keyword = /^(?:inline\s+)?func\s+/.exec(source.slice(inner.span.start, inner.span.start + 200))
-      const at = keyword ? inner.span.start + keyword[0].length : inner.span.start
+      const keyword = inner.identSpan ? null : /^(?:inline\s+)?func\s+/.exec(source.slice(inner.span.start, inner.span.start + 200))
+      const at = inner.identSpan?.start ?? (keyword ? inner.span.start + keyword[0].length : inner.span.start)
       const name = `${within}.${inner.ident}`
       found.push({ name, kind: 'func', type: nested ? typeToString(nested.type) : '', offset: at, length: inner.ident.length, exported: false })
       walk(inner.body, name)

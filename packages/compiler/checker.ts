@@ -8636,21 +8636,19 @@ class CheckContext {
   }
 
   private checkBlockAgainst(body: AST.Block, expected: ResolvedType): void {
-    {
-      for (let i = 0; i < body.stmts.length - 1; i++) {
-        this.checkStmt(body.stmts[i])
-      }
-      const last = body.stmts[body.stmts.length - 1]
-      if (last?.kind === 'ExpressionStmt') {
-        this.statementExprs.delete(last.expr)
-        this.checkExpr(last.expr, expected)
-        return
-      }
-      if (last) this.checkStmt(last)
-      const wanted = expected.kind !== 'void' && !(expected.kind === 'tuple' && expected.fields.length === 0)
-      if (wanted && !bodyExits(body)) {
-        this.error(last?.span.start ?? body.span.start, `this branch has no value: expected ${typeToString(expected)}`)
-      }
+    for (let i = 0; i < body.stmts.length - 1; i++) {
+      this.checkStmt(body.stmts[i])
+    }
+    const last = body.stmts[body.stmts.length - 1]
+    if (last?.kind === 'ExpressionStmt') {
+      this.statementExprs.delete(last.expr)
+      this.checkExpr(last.expr, expected)
+      return
+    }
+    if (last) this.checkStmt(last)
+    const wanted = expected.kind !== 'void' && !(expected.kind === 'tuple' && expected.fields.length === 0)
+    if (wanted && !bodyExits(body)) {
+      this.error(last?.span.start ?? body.span.start, `this branch has no value: expected ${typeToString(expected)}`)
     }
   }
 
@@ -10307,6 +10305,8 @@ class CheckContext {
     const source = this.source
     const base = decl.span.start % INSTANCE_STRIDE
     const shift = decl.span.start - base
+    // Where the parser saw the name, at the instance's offsets in an instance
+    if (decl.ident && decl.identSpan) return shift + (decl.identSpan.start % INSTANCE_STRIDE)
     if (source && decl.ident) {
       const found = /^(?:inline\s+)?func\s+/.exec(source.slice(base, base + 200))
       if (found && source.startsWith(decl.ident, base + found[0].length)) return shift + base + found[0].length

@@ -96,6 +96,8 @@ export interface FuncDecl extends BaseNode {
   kind: 'FuncDecl'
   inline: boolean
   ident: string | null
+  // Where its name stands, when it has one
+  identSpan?: Span
   signature: FuncSignature
   body: FuncBody
 }
