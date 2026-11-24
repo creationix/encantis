@@ -1228,6 +1228,11 @@ class CheckContext {
   // The same by symbol: a test's function that takes the name of one of the
   // module's replaces it in module scope, and its name is then no new name.
   testDeclared = new Set<Symbol>()
+  // The test that put each of those in module scope, and the tests being
+  // checked, the current one last after the groups around it: a name another
+  // test declared is no name of the module's for this one (see ofAnotherTest)
+  private declaredInTest = new WeakMap<Symbol, AST.TestDecl>()
+  private openTests: AST.TestDecl[] = []
   // The name the output gives each function a test declares at its top, by
   // its symbol: what an instance given it calls (N37)
   testFuncNames = new Map<Symbol, string>()
@@ -3154,7 +3159,12 @@ class CheckContext {
       kind: 'test' as const, shown: `test "${decl.name ?? ''}"`, path: id, shownPath: id,
       owner: decl, signature: null, body: decl.children, nested: null, instance: null, inTest: true,
     }
-    this.inFrame(frame, false, () => this.checkTestItems(decl, testScope, id, isGroup))
+    this.openTests.push(decl)
+    try {
+      this.inFrame(frame, false, () => this.checkTestItems(decl, testScope, id, isGroup))
+    } finally {
+      this.openTests.pop()
+    }
     this.currentScope = prevScope
     this.settleLiterals()
     // A test of statements is a function of its own (nested tests and the
@@ -3188,9 +3198,12 @@ class CheckContext {
           break
         case 'ImportDecl': {
           const from = this.errors.length
-          const known = new Set(this.moduleScope.symbols.keys())
+          const known = new Map(this.moduleScope.symbols)
           this.collectImport(item, true)
-          for (const name of this.moduleScope.symbols.keys()) if (!known.has(name)) this.testOnly.add(name)
+          for (const [name, sym] of this.moduleScope.symbols) {
+            if (!known.has(name)) this.testOnly.add(name)
+            if (known.get(name) !== sym) this.declaredInTest.set(sym, decl)
+          }
           for (const imported of item.items) {
             if (imported.item.kind === 'ImportFunc') once(imported.item.ident ?? imported.name, imported.span.start, from)
             if (imported.item.kind === 'ImportGlobal') once(imported.item.ident, imported.span.start, from)
@@ -3241,7 +3254,10 @@ class CheckContext {
           if (item.ident && !this.moduleScope.symbols.has(item.ident)) this.testOnly.add(item.ident)
           {
             const from = this.errors.length
+            const before = item.ident ? this.moduleScope.symbols.get(item.ident) : undefined
             this.collectFunc(item, true)
+            const after = item.ident ? this.moduleScope.symbols.get(item.ident) : undefined
+            if (after && after !== before) this.declaredInTest.set(after, decl)
             once(item.ident ?? undefined, item.span.start, from)
           }
           // Not one that was refused the name: the module's functions keep it.
@@ -10650,9 +10666,14 @@ class CheckContext {
     return null
   }
 
-  // Whether a name the module scope has is one a test declared, outside it
+  // Whether a name the module scope has is one a test declared, outside it:
+  // outside every test, or in another test than the one being checked and
+  // the groups around it (12.4: two tests each declare a function of a name)
   private ofAnotherTest(sym: Symbol, name: string): boolean {
-    return !this.frame?.inTest && sym === this.moduleScope.symbols.get(name) && this.testOnly.has(name)
+    if (sym !== this.moduleScope.symbols.get(name) || !this.testOnly.has(name)) return false
+    if (!this.frame?.inTest) return true
+    const by = this.declaredInTest.get(sym)
+    return by !== undefined && !this.openTests.includes(by)
   }
 
   // The variables a nested function captures and writes, and the uses of
