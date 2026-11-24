@@ -599,7 +599,7 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
   test('a wrong generic import is one error', async () => {
     const LIB = 'export func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32)\nexport func len(comptime T: type, v: *Vec(T)) -> u32 => v.len\nexport func plain(x: u32) -> u32 => x\n'
     const cases: [string, string][] = [
-      ['import "./lib" "Vec" func Vec(comptime T: type) -> type\nfunc Vec(comptime T: type) -> type => (ptr: [*]T)\nexport func f(v: *Vec(u32)) -> u32 => v.ptr[0]\n', "'Vec' is already declared: a generic type's name is unique in its module"],
+      ['import "./lib" "Vec" func Vec(comptime T: type) -> type\nfunc Vec(comptime T: type) -> type => (ptr: [*]T)\nexport func f(v: *Vec(u32)) -> u32 => v.ptr[0]\n', "'Vec' is already declared (first declared at 1:27)"],
       ['import "./lib" "plain" func Plain(comptime T: type) -> type\nexport func f(v: *Plain(u32)) -> u32 => 0\n', "'plain' in './lib' is not a generic type"],
       ['import "./lib" "Nope" func Nope(comptime T: type) -> type\nexport func f(v: *Nope(u32)) -> u32 => 0\n', "'Nope' is not exported from './lib'"],
       ['import "./lib" "len" func len(comptime T: type, v: *Vec(T)) -> u32\nfunc len(x: u32) -> u32 => x\n', "'len' is already declared: a generic function's name is unique in its module"],

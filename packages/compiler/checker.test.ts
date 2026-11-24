@@ -4623,8 +4623,8 @@ describe('elif let', () => {
   })
 
   test('takes what an if let takes, with its messages', () => {
-    expect(errs('func f(c: bool, p: ?*u32) -> u32 {\n if c { } elif let _ = p {\n return 1\n }\n return 0\n}')).toEqual(['if let only supports simple bindings'])
-    expect(errs(`${cells}func f(c: bool, i: u32) -> u32 {\n if c { } elif let (x, y) = cells[i] {\n return x\n }\n return 0\n}`)).toEqual(['if let only supports simple bindings'])
+    expect(errs('func f(c: bool, p: ?*u32) -> u32 {\n if c { } elif let _ = p {\n return 1\n }\n return 0\n}')).toEqual(['if let takes a name, or a variant pattern of an enum'])
+    expect(errs(`${cells}func f(c: bool, i: u32) -> u32 {\n if c { } elif let (x, y) = cells[i] {\n return x\n }\n return 0\n}`)).toEqual(['if let takes a name, or a variant pattern of an enum'])
     expect(errs('func f(c: bool, n: u32) -> u32 {\n if c { } elif let m = n {\n return m\n }\n return 0\n}')).toEqual(['if let requires an optional expression or bounds-checked index'])
     expect(errs('func f(c: bool, mp: [*]i32, i: u32) {\n if c { } elif let b = mp[i] { }\n}'))
       .toEqual(['if let has nothing to check here: [*]i32 has no length, so its index is never checked — index it directly'])

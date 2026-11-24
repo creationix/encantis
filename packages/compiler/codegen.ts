@@ -16,6 +16,7 @@ import {
   primitiveByteSize,
   byteSize,
   totalElements,
+  wasmTypes,
 } from './types'
 import * as RT from './types'
 import { dataToWat, buildDataSection, buildProgramDataSection, literalLength, type DataRef, type DataSectionBuilder } from './data-pack'
@@ -125,76 +126,7 @@ const scratchId = (offset: number): number => offset % INSTANCE_STRIDE
  * Comptime types should have been concretized before calling this.
  */
 export function typeToWasm(t: ResolvedType): string[] {
-  const u = unwrap(t)
-
-  switch (u.kind) {
-    case 'primitive': {
-      // i8, i16, u8, u16, i32, u32, bool → i32
-      // i64, u64 → i64
-      // f32 → f32, f64 → f64
-      if (['i8', 'i16', 'u8', 'u16', 'i32', 'u32', 'bool'].includes(u.name)) {
-        return ['i32']
-      }
-      if (['i64', 'u64'].includes(u.name)) {
-        return ['i64']
-      }
-      if (u.name === 'f32') return ['f32']
-      if (u.name === 'f64') return ['f64']
-      // Large integers: flatten to multiple i64 values
-      const size = primitiveByteSize(u)
-      if (size !== null && size >= 16) {
-        return Array(size / 8).fill('i64')
-      }
-      throw new Error(`Unknown primitive type: ${u.name}`)
-    }
-
-    case 'pointer':
-      return ['i32'] // Pointers are i32 indices
-
-    case 'slice':
-      // Slices are fat pointers: (ptr, len)
-      return ['i32', 'i32']
-
-    case 'array':
-      if (u.sizes && u.sizes.length === 1 && typeof u.sizes[0] === 'number') {
-        const elemTypes = typeToWasm(u.element)
-        return Array(u.sizes[0]).fill(elemTypes).flat()
-      }
-      // Non-value arrays (many-pointer, framed) are pointers
-      return ['i32']
-
-    case 'comptime_array': {
-      const elemTypes = typeToWasm(u.element)
-      return Array(u.count).fill(elemTypes).flat()
-    }
-
-    case 'tuple':
-      // Flatten all fields
-      return u.fields.flatMap((f) => typeToWasm(f.type))
-
-    case 'func':
-      // Function references are table indices
-      return ['i32']
-
-    case 'void':
-      return []
-
-    case 'host':
-      // A host reference is wasm's opaque reference to a host value.
-      return ['externref']
-
-    case 'comptime_int':
-      throw new Error('comptime_int should be concretized before codegen')
-
-    case 'comptime_float':
-      throw new Error('comptime_float should be concretized before codegen')
-
-    case 'comptime_list':
-      throw new Error('comptime_list should be concretized before codegen')
-
-    default:
-      throw new Error(`Unknown type kind: ${(u as ResolvedType).kind}`)
-  }
+  return wasmTypes(t)
 }
 
 /**

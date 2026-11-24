@@ -2243,10 +2243,6 @@ enum Color { Red, Green, Blue }
 func f(c: Color) -> u32 => 1
 ```
 
-```errors
-unknown type 'Color'
-```
-
 <!-- spec:end -->
 
 #### The Design
@@ -7511,8 +7507,8 @@ func c(n: u32) -> u32 {
 ```
 
 ```errors
-if let only supports simple bindings
-if let only supports simple bindings
+if let takes a name, or a variant pattern of an enum
+if let takes a name, or a variant pattern of an enum
 if let requires an optional expression or bounds-checked index
 ```
 
@@ -7546,7 +7542,7 @@ func e(c: bool, p: ?*u32) -> u32 {
 ```
 
 ```errors
-if let only supports simple bindings
+if let takes a name, or a variant pattern of an enum
 if let requires an optional expression or bounds-checked index
 unknown identifier 'v'
 't' is already declared: an if let binding cannot reuse the name of a variable in scope (first declared at 17:7)

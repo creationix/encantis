@@ -1,0 +1,574 @@
+// Enums (reference 2.9): their declarations, values, the checks on them, and
+// how a match, an if let and an elif let take one apart. The wasm an enum
+// compiles to is pinned in the codegen part below.
+/** biome-ignore-all lint/style/noNonNullAssertion: this is a test, it's fine */
+import { describe, expect, test } from 'bun:test'
+import { typecheck, type TypeCheckResult } from './checker'
+import { parse } from './parser'
+import { canonicalKey, byteSize, enumLayout, enumSlots, type EnumRT, type ResolvedType, typeEquals, typeParts, typeRegisters, typeToString, unwrap, wasmTypes } from './types'
+
+function check(source: string): TypeCheckResult {
+  const result = parse(source)
+  if (result.errors.length > 0) throw new Error(`Parse error: ${result.errors[0].message}`)
+  return typecheck(result.module!, { source })
+}
+
+// Each error as line:col and its message, in the order reported
+function errors(source: string): string[] {
+  const lines = (offset: number) => {
+    const before = source.slice(0, offset).split('\n')
+    return `${before.length}:${before[before.length - 1].length + 1}`
+  }
+  return check(source).errors.map((e) => `${lines(e.offset)} ${e.message}`)
+}
+
+const COLOR = `enum Color {
+  Red,
+  Blue,
+  Green,
+  Rgb(r: u8, g: u8, b: u8),
+  Hsl(h: u8, s: u8, l: u8),
+  Grey(b: u8),
+  Darker(c: *Color)
+}
+`
+
+const JSON_ENUM = `enum Json {
+  Null,
+  Boolean(bool),
+  Number(f64),
+  String([]u8),
+  Array([]Json),
+  Object([]([]u8, Json))
+}
+`
+
+// The enum a module declares under `name`
+function enumOf(source: string, name: string): EnumRT {
+  const sym = check(source).symbols.get(name)
+  if (sym?.kind !== 'type') throw new Error(`no type ${name}`)
+  const e = unwrap(sym.type)
+  if (e.kind !== 'enum') throw new Error(`${name} is no enum`)
+  return e
+}
+
+const SHAPES = `${COLOR}${JSON_ENUM}enum Dir { North, East, South, West }
+type Point = (x: f32, y: f32)
+enum Shape { Dot(Point), Circle(at: Point, r: f32), Path([]Point) }
+enum Num { Int(i64), Float(f64), Small(f32), Pair(u8, f32) }
+enum Big { Small2(u32), Large(u128) }
+enum Paint { None, Solid(Color), Mix(Color, Color) }
+`
+
+describe('an enum in registers and in memory', () => {
+  test('the slots of 3.1, each the one type of its values, else i64 if one is 64 bits, else i32', () => {
+    const slots = (name: string) => enumSlots(enumOf(SHAPES, name)).join(' ')
+    expect(slots('Dir')).toBe('')
+    expect(slots('Color')).toBe('i32 i32 i32')
+    expect(slots('Json')).toBe('i64 i32')
+    expect(slots('Shape')).toBe('i32 i32 f32')
+    expect(slots('Num')).toBe('i64 f32')
+    expect(slots('Big')).toBe('i64 i64')
+    expect(slots('Paint')).toBe('i32 i32 i32 i32 i32 i32 i32 i32')
+    expect(wasmTypes(enumOf(SHAPES, 'Json')).join(' ')).toBe('i32 i64 i32')
+    expect(typeRegisters(enumOf(SHAPES, 'Paint'))).toBe(9)
+  })
+
+  test('the layout of 4.1: the tag, the largest payload, no alignment', () => {
+    const size = (name: string) => byteSize(enumOf(SHAPES, name))
+    expect([size('Dir'), size('Color'), size('Json'), size('Shape'), size('Num'), size('Big'), size('Paint')]).toEqual([1, 5, 9, 13, 9, 17, 11])
+    const many = (n: number) => `enum Many { ${Array.from({ length: n }, (_, i) => `V${i}`).join(' ')} }`
+    expect(enumLayout(enumOf(many(256), 'Many'))?.tagBytes).toBe(1)
+    expect(enumLayout(enumOf(many(257), 'Many'))?.tagBytes).toBe(2)
+    expect(byteSize(enumOf(many(257), 'Many'))).toBe(2)
+  })
+
+  test('identity is structural, the name aside; the key spells the structure', () => {
+    const a = enumOf('enum A { X, Y(v: u8) }', 'A')
+    const b = enumOf('enum B { X, Y(v: u8) }', 'B')
+    const c = enumOf('enum C { Y(v: u8), X }', 'C')
+    const d = enumOf('enum D { X, Y(v: u16) }', 'D')
+    expect([typeEquals(a, b), typeEquals(a, c), typeEquals(a, d)]).toEqual([true, false, false])
+    expect(canonicalKey(a)).toBe('enum(X,Y(v:u8))')
+    expect(canonicalKey(a)).toBe(canonicalKey(b))
+    expect(typeToString(a)).toBe('A')
+  })
+
+  test('the parts of 2.12: the enum 1, each variant 1, each field what it counts', () => {
+    expect(typeParts(enumOf(SHAPES, 'Dir'))).toBe(5)
+    expect(typeParts(enumOf(SHAPES, 'Color'))).toBe(17)
+  })
+
+  test('a type that refers to itself through a pointer compares as the others', () => {
+    const tree = (name: string) => enumOf(`enum ${name} { Leaf(value: i32), Node(left: *${name}, right: *${name}) }`, name) as ResolvedType
+    expect(typeEquals(tree('T1'), tree('T2'))).toBe(true)
+    expect(canonicalKey(tree('T1'))).toBe(canonicalKey(tree('T2')))
+  })
+})
+
+describe('enum declarations', () => {
+  test('the running examples are accepted', () => {
+    const source = `${COLOR}${JSON_ENUM}enum Dir { North East South West }
+type Point = (x: f32, y: f32)
+enum Shape { Dot(Point), Circle(at: Point, r: f32), Path([]Point) }
+enum Tree { Leaf(value: i32), Node(left: *Tree, right: *Tree) }
+type Hue = Color
+func f(c: Hue, j: Json, d: Dir, s: Shape, t: Tree) -> Color => c
+`
+    expect(errors(source)).toEqual([])
+  })
+
+  test('each capitalised name is declared once, the first standing (E1)', () => {
+    const source = `enum Light { Red, Amber, Green }
+enum Color { Red, Blue }
+type Amber = u32
+type P = (x: i32, y: i32)
+type P = (a: u8)
+func Vec(comptime T: type) -> type => (p: *T)
+type Vec = u32
+enum Json { Json }
+func f(p: P) -> i32 => p.x
+`
+    expect(errors(source)).toEqual([
+      "2:14 'Red' is already declared (first declared at 1:14)",
+      "3:6 'Amber' is already declared (first declared at 1:19)",
+      "5:6 'P' is already declared (first declared at 4:6)",
+      "7:6 'Vec' is already declared (first declared at 6:6)",
+      "8:13 'Json' is already declared (first declared at 8:6)",
+    ])
+  })
+
+  test('E1 is said before anything else the module has wrong', () => {
+    expect(errors('func f(x: Nope) -> u32 => 0\nenum A { X }\nenum B { X }\n')).toEqual([
+      "3:10 'X' is already declared (first declared at 2:10)",
+      "1:11 unknown type 'Nope'",
+    ])
+  })
+
+  test('an enum whose variant is refused keeps it, as its structure', () => {
+    // The pattern finds Red in B, though the name Red is A's.
+    const source = `enum A { Red }
+enum B { Red, Blue }
+func f(b: B) -> u32 => match b {
+  Red => 1
+  Blue => 2
+}
+func g() -> A => Red
+`
+    expect(errors(source)).toEqual(["2:10 'Red' is already declared (first declared at 1:10)"])
+  })
+
+  test('what is wrong in a declaration (E2 to E7)', () => {
+    const source = `enum Never {}
+enum Bad { A(x: Nope) }
+enum Twice { Rgb(r: u8, r: u8) }
+enum List { Nil, Cons(i32, List) }
+type Pair = (l: List2, n: u32)
+enum List2 { Nil2, More(Pair) }
+type Canvas = host
+enum Pen { Draw(Canvas) }
+enum Call { Fn((u32) -> u32) }
+enum Later { Hold(Box) }
+type Box = (c: Canvas2)
+type Canvas2 = host
+`
+    expect(errors(source)).toEqual([
+      "1:6 enum 'Never' has no variants",
+      "2:17 unknown type 'Nope'",
+      "3:25 Rgb: field 'r' is declared twice",
+      "4:1 type 'List' contains itself: a type can only refer to itself through a pointer or a slice",
+      "6:1 type 'List2' contains itself: a type can only refer to itself through a pointer or a slice",
+      '8:17 an enum payload cannot hold a host reference yet: Canvas, in Draw',
+      '9:16 an enum payload cannot hold a function yet: (u32) -> u32, in Fn',
+      '10:19 an enum payload cannot hold a host reference yet: Canvas2, in Hold',
+    ])
+  })
+
+  test('a type parameter cannot take a variant\'s name (E9)', () => {
+    expect(errors('enum Color { Red }\nfunc id(comptime Red: type, x: Red) -> Red => x\nfunc Box(comptime Red: type) -> type => (v: Red)\n')).toEqual([
+      // A generic type's parameters are checked first (pass 1).
+      "3:10 type parameter 'Red' has the name of a variant declared in this module",
+      "2:9 type parameter 'Red' has the name of a variant declared in this module",
+    ])
+  })
+
+  test('a variant is no type, no enum is optional, and no null-terminated array holds one (E10 to E12)', () => {
+    const source = `${COLOR}type Cell = (e: E, n: u16)
+enum E { A, B(u8) }
+func f(c: Red) -> u32 => 1
+func g(c: ?Color) -> u32 => 1
+func h(p: *[!]Color, q: *[!]Cell, r: *[2][!]Color) -> u32 => 1
+func i(p: *[?]Color, q: *[!]u8) -> u32 => 1
+func j(p: *[!]Later) -> u32 => 1
+type Later = [2]E
+`
+    expect(errors(source)).toEqual([
+      "12:11 'Red' is a variant of Color, not a type: write Color",
+      '13:11 cannot make Color optional: only a pointer, a slice or a host reference has a none',
+      '14:12 a null-terminated array of an enum is not supported yet: Color',
+      '14:26 a null-terminated array of an enum is not supported yet: Cell holds E',
+      '14:42 a null-terminated array of an enum is not supported yet: Color',
+      '16:12 a null-terminated array of an enum is not supported yet: Later holds E',
+    ])
+  })
+
+  test('a def is a number or a bool, never a variant (E13)', () => {
+    expect(errors(`${COLOR}def c = Red\ndef g = Grey(3)\n`)).toEqual([
+      '10:1 def value must be a number or a bool: Red is a value of the enum Color; use a global',
+      '11:1 def value must be a number or a bool: Grey(3) is a value of the enum Color; use a global',
+    ])
+  })
+
+  test('the type limit counts an enum, its variants and its fields (E8)', () => {
+    // 65535 unit variants, and the enum: 65536 parts, which is the limit
+    const variants = (n: number) => Array.from({ length: n }, (_, i) => `V${i}`).join(' ')
+    expect(errors(`enum Big { ${variants(65535)} }\n`)).toEqual([])
+    expect(errors(`enum Big { ${variants(65536)} }\n`)).toEqual(["1:1 type 'Big' is too large: written out in full it has more than 65536 parts"])
+  }, 60000)
+})
+
+describe('enum values', () => {
+  test('unit variants and constructors, by position, by name and mixed', () => {
+    const source = `${COLOR}func paint(level: u8, r: u8, g: u8) -> [4]Color => [Red, Grey(level), Rgb(r, b: 0, g: 0), Rgb(g:, r: 1, b: 2)]
+global last: Color = Rgb(1, 2, 3)
+global red: Color = Red
+global none: Color
+`
+    expect(errors(source)).toEqual([])
+  })
+
+  test('what a constructor is told (E14 to E18)', () => {
+    const source = `${COLOR}enum Color2 { Rgb2(r: u8, g: u8, b: u8), Grey2(u8) }
+func a() -> Color => Red()
+func b() -> Color => Rgb
+func c() -> Color => Rgb(1)
+func d() -> Color => Rgb(1, 2, x: 3)
+func e() -> Color => Rgb(1, r: 2, g: 3)
+func f(x: i32) -> Color => Rgb(x, 2, 3)
+func g() -> Color => Grey(level: 3)
+func h() -> Color2 => Grey2(level: 3)
+func i() -> Color => Color
+func j() -> Color => Color(1)
+func k() -> u32 => Purple(1)
+`
+    expect(errors(source)).toEqual([
+      '11:22 Red is a unit variant: write Red, without parentheses',
+      '12:22 Rgb carries a payload: write Rgb(r, g, b)',
+      '13:22 Rgb expects 3 fields, got 1: no value for g and b',
+      "14:32 field 'x' not found in Rgb, whose fields are r, g and b",
+      "15:29 Rgb: field 'r' is given twice",
+      '16:32 field r: cannot assign i32 to u8',
+      "17:27 field 'level' not found in Grey, whose only field is b",
+      "18:29 field 'level' not found in Grey2, whose fields have no names: give the values by position",
+      "19:22 'Color' is an enum: a value of it is one of its variants (Red, Blue, Green, Rgb, Hsl, Grey or Darker)",
+      "20:22 'Color' is an enum: a value of it is one of its variants (Red, Blue, Green, Rgb, Hsl, Grey or Darker)",
+      "21:20 unknown identifier 'Purple'",
+    ])
+  })
+
+  test('a value is no struct: no members, no destructuring (E23, E24)', () => {
+    const source = `${COLOR}func mem(c: Color) -> u8 => c.r
+func des(c: Color) -> u32 {
+  let (a, b) = c
+  return 1
+}
+`
+    expect(errors(source)).toEqual([
+      "10:29 no field 'r' on type Color: take a variant apart with match or if let",
+      '12:7 cannot destructure non-tuple type: Color',
+    ])
+  })
+
+  test('== and != compare the enums of unit variants (E19)', () => {
+    const source = `${COLOR}enum Dir { North, East, South, West }
+func is-north(d: Dir) -> bool => d == North
+func ne(d: Dir, e: Dir) -> bool => d != e
+func eqc(a: Color, b: Color) -> bool => a == b
+`
+    expect(errors(source)).toEqual(["13:41 '==' cannot be applied to Color and Color: an enum with a payload is compared with match or if let"])
+  })
+
+  test('no other operator, builtin, index, count or condition takes an enum (E20)', () => {
+    const source = `enum Dir { North, East, South, West }
+func plus(d: Dir) -> u32 { let x = d + 1
+ return 0 }
+func lt(d: Dir, e: Dir) -> bool => d < e
+func neg(d: Dir) -> u32 { let x = -d
+ return 0 }
+func not(d: Dir) -> bool => !d
+func inv(d: Dir) -> u32 { let x = ~d
+ return 0 }
+func cmp(d: Dir) { d += 1 }
+func it(d: Dir) { for i in d { } }
+func cond(d: Dir) -> u32 => if d { 1 } else { 0 }
+`
+    expect(errors(source)).toEqual([
+      "2:36 '+' cannot be applied to Dir and int(1)",
+      "4:36 '<' cannot be applied to Dir and Dir",
+      "5:35 '-' needs a number, not Dir",
+      "7:30 operand of '!' must be bool, not Dir",
+      "8:35 '~' needs an integer, not Dir",
+      "10:20 '+=' cannot be applied to Dir and int(1)",
+      '11:28 cannot iterate over Dir: use a count, a slice, or a pointer to a fixed-size array',
+      '12:32 condition must be bool, not Dir',
+    ])
+  })
+
+  test('no cast takes or gives an enum; pointers to enums cast as any pointer (E21, E22)', () => {
+    const source = `${COLOR}enum Dir { North, East }
+func a(c: Color) -> u32 => c as u32
+func b() -> Dir => 3 as Dir
+func c(c: Color) -> Color => c as Color
+func tag-of(p: *Color) -> u8 => (p as *u8).*
+func at(a: u32) -> *Color => a as *Color
+func bytes(p: *mut Color) -> [*]mut u8 => p as [*]mut u8
+`
+    expect(errors(source)).toEqual([
+      '11:28 cannot cast Color to u32: an enum is no number; match on it',
+      '12:20 cannot cast int(3) to Dir: an enum value is made by naming its variant',
+    ])
+  })
+
+  test('an argument that names a variant is a value, not a type', () => {
+    // The calls fail (too many arguments); the names in them are still
+    // recorded as uses, and are said as values.
+    const source = `${COLOR}enum Paint { None, Solid(Color), Mix(Color, Color) }
+func show(p: Paint) -> u32 => 1
+func g() -> u32 => show(Solid(Red), 1)
+func h() -> u32 => show((Red, Blue), 1)
+func id(comptime T: type, x: T) -> T => x
+func i() -> Color => id(Red, 1)
+`
+    const result = check(source)
+    expect(errors(source)).toEqual([
+      "12:20 'show' expected 1 argument, got 2",
+      "13:20 'show' expected 1 argument, got 2",
+      '13:25 argument 1: cannot assign (Color, Color) to Paint',
+      "15:25 argument 1 of 'id' must be a type: T is a type parameter",
+    ])
+    const uses = (name: string, line: number) => {
+      const lineStart = source.split('\n').slice(0, line - 1).join('\n').length + 1
+      const at = source.indexOf(name, lineStart)
+      return result.symbolRefs.has(at)
+    }
+    expect([uses('Solid', 12), uses('Red', 12), uses('Red', 13), uses('Blue', 13)]).toEqual([true, true, true, true])
+  })
+
+  test('a type name is a method call\'s receiver where the parameter is a type', () => {
+    const source = `${COLOR}type Point = (x: i32, y: i32)
+func size(comptime T: type) -> u32 => sizeof(T)
+func light(c: Color) -> u8 => 1
+func length(p: Point) -> i32 => p.x
+func a() -> u32 => Point.size()
+func b() -> u32 => Color.size()
+func c() -> u8 => Red.light()
+func d() -> u8 => Color.light()
+func e() -> i32 => Point.length()
+`
+    expect(errors(source)).toEqual([
+      "17:19 'Color' is an enum: a value of it is one of its variants (Red, Blue, Green, Rgb, Hsl, Grey or Darker)",
+      "18:20 'Point' is a type; a type can only be passed for a comptime parameter",
+    ])
+  })
+
+  test('an enum is a type argument, and a generic constructs no enum', () => {
+    const source = `${COLOR}func first-or(comptime T: type, xs: []T, d: T) -> T => xs[0] ?? d
+func make(comptime T: type) -> T => T(1, 2)
+func f(cs: []Color) -> Color => first-or(cs, Blue)
+func g() -> Color => make(Color)
+`
+    expect(errors(source)).toEqual([
+      "11:37 'Color' is an enum: a value of it is one of its variants (Red, Blue, Green, Rgb, Hsl, Grey or Darker), in make(T = Color)",
+    ])
+  })
+
+  test('two enums alike are one type, whatever their names; unlike, two', () => {
+    const source = `enum A { X, Y(u8) }
+type B = A
+func f(a: A) -> B => a
+`
+    expect(errors(source)).toEqual([])
+  })
+})
+
+describe('match on an enum', () => {
+  test('every pattern form, an arm of several patterns, a _ arm', () => {
+    const source = `${COLOR}func red-part(c: Color) -> u8 => match c {
+  Red => 255
+  Rgb(r, _, _) => r
+  Grey(b) => b
+  _ => 0
+}
+func light(c: Color) -> u8 => match c {
+  Red, Blue, Green => 128
+  Rgb(r:, g:, b:) => max(r, max(g, b))
+  Hsl(l:) => l
+  Grey(b) => b
+  Darker(c: inner) => light(inner.*) / 2
+}
+func any(c: Color) -> u8 => match c {
+  Rgb => 1
+  Red, _ => 2
+}
+`
+    expect(errors(source)).toEqual([])
+  })
+
+  test('a match misses no variant (E25)', () => {
+    expect(errors(`${COLOR}func f(c: Color) -> u8 => match c {\n  Red => 1\n  Grey(b) => b\n}\n`)).toEqual([
+      '10:27 match on Color does not handle Blue, Green, Rgb, Hsl and Darker: add an arm for each, or a _ arm',
+    ])
+  })
+
+  test('each refused pattern is one error, and its names say nothing more (E26 to E38)', () => {
+    const source = `${COLOR}enum Color2 { Rgb2(r: u8, g: u8, b: u8), Grey2(u8) }
+func errs(c: Color, n: u8) -> u8 => match c {
+  North => 1
+  Grey(0) => 2
+  Rgb(r, b:) => r
+  Rgb(r, g) => r + g
+  Red(x) => x
+  Hsl(x: q) => q
+  Hsl(h:, h:) => h
+  Rgb(r, g, b), Hsl(r, g, b) => r
+  Darker(c) => 3
+  n => n
+  q => q + 1
+  0 => 1
+  _ => 0
+}
+func pos(c: Color2) -> u8 => match c {
+  Grey2(level: x) => x
+  _ => 0
+}
+`
+    expect(errors(source)).toEqual([
+      "12:3 Color has no variant 'North': its variants are Red, Blue, Green, Rgb, Hsl, Grey and Darker",
+      '13:3 a part of a variant pattern is a name or _: compare the value in the arm',
+      '14:3 a variant pattern takes its parts all by position or all by name',
+      '15:3 Rgb has 3 fields, but the pattern has 2: give each a name or _',
+      '16:3 Red is a unit variant: its pattern is Red, without parentheses',
+      "17:3 field 'x' not found in Hsl, whose fields are h, s and l",
+      "18:3 Hsl: field 'h' is given twice",
+      '19:3 an arm of several patterns binds no names: give Rgb(r, g, b) an arm of its own',
+      "20:3 'c' is already declared: a match binding cannot reuse the name of a parameter (first declared at 11:11)",
+      "21:3 'n' is already declared: a match binding cannot reuse the name of a parameter (first declared at 11:21)",
+      '22:3 a name as the whole pattern is not implemented: write _ and use the subject',
+      '23:3 cannot match Color against int(0)',
+      "27:3 field 'level' not found in Grey2, whose fields have no names: give the parts by position",
+    ])
+  })
+
+  test('the names of a refused pattern are refused values in every use', () => {
+    const source = `${COLOR}func take(x: u8) -> u8 => x
+func f(c: Color) -> u8 {
+  let total: u8 = 0
+  match c {
+    Grey(0, k) => { total = k
+ total += k
+ return take(k) + k }
+    _ => {}
+  }
+  return total
+}
+`
+    expect(errors(source)).toEqual(['14:5 a part of a variant pattern is a name or _: compare the value in the arm'])
+  })
+
+  test('#51: a variant pattern on a value that is no enum is an error', () => {
+    const source = `type P = (x: i32, y: i32)
+func f(p: P) -> i32 => match p {
+  P(0, 0) => 1
+  _ => 0
+}
+func g(x: u32) -> u32 => match x {
+  Foo => 1
+  Bar(y) => y
+  _ => 2
+}
+func h(p: *Color) -> u8 => match p {
+  Grey(b) => b
+  _ => 0
+}
+${COLOR}`
+    expect(errors(source)).toEqual([
+      '3:3 match cannot compare a struct pattern yet: compare one field at a time',
+      '7:3 cannot match u32 against the variant pattern Foo: only an enum has variants',
+      '8:3 cannot match u32 against the variant pattern Bar: only an enum has variants',
+      '12:3 cannot match *Color against the variant pattern Grey: match what it points to, p.*',
+    ])
+  })
+
+  test('a name as the whole pattern is refused on every subject', () => {
+    expect(errors('func f(x: u32) -> u32 => match x {\n  n => 1\n}\n')).toEqual([
+      '2:3 a name as the whole pattern is not implemented: write _ and use the subject',
+    ])
+  })
+
+  test('a match whose every arm returns returns, with every variant handled', () => {
+    const source = `enum Dir { North, East, South, West }
+func code(d: Dir) -> u32 {
+  match d {
+    North => { return 1 }
+    East => { return 2 }
+    South, West => { return 3 }
+  }
+}
+`
+    expect(errors(source)).toEqual([])
+  })
+
+  test('a variant pattern in a generic is checked in each instance', () => {
+    const source = `${COLOR}func pick(comptime T: type, x: T) -> u32 => match x {
+  Red => 1
+  _ => 0
+}
+func a(c: Color) -> u32 => pick(c)
+func b(n: u32) -> u32 => pick(n)
+`
+    expect(errors(source)[0]).toBe('11:3 cannot match u32 against the variant pattern Red: only an enum has variants, in pick(T = u32)')
+  })
+})
+
+describe('if let and elif let on an enum', () => {
+  test('each pattern form', () => {
+    const source = `${COLOR}func grey-of(c: Color) -> u8 => if let Grey(b) = c { b } elif let Rgb(g:) = c { g } else { 0 }
+func red(c: Color) -> bool => if let Red = c { true } else { false }
+func at(p: *Color) -> bool => if let Rgb = p.* { true } else { false }
+func parts(c: Color) -> u8 => if let Hsl(h, _, l) = c { h + l } else { 0 }
+`
+    expect(errors(source)).toEqual([])
+  })
+
+  test('what an if let is told (E27, E28, E38 to E40)', () => {
+    const source = `${COLOR}type P = (x: i32, y: i32)
+func f(c: Color, x: u32, p: P) -> u32 {
+  if let c2 = c { return 1 }
+  if let Foo = x { return 2 }
+  if let P(a, b) = p { return 3 }
+  if let 0 = x { return 4 }
+  if let Grey(c) = c { return 5 }
+  if let North = c { return 6 }
+  return 0
+}
+`
+    expect(errors(source)).toEqual([
+      '12:3 if let requires an optional expression or bounds-checked index: Color is an enum, taken apart with a variant pattern, if let Red = c',
+      '13:3 cannot match u32 against the variant pattern Foo: only an enum has variants',
+      '14:3 if let cannot compare a struct pattern yet: take it apart with let (a, b) = p',
+      '15:3 if let takes a name, or a variant pattern of an enum',
+      "16:3 'c' is already declared: an if let binding cannot reuse the name of a parameter (first declared at 11:8)",
+      "17:3 Color has no variant 'North': its variants are Red, Blue, Green, Rgb, Hsl, Grey and Darker",
+    ])
+  })
+
+  test('a value that needs its index checked is not resolved by a variant pattern', () => {
+    const source = `${COLOR}func f(xs: []Color, i: u32) -> u8 {
+  if let Grey(b) = xs[i] { return b }
+  if let c = xs[i] { if let Grey(b) = c { return b } }
+  return 0
+}
+`
+    expect(errors(source)).toEqual(["11:23 runtime index on []Color requires 'if let' or '??' (no optional type for Color)"])
+  })
+})

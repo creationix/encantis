@@ -2041,7 +2041,7 @@ func Two(comptime Pt: type) -> type => (Pt, Pt)
 type parameter 'Pt' has the name of a type declared in this module
 ```
 
-A name that a `type` or another generic type has.
+A name that a `type` or another generic type has: the one declared second is refused, as for every capitalised name of a module, and the first stands.
 
 ```ents
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
@@ -2051,7 +2051,7 @@ func f(v: *Vec(u32), w: Vec) -> u32 => v.len
 ```
 
 ```errors
-'Vec' is already declared: a generic type's name is unique in its module
+'Vec' is already declared (first declared at 1:6)
 ```
 
 Inside a test.
