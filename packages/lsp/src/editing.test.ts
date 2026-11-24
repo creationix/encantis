@@ -354,6 +354,19 @@ export func f() -> u32 => take(pair(3))
     // not parse either, and imports nothing.)
     files.set(pathOf(main) as string, `${uses}func unfinished(\n`)
     await expect(rename()).rejects.toThrow('main.ents, which uses this module, does not parse yet, so it could not be checked')
+    // One whose import of it is in what does not parse yet: a test whose
+    // brace is not closed, which the recovery of the rest leaves out
+    const reads = 'test "reads count" {\n  import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)\n  assert pair(3).count == 3\n'
+    files.set(pathOf(main) as string, `export func g() -> u32 => 1\n${reads}`)
+    await expect(rename()).rejects.toThrow('main.ents, which uses this module, does not parse yet, so it could not be checked')
+    // ... or through another module that holds it
+    files.set(pathOf('file:///ws/mid.ents') as string, 'import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)\nexport func two() -> u32 => 2\n')
+    files.set(pathOf(main) as string, `export func g() -> u32 => 1\n${reads.replace('import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)', 'import "./mid" "two" func two() -> u32')}`)
+    await expect(rename()).rejects.toThrow('main.ents, which uses this module, does not parse yet, so it could not be checked')
+    files.delete(pathOf('file:///ws/mid.ents') as string)
+    // ... or in an import still being written
+    files.set(pathOf(main) as string, 'export func g() -> u32 => 1\nimport "./lib" (\n  "pair" func pair(n: u32) ->\n')
+    await expect(rename()).rejects.toThrow('main.ents, which uses this module, does not parse yet, so it could not be checked')
     // One that imports it, and whose program does not load
     files.set(pathOf(main) as string, `import "./gone" "g" func g() -> u32\n${uses}`)
     await expect(rename()).rejects.toThrow('main.ents, which imports this module, could not be checked: its program does not load')

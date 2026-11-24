@@ -50,7 +50,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { parse } from '@encantis/compiler/parser';
 import type { ExportDecl, ImportDecl, ImportItem, Module, Span } from '@encantis/compiler/ast';
 import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, type ProgramCheckResult, type TypeCheckResult, typecheck, typecheckProgram } from '@encantis/compiler/checker';
-import { getSourceImports, loadModule, resolveModulePath } from '@encantis/compiler/loader';
+import { getSourceImports, isSourceImport, loadModule, resolveModulePath } from '@encantis/compiler/loader';
 import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 import * as nodePath from 'path';
@@ -294,6 +294,15 @@ export interface ServerOptions {
 export interface FoundFiles {
   uris: string[];
   incomplete?: string;
+}
+
+// The source files a text that does not parse imports, as far as an import
+// of one can be read in it: `import`, comments, and the module's path. (Part
+// of a module that recovery left out, where nothing else says what it
+// imports.)
+function importedIn(text: string): string[] {
+  const found = text.matchAll(/(?<![A-Za-z0-9_-])import(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*(?:\n|$))*"((?:[^"\\\n]|\\.)*)"/g);
+  return [...found].map((m) => m[1]).filter((spec) => isSourceImport(spec));
 }
 
 // The path the loader names a document's file by: a file's path (pathOf),
@@ -1020,13 +1029,23 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         continue;
       }
       const imports = getSourceImports(module, true);
-      if (imports.length === 0) continue;
       const direct = imports.some((decl) => resolveModulePath(decl.module, path) === own);
       if (recovered) {
-        const holds = direct || (await programOf(other, recovered.text))?.sources?.has(own);
+        // What recovery left out may import it too: a test whose brace is not
+        // closed yet, an import being written. Its imports are read from the
+        // text left out, and a module one of them names holds it where that
+        // module's program does.
+        const omitted = recovered.leftOut.flatMap((span) => importedIn(text.slice(span.start, span.end))).map((spec) => resolveModulePath(spec, path));
+        let holds = direct || omitted.includes(own) || (imports.length > 0 && (await programOf(other, recovered.text))?.sources?.has(own));
+        for (const dep of omitted) {
+          if (holds) break;
+          const depText = await textOf(uriFor(dep, other));
+          holds = depText !== null && (await programOf(uriFor(dep, other), depText))?.sources?.has(own);
+        }
         if (holds) return `${file(path)}, which uses this module, does not parse yet, so it could not be checked`;
         continue;
       }
+      if (imports.length === 0) continue;
       const now = await programOf(other, text);
       if (!now) {
         if (direct) return `${file(path)}, which imports this module, could not be checked: its program does not load`;
