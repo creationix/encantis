@@ -138,6 +138,9 @@ function declaredAt(module: AST.Module, checkResult: TypeCheckResult, offset: nu
         const found = find(decl.children)
         if (found) return found
       } else if (decl.kind === 'FuncDecl') {
+        // One at the top of a test that uses the test's variables is a
+        // nested function, found where its name is recorded
+        if (checkResult.nested.has(decl)) continue
         if (decl.ident === name && offset >= decl.span.start && offset < decl.signature.span.start) return decl
       } else if (decl.kind === 'ImportDecl') {
         for (const { item: imported } of decl.items) {
@@ -318,8 +321,10 @@ function nestedAround(checkResult: TypeCheckResult, offset: number): NestedFunc 
   return found
 }
 
-// The function a nested function is declared in, as its path names it
+// The function a nested function is declared in, as its path names it, or
+// the test, as messages name it (test "t")
 function nestedParent(nested: NestedFunc): string {
+  if (nested.parent.kind === 'TestDecl') return `test "${nested.parent.name ?? ''}"`
   return nested.shown.slice(0, nested.shown.length - nested.name.length - 1)
 }
 

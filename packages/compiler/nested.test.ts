@@ -1724,6 +1724,29 @@ export func by_distance(xs: []mut i32, center: i32) -> u32 {
     expect(rename(source, module, result, compared)?.locations.map((l) => l.offset)).toEqual([compared, at('compared += 1'), at('compared + plain')])
   })
 
+  test('at the top of a test: definition, references and rename from its declaration; hover names the test', () => {
+    const src = `export func one() -> u32 => 1
+test "t" {
+  let k: u32 = 3
+  func seek() -> u32 => k
+  if true {
+    func deep() -> u32 => seek() + k
+    assert deep() == 6
+  }
+}`
+    const module = parse(src).module!
+    const result = typecheck(module, { source: src, includeTests: true })
+    const def = src.indexOf('seek()')
+    const call = src.indexOf('seek() +')
+    for (const offset of [def, call]) {
+      expect(gotoDefinition(src, module, result, offset)?.location.offset).toBe(def)
+      expect(findReferences(src, module, result, offset)?.references.map((r) => r.offset)).toEqual([call])
+      expect(rename(src, module, result, offset)?.locations.map((l) => l.offset)).toEqual([def, call])
+    }
+    expect(hoverText(hover(src, module, result, def)!)).toBe('func seek: func() -> u32 — nested in test "t"; captures k')
+    expect(hoverText(hover(src, module, result, src.indexOf('deep()'))!)).toBe('func deep: func() -> u32 — nested in test "t"; captures k')
+  })
+
   test('document symbols list it after its function, by its path', () => {
     const { module, result } = setup()
     expect(documentSymbols(source, module, result).map((s) => `${s.name}: ${s.type}`)).toEqual([

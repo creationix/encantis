@@ -460,7 +460,9 @@ export function ownName(
     // A comptime function parameter: each instance was given a function.
     const list = listing(views, (v) => v.info.label, (v) => {
       const value = v.bound.get(name)
-      return value?.kind === 'func' ? signed(declaredName(value.name), value.type) : undefined
+      // A nested function, or a function of a test, by the name its source
+      // gives it (by_low_bits, by_distance.closer), not its WAT name
+      return value?.kind === 'func' ? signed(value.shown ?? declaredName(value.name), value.type) : undefined
     })
     return { kind: 'comptime parameter', type: source.slice(param.type.span.start, param.type.span.end), ...listed(list) }
   }
