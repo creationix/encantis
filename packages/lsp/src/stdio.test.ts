@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { uriOf } from './serve'
+import { pathFor, uriOf } from './serve'
 import { sourceFiles } from './stdio'
 
 describe('the files encantis lsp finds', () => {
@@ -40,7 +40,9 @@ describe('the files encantis lsp finds', () => {
       const missing = join(dir, 'gone')
       const unread = await sourceFiles([pathToFileURL(dir).href, pathToFileURL(missing).href])
       expect(names(unread.uris, dir)).toEqual(['a.ents', 'b.ents', 'c.ents'])
-      expect(unread.incomplete).toContain(`${missing} could not be read`)
+      // The folder by its path as the server names it (on Windows, with the
+      // drive in lower case, as VS Code writes it)
+      expect(unread.incomplete).toContain(`${pathFor(pathToFileURL(missing).href)} could not be read`)
       expect((await sourceFiles([pathToFileURL(join(dir, 'a.ents')).href])).incomplete).toContain('could not be read')
       // Past the limit the rest is not looked for
       const stopped = await sourceFiles([pathToFileURL(dir).href], 2)
