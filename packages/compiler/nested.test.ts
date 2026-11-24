@@ -2845,8 +2845,7 @@ export func m3(a: u32) -> u32 => gk(a) + apply(shared)`
 
   // A function or an import declared in a test cannot take the name of an
   // import of the module (12.4), said with where the import's name is, also
-  // for the same host function again, which the module could not import
-  // twice under one name either (7.1)
+  // for the same host function again, whatever its parameters
   test('a test\'s function or import cannot take the name of an import of the module', () => {
     expect(testErrorsOf(`import "env" "e" func e() -> u32
 import "env" "f" func f() -> u32

@@ -1726,10 +1726,11 @@ class CheckContext {
           if (this.takenByAnother(name, item.span.start, 'func', inTest)) break
           // A test takes no name of an import of the module (12.4). A
           // function of another source module imported again is that one
-          // again (3.4); a host function is not, as at module level, where
-          // one imported twice under one name is refused too (7.1). A name
-          // several functions of the module share has its own message
-          // (sharedByModule).
+          // again (3.4); a host function is not, whatever its parameters
+          // (the functions of a test share no name, and the module's own
+          // second import of a name with the same parameters is refused
+          // too, 7.1). A name several functions of the module share has its
+          // own message (sharedByModule).
           const imported = `${isSource && this.filePath ? resolveModulePath(decl.module, this.filePath) : decl.module}\n${item.name}`
           const known = inTest && !this.shared(name) ? this.importedFuncs.get(name) : undefined
           if (known && (!isSource || known.key !== imported)) {
