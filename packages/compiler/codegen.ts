@@ -4293,7 +4293,7 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const paramsStr = params.join(' ')
     const resultsStr = results.length > 0 ? `(result ${results.join(' ')})` : ''
 
-    return `  (import "${moduleName}" "${item.name}" (func $${watName ?? name} ${paramsStr} ${resultsStr}))`
+    return `  (import "${moduleName}" "${item.name}" (func $${watName ?? ctx.nameMap.get(name) ?? name} ${paramsStr} ${resultsStr}))`
   }
 
   if (imp.kind === 'ImportGlobal') {
@@ -4539,6 +4539,16 @@ export function programToWat(
       if (decl.kind === 'ExportDecl' && decl.item.kind === 'GlobalDecl' && decl.item.pattern.kind === 'IdentPattern') {
         const mangled = prefix ? `${prefix}$${decl.item.pattern.name}` : decl.item.pattern.name
         modNameMap.set(decl.item.pattern.name, mangled)
+      }
+      // A host function or global is imported by each module that imports
+      // it, under the module's name for it: another module may import
+      // another one, or the same one, under that name (7.1).
+      if (decl.kind === 'ImportDecl' && !isSourceImport(decl.module) && prefix) {
+        for (const item of decl.items) {
+          const known = item.item.kind === 'ImportFunc' ? funcNames?.get(item.item) ?? item.item.ident ?? item.name
+            : item.item.kind === 'ImportGlobal' ? item.item.ident : undefined
+          if (known !== undefined) modNameMap.set(known, `${prefix}$${known}`)
+        }
       }
     }
     for (const inst of checkResults.get(path)?.instances ?? []) {
