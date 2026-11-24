@@ -752,6 +752,22 @@ test "laid over a struct of the same shape, and over the type itself" {
     expect(alloc(capacity)).toBe(base)
   })
 
+  // The stack the generics fixtures use checks as lib/stack does.
+  test("the generics fixtures' stack traps on a size near 2^32 too", async () => {
+    const fixture = resolve(import.meta.dir, 'tests/fixtures/generics/stack.ents')
+    const { instance } = await WebAssembly.instantiate(await compileToWasm(fixture), {})
+    const { mark, reset, alloc, extend } = instance.exports as Record<string, (n?: number) => number>
+    const base = mark()
+    expect(alloc(16)).toBe(base)
+    for (const call of [() => alloc(0xfffffff0), () => extend(0xfffffff8), () => reset(0)]) {
+      expect(call).toThrow(/unreachable/)
+      expect(mark()).toBe(base + 16)
+    }
+    expect(extend(65536 - 16)).toBe(base + 16)
+    expect(() => extend(1)).toThrow(/unreachable/)
+    reset(base)
+  })
+
   test('a library file compiled alone emits no generic, and exports none', async () => {
     for (const name of ['stack', 'vec', 'set', 'map', 'sort']) {
       const wat = await watOf(join(lib, `${name}.ents`))
