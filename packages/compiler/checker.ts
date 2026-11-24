@@ -13057,19 +13057,19 @@ function freeNamesOf(decl: AST.FuncDecl): Map<string, number[]> {
   return free
 }
 
-// The names a function declares itself, wherever in it, with where (N8):
-// its parameters and named results, the variables its body declares, and
-// its nested functions with the block each is seen in. The names declared
-// in its nested functions are theirs. At the top of a test, what is
-// declared there beside the statements (functions, defs, data, imports,
-// tests) is not counted: a function there that becomes a nested function of
-// the test's is added when it does (see checkTestDecl).
 // Where the first of a function's declarations of a name (ownNamesOf) is,
 // of those before `at`: what a message refusing a later one says.
 function firstOwnBefore(own: readonly OwnName[], at: number): number {
   return own.reduce((first, e) => (e.at < at && e.at < first ? e.at : first), at)
 }
 
+// The names a function declares itself, wherever in it, with where (N8):
+// its parameters and named results, the variables its body declares, and
+// its nested functions with the block each is seen in. The names declared
+// in its nested functions are theirs. At the top of a test, what is
+// declared there beside the statements (functions, defs, data, imports,
+// tests) is not counted: a function there that becomes a nested function of
+// the test's is added when it does (see checkTestItems).
 function ownNamesOf(
   signature: AST.FuncSignature | null, body: AST.FuncBody | readonly AST.TestItem[], span: AST.Span, nameAt: (decl: AST.FuncDecl) => number,
 ): Map<string, OwnName[]> {
