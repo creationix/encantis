@@ -4821,27 +4821,10 @@ class CheckContext {
       return result
     }
 
-    // Bidirectional: propagate expected type into if-expression branches
-    if (expr.kind === 'IfExpr' && !expr.pattern && expr.else_) {
-      this.checkCondition(expr.condition)
-      this.withNarrowing(this.boundsFrom(expr.condition, true), expr.thenBranch, () => this.checkBodyAgainst(expr.thenBranch, expected))
-      const seen = [expr.condition]
-      for (const elif of expr.elifs) {
-        this.withNarrowing(this.boundsAfterAllFalse(seen), elif, () => {
-          this.checkElifCondition(elif)
-          this.withNarrowing(this.boundsFrom(elif.condition, true), elif.thenBranch, () => this.checkBodyAgainst(elif.thenBranch, expected))
-        })
-        seen.push(elif.condition)
-      }
-      const else_ = expr.else_
-      this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.checkBodyAgainst(else_, expected))
-      this.exprTypes.set(expr, expected)
-      return expected
-    }
-
-    // ...and into those of an if let, where the binding is in scope.
-    if (expr.kind === 'IfExpr' && expr.pattern && expr.else_) {
-      const type = this.inferIfLet(expr, expected)
+    // Bidirectional: propagate expected type into if-expression branches,
+    // with the binding of an if let or elif let in scope in its own.
+    if (expr.kind === 'IfExpr' && expr.else_) {
+      const type = this.checkIfChain(expr, expected)
       this.exprTypes.set(expr, type)
       return type
     }
@@ -6833,18 +6816,6 @@ class CheckContext {
     this.requireBool(expr, this.inferExpr(expr), 'condition')
   }
 
-  // `elif let x = e` tests an optional, not a bool. Its names are the
-  // bindings of an `if let`, and no more free to take.
-  private checkElifCondition(elif: AST.ElifBranch): void {
-    if (elif.pattern) {
-      this.inferExpr(elif.condition)
-      for (const name of patternNames(elif.pattern)) this.bindName(this.currentScope, name, null, elif.span.start, 'if let', elif)
-      this.declare(elif)
-    } else {
-      this.checkCondition(elif.condition)
-    }
-  }
-
   // Report a condition or logical operand that isn't a bool: there is no
   // implicit truthiness.
   private requireBool(expr: AST.Expr, type: ResolvedType, what: string): void {
@@ -8139,31 +8110,7 @@ class CheckContext {
   }
 
   inferIf(expr: AST.IfExpr): ResolvedType {
-    if (expr.pattern) {
-      return this.inferIfLet(expr)
-    }
-    const valueUsed = !this.statementExprs.has(expr)
-    this.checkCondition(expr.condition)
-    const branches: Branch[] = []
-    const thenType = this.withNarrowing(this.boundsFrom(expr.condition, true), expr.thenBranch, () => this.inferBody(expr.thenBranch, valueUsed))
-    branches.push({ body: expr.thenBranch, type: thenType })
-    const seen = [expr.condition]
-    for (const elif of expr.elifs) {
-      this.withNarrowing(this.boundsAfterAllFalse(seen), elif, () => {
-        this.checkElifCondition(elif)
-        const type = this.withNarrowing(this.boundsFrom(elif.condition, true), elif.thenBranch, () => this.inferBody(elif.thenBranch, valueUsed))
-        branches.push({ body: elif.thenBranch, type })
-      })
-      seen.push(elif.condition)
-    }
-    if (expr.else_) {
-      const else_ = expr.else_
-      const type = this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.inferBody(else_, valueUsed))
-      branches.push({ body: else_, type })
-    }
-    // Without an else branch, the expression can't produce a value
-    if (!expr.else_) return VOID
-    return this.unifyBranches(branches, valueUsed)
+    return this.checkIfChain(expr)
   }
 
   // The type of an if or match with no expected type: the one type every
@@ -8247,64 +8194,86 @@ class CheckContext {
     return { type, odd: types.find(t => !typeAssignable(type, t)) }
   }
 
+  // An if, its elif branches and its else: the branches are tried in order,
+  // each by a condition or, in an `if let` or `elif let`, by a value that
+  // may have none (ifLetArm). A condition narrows in its own branch, and in
+  // the later branches where it is false (Ranged Integers); the value of an
+  // `if let` or `elif let` is no condition, and narrows nothing.
   // expected: the type the value is used as, when the context gives one.
-  // Each branch is then checked against it, as in a plain if; without one
-  // the branches settle on a type between them.
-  inferIfLet(expr: AST.IfExpr, expected?: ResolvedType): ResolvedType {
-    const pattern = expr.pattern
-    if (!pattern || pattern.kind !== 'binding') {
-      this.error(expr.span.start, 'if let only supports simple bindings')
-      return VOID
-    }
+  // Each branch is then checked against it; without one the branches settle
+  // on a type between them, all of them together.
+  private checkIfChain(expr: AST.IfExpr, expected?: ResolvedType): ResolvedType {
     const valueUsed = !this.statementExprs.has(expr)
     const branches: Branch[] = []
     const branch = (body: AST.FuncBody) => {
       if (expected) this.checkBodyAgainst(body, expected)
       else branches.push({ body, type: this.inferBody(body, valueUsed) })
     }
+    let bound = true
+    const seen: AST.Expr[] = []
+    for (const arm of [expr, ...expr.elifs]) {
+      this.withNarrowing(this.boundsAfterAllFalse(seen), arm, () => {
+        if (arm.pattern) {
+          bound = this.ifLetArm(arm, () => branch(arm.thenBranch)) && bound
+          return
+        }
+        this.checkCondition(arm.condition)
+        this.withNarrowing(this.boundsFrom(arm.condition, true), arm.thenBranch, () => branch(arm.thenBranch))
+      })
+      if (!arm.pattern) seen.push(arm.condition)
+    }
+    const else_ = expr.else_
+    if (else_) this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => branch(else_))
+    // Without an else branch, the expression can't produce a value
+    if (!else_ || !bound) return VOID
+    return expected ?? this.unifyBranches(branches, valueUsed)
+  }
 
-    // Infer the condition — allow runtime indexing for primitive elements
+  // An `if let` or `elif let` branch: its value is checked for having one
+  // (an optional that is not none, an index or range in range), and the
+  // branch runs with the name bound to it. False, with neither checked,
+  // when the pattern is not one name.
+  private ifLetArm(arm: AST.IfExpr | AST.ElifBranch, branch: () => void): boolean {
+    const pattern = arm.pattern
+    if (!pattern || pattern.kind !== 'binding') {
+      this.error(arm.span.start, 'if let only supports simple bindings')
+      return false
+    }
+    // Infer the value — allow runtime indexing for primitive elements
     this.insideIfLetCondition = true
-    const condType = this.inferExpr(expr.condition)
+    const condType = this.inferExpr(arm.condition)
     this.insideIfLetCondition = false
 
-    this.checksSomething(expr.condition, 'if let')
+    this.checksSomething(arm.condition, 'if let')
     // Determine the unwrapped type
     let elemType: ResolvedType
     if (isOptional(condType)) {
       elemType = unwrapOptional(condType)
-    } else if (expr.condition.kind === 'IndexExpr') {
+    } else if (arm.condition.kind === 'IndexExpr') {
       // Primitive element: condType is already the unwrapped element type
       elemType = condType
     } else {
-      this.error(expr.span.start, `if let requires an optional expression or bounds-checked index${nullQuestion(condType)}`)
+      this.error(arm.span.start, `if let requires an optional expression or bounds-checked index${nullQuestion(condType)}`)
       elemType = condType
     }
     const unwrapped = elemType
     elemType = this.heldByValue(unwrapped, pattern.span.start, () => typeToString(unwrapped))
 
-    // The binding is seen in the then-branch only, which is a scope of its
-    // own: a `let` there is seen in that branch only too.
+    // The binding is seen in the branch only, which is a scope of its own:
+    // a `let` there is seen in that branch only too.
     const prevScope = this.currentScope
     const then: Scope = { parent: prevScope, symbols: new Map() }
     // The binding is defined at its name, not at the value it is taken from
-    this.bindName(then, pattern.name, elemType, expr.span.start, 'if let', expr, pattern.span.start)
-    this.declare(expr)
-    this.types.set(typeKey(expr.condition.span.start, 'IfLetBinding'), elemType)
+    this.bindName(then, pattern.name, elemType, arm.span.start, 'if let', arm, pattern.span.start)
+    this.declare(arm)
+    this.types.set(typeKey(arm.condition.span.start, 'IfLetBinding'), elemType)
     this.currentScope = then
     try {
-      branch(expr.thenBranch)
+      branch()
     } finally {
       this.currentScope = prevScope
     }
-
-    for (const elif of expr.elifs) {
-      this.checkElifCondition(elif)
-      branch(elif.thenBranch)
-    }
-    if (expr.else_) branch(expr.else_)
-    if (!expr.else_) return VOID
-    return expected ?? this.unifyBranches(branches, valueUsed)
+    return true
   }
 
   private checkBodyAgainst(body: AST.FuncBody, expected: ResolvedType): void {
