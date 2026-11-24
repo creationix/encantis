@@ -90,14 +90,17 @@ export type ComptimeValue =
   | { kind: 'type'; type: ResolvedType }  // the argument of `comptime T: type`
   // The argument of a comptime function parameter: a function of the module,
   // by the name it is called by
-  | { kind: 'func'; name: string; type: ResolvedType & { kind: 'func' }; inline: boolean }
+  | { kind: 'func'; name: string; type: ResolvedType & { kind: 'func' }; inline: boolean; sets?: CaptureSets; shown?: string }
 
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
   // `alias`: a comptime function parameter inside an instance, which stands
   // for the function of that name. `host`: imported from the host, whose
   // results come in from outside the module.
-  | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string; host?: true }
+  // `nested`: a function declared in a body (reference 3.4). `sets`: what a
+  // call of it captures and writes, for a nested function and for a
+  // comptime function parameter given a function that captures (N13, N30).
+  | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string; host?: true; nested?: NestedFunc; sets?: CaptureSets }
   // `fromHost`: imported from the host, which gives its value once: an
   // immutable wasm global, read-only here
   | { kind: 'global'; type: ResolvedType; fromHost?: true }
@@ -165,6 +168,10 @@ export interface Instance {
   usedSite: boolean
   lookedUp: Map<string, string[]>
   requests: Instance[]
+  // The variables the functions given for its comptime function parameters
+  // capture, which it takes as parameters after its own, and those of them
+  // they write, which it gives back after its own results (N30)
+  hidden: CaptureSets
 }
 
 // Everything one call in ordinary code brought into being: the instance it
@@ -217,7 +224,96 @@ export interface Scope {
   // is declared in the scope around it: a `let` is seen in the rest of its
   // function (see letScope).
   bindings?: true
+  // The scope of a test nested in a group: the group's variables, which its
+  // statements never give a value (12.3), are left out of it (N36)
+  cut?: { group: string; names: Set<string> }
 }
+
+// === Nested functions (reference 3.4) ===
+
+// A variable of a function as a nested function captures it, by an id of
+// its own in the program: a variable of an instance and one of the function
+// that gave it a nested function are two, whatever their names.
+export interface CapturedVar {
+  id: number
+  name: string
+  type: ResolvedType
+}
+
+// What a call of a function captures and writes (N13), in the order its
+// wasm function takes them: its parameters after its own, its results after
+// its own
+export interface CaptureSets {
+  captures: CapturedVar[]
+  writes: CapturedVar[]
+}
+
+// A function declared in a body
+export interface NestedFunc extends CaptureSets {
+  decl: AST.FuncDecl
+  name: string
+  // Its name in the module's output, the path of the functions around it
+  // (count_over.note, over<u32>.big, test_counts.see)
+  path: string
+  // As messages and the editor name it (by_distance.closer)
+  shown: string
+  type: FuncRT
+  // Captures that reach it through a comptime function parameter of the
+  // instance it is in: they have no name in its body (N30)
+  hidden: Set<number>
+  // The function or test whose body declares it
+  parent: AST.FuncDecl | AST.TestDecl
+  // Where its name is written
+  nameAt: number
+  sym: Symbol & { kind: 'func' }
+}
+
+// A call of a nested function, or of an instance that threads captures:
+// the name it calls, and the variables it passes after its arguments and
+// assigns back from its results (N23)
+export interface NestedCall extends CaptureSets {
+  callee: string
+}
+
+// A function being checked: a function of the module, an instance, a test's
+// function, a function of a test, or a nested function
+interface FuncFrame {
+  kind: 'func' | 'test' | 'nested'
+  // As messages name it: 'f' or test "name"
+  shown: string
+  // Its name in the output (see NestedFunc.path), and its path as shown
+  path: string
+  shownPath: string
+  depth: number
+  parent: FuncFrame | null
+  owner: AST.FuncDecl | AST.TestDecl
+  signature: AST.FuncSignature | null
+  body: AST.FuncBody | readonly AST.TestItem[]
+  nested: NestedFunc | null
+  instance: Instance | null
+  // In a test, at any depth: its messages say "inside a test"
+  inTest: boolean
+  // The names it declares itself, wherever in it (see ownNamesOf)
+  ownNames?: Map<string, OwnName[]>
+}
+
+// A name a function declares: where, and for a nested function the
+// declaration and the block it is seen in
+interface OwnName {
+  at: number
+  func: AST.FuncDecl | null
+  block: AST.Span
+}
+
+interface VarInfo {
+  v: CapturedVar
+  frame: FuncFrame
+  at: number
+}
+
+// Ids of captured variables, unique in a process: modules are checked
+// apart, and an instance's hidden captures can be another module's
+let nextVarId = 1
 
 // What declared a variable that a body alone sees (see bindName).
 export type BindingKind = 'loop' | 'if let' | 'match'
@@ -348,6 +444,15 @@ export interface TypeCheckResult {
   // name, numbered from the second file of the program with that name
   // (lib, lib~2). Codegen prefixes the module's functions with it.
   tag: string
+  // The functions declared in bodies, by declaration, and each function's
+  // or test's own, in the order they are declared (reference 3.4)
+  nested: Map<AST.FuncDecl, NestedFunc>
+  nestedOf: Map<AST.FuncDecl | AST.TestDecl, AST.FuncDecl[]>
+  // The calls of nested functions, and of instances that take captured
+  // variables, by the call that is compiled (see NestedCall)
+  nestedCalls: Map<AST.CallExpr, NestedCall>
+  // The captured variables an instance takes and gives back, by its name
+  instanceHidden: Map<string, CaptureSets>
 }
 
 // A call in an instance of another module's generic, at its place in the
@@ -526,6 +631,20 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     }
   }
 
+  // A nested function nothing calls or gives (N20). In a generic's body the
+  // first instance stands for the generic, as it does for the editor.
+  for (const nested of ctx.nestedFuncs.values()) {
+    nested.type = concrete(nested.type) as FuncRT
+    for (const v of [...nested.captures, ...nested.writes]) v.type = concrete(v.type)
+    if (nested.decl.span.start >= INSTANCE_STRIDE) {
+      const inst = ctx.instances[Math.floor(nested.decl.span.start / INSTANCE_STRIDE) - 1]
+      if (!inst?.first) continue
+    }
+    const def = ctx.localDefs.get(nested.sym)
+    const refs = def === undefined ? undefined : ctx.references.get(def)
+    if (def !== undefined && refs && refs.length === 0) warnings.push({ offset: def, message: `'${nested.name}' is never used` })
+  }
+
   // A module that imports a generic type, checked on its own, cannot tell
   // what is wrong with it: its errors would be about types it could not
   // know. It says so once instead.
@@ -556,6 +675,10 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     externs: ctx.externs,
     calledFromInstances: ctx.calledFromInstances,
     tag: ctx.moduleTag(),
+    nested: ctx.nestedFuncs,
+    nestedOf: ctx.nestedOf,
+    nestedCalls: ctx.nestedCalls,
+    instanceHidden: new Map(ctx.instances.filter((i) => i.hidden.captures.length > 0).map((i) => [i.name, i.hidden])),
   }
 }
 
@@ -1027,6 +1150,18 @@ class CheckContext {
   // of a generic's first instance. Kept apart from symbolDefOffsets, which
   // holds the one definition of each of the module's names.
   localDefs = new Map<Symbol, number>()
+  // The functions being checked, innermost last (see FuncFrame), the
+  // variable each variable symbol is, and the nested functions, their
+  // order in each function and the calls of them (see TypeCheckResult)
+  private frames: FuncFrame[] = []
+  private varInfo = new WeakMap<Symbol, VarInfo>()
+  private varById = new Map<number, VarInfo>()
+  nestedFuncs = new Map<AST.FuncDecl, NestedFunc>()
+  nestedOf = new Map<AST.FuncDecl | AST.TestDecl, AST.FuncDecl[]>()
+  nestedCalls = new Map<AST.CallExpr, NestedCall>()
+  // The names of the tests around the one being checked, as the output
+  // names a test's function (see testPath)
+  private testPrefix = ''
   // Functions and imports declared inside test blocks. They are registered in
   // module scope, and exist in test builds only.
   testOnly = new Set<string>()
@@ -2808,16 +2943,53 @@ class CheckContext {
     }
   }
 
-  checkTestDecl(decl: AST.TestDecl): void {
-    const testScope: Scope = { parent: this.currentScope, symbols: new Map() }
+  checkTestDecl(decl: AST.TestDecl, group: { name: string; scope: Scope; vars: Set<string> } | null = null): void {
+    // A test nested in a group sees what the group declares, and not its
+    // variables: the group's statements are never run (12.3, N36).
+    const around: Scope = group
+      ? { parent: group.scope.parent, symbols: new Map([...group.scope.symbols].filter(([name]) => !group.vars.has(name))), cut: { group: group.name, names: group.vars } }
+      : this.currentScope
+    const testScope: Scope = { parent: around, symbols: new Map() }
     const prevScope = this.currentScope
     this.currentScope = testScope
     const prevVariables = this.variables
     this.variables = new Map()
+    // The test's function is named in the output as its test is, with the
+    // tests around it (see emitTestDecl)
+    const prevPrefix = this.testPrefix
+    const prefix = decl.name ? (prevPrefix ? `${prevPrefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_') : prevPrefix
+    this.testPrefix = prefix
+    const isGroup = decl.children.some((item) => item.kind === 'TestDecl')
+    const frame = {
+      kind: 'test' as const, shown: `test "${decl.name ?? ''}"`, path: `test_${prefix}`, shownPath: `test_${prefix}`,
+      owner: decl, signature: null, body: decl.children, nested: null, instance: null, inTest: true,
+    }
+    try {
+      this.inFrame(frame, false, () => this.checkTestItems(decl, testScope, prefix, isGroup))
+    } finally {
+      this.testPrefix = prevPrefix
+    }
+    this.currentScope = prevScope
+    this.settleLiterals()
+    // A test of statements is a function of its own (nested tests and the
+    // functions it declares are theirs).
+    const stmts = decl.children.filter((item): item is AST.Statement => STATEMENT_KINDS.has(item.kind))
+    this.seenInItsBlock(stmts)
+    this.checkSize(`test "${decl.name ?? ''}"`, decl.span, stmts)
+    this.variables = prevVariables
+  }
+
+  private checkTestItems(decl: AST.TestDecl, testScope: Scope, prefix: string, isGroup: boolean): void {
+    // The variables of a group, which its nested tests cannot use
+    const groupVars = () => {
+      const vars = new Set<string>()
+      for (const [name, sym] of testScope.symbols) if (this.varInfo.has(sym)) vars.add(name)
+      return vars
+    }
     for (const item of decl.children) {
       switch (item.kind) {
         case 'TestDecl':
-          this.checkTestDecl(item)
+          this.checkTestDecl(item, { name: decl.name ?? '', scope: testScope, vars: groupVars() })
           break
         case 'ImportDecl': {
           const known = new Set(this.moduleScope.symbols.keys())
@@ -2836,6 +3008,30 @@ class CheckContext {
             }
             break
           }
+          // What it is is decided where it is declared, from what it
+          // captures (N36): one that uses the test's variables is a nested
+          // function of the test's function, in a test that holds no tests;
+          // at the top of a group it cannot use them, since the group's
+          // statements never run; one that captures nothing is a function of
+          // the test, as it always was (12.4).
+          if (item.ident) {
+            const sets = this.captureSets(item)
+            if (sets.captures.length > 0 && !isGroup) {
+              const frame = this.frame as FuncFrame
+              const nested = this.declareNested(item, true, sets)
+              const own = this.ownNames(frame).get(item.ident) ?? []
+              if (!own.some((e) => e.func === item)) this.ownNames(frame).set(item.ident, [...own, { at: nested.nameAt, func: item, block: decl.span }])
+              this.checkFuncBody(item, nested)
+              break
+            }
+            if (sets.captures.length > 0) {
+              for (const v of sets.captures) {
+                for (const at of sets.named.get(v.id) ?? []) {
+                  this.error(at, `'${v.name}' is a variable of the group "${decl.name ?? ''}", whose statements are never run (12.3): a function declared at its top cannot use it`)
+                }
+              }
+            }
+          }
           if (item.ident && !this.moduleScope.symbols.has(item.ident)) this.testOnly.add(item.ident)
           this.collectFunc(item, true)
           // Not one that was refused the name: the module's functions keep it.
@@ -2843,7 +3039,7 @@ class CheckContext {
             const declared = this.moduleScope.symbols.get(item.ident)
             if (declared?.kind === 'func') this.testDeclared.add(declared)
           }
-          this.checkFuncBody(item)
+          this.checkFuncBody(item, null, `__test_${prefix}_${item.ident ?? 'anon'}`)
           break
         case 'TypeFuncDecl':
           // The signatures of the module are resolved before any test is
@@ -2865,14 +3061,6 @@ class CheckContext {
           break
       }
     }
-    this.currentScope = prevScope
-    this.settleLiterals()
-    // A test of statements is a function of its own (nested tests and the
-    // functions it declares are theirs).
-    const stmts = decl.children.filter((item): item is AST.Statement => STATEMENT_KINDS.has(item.kind))
-    this.seenInItsBlock(stmts)
-    this.checkSize(`test "${decl.name ?? ''}"`, decl.span, stmts)
-    this.variables = prevVariables
   }
 
   // A many-pointer is refused where it's written through; memcpy may read from one.
@@ -2960,22 +3148,64 @@ class CheckContext {
     }
   }
 
-  checkFuncBody(decl: AST.FuncDecl): void {
+  // `nested`: a function declared in a body, checked where it stands with
+  // the scope there around it (N1, N10). `path`: the name the output gives a
+  // function of a test (see FuncFrame.path).
+  checkFuncBody(decl: AST.FuncDecl, nested: NestedFunc | null = null, path?: string): void {
+    const inst = !nested && this.currentInstance?.decl === decl ? this.currentInstance : null
+    const shownName = inst ? inst.of.ident : decl.ident
+    const frame = {
+      kind: nested ? ('nested' as const) : ('func' as const),
+      shown: `'${shownName ?? 'anonymous'}'`,
+      path: nested?.path ?? path ?? inst?.name ?? this.funcNames.get(decl) ?? decl.ident ?? 'anonymous',
+      shownPath: nested?.shown ?? inst?.name ?? shownName ?? 'anonymous',
+      owner: decl, signature: decl.signature, body: decl.body, nested, instance: inst,
+      // A function a test declares is "inside a test" in what it is told
+      inTest: this.frame?.inTest ?? false,
+    }
+    // A nested function is a function of its own: what is open around it
+    // is not open in it (N25, N26). The narrowings stay (N18).
+    const prevLoop = this.loopDepth
+    const prevDefer = this.deferLoopDepth
+    const prevResults = this.resultsInOrder
+    const prevTail = this.namedTail
+    const prevIfLet = this.insideIfLetCondition
+    const prevWriting = this.writingTo
+    if (nested) {
+      this.loopDepth = 0
+      this.deferLoopDepth = null
+      this.resultsInOrder = null
+      this.namedTail = null
+      this.insideIfLetCondition = false
+      this.writingTo = null
+    }
+    try {
+      this.inFrame(frame, nested !== null, () => this.checkFuncBodyIn(decl, inst, nested !== null))
+    } finally {
+      this.loopDepth = prevLoop
+      this.deferLoopDepth = prevDefer
+      this.resultsInOrder = prevResults
+      this.namedTail = prevTail
+      this.insideIfLetCondition = prevIfLet
+      this.writingTo = prevWriting
+    }
+  }
+
+  private checkFuncBodyIn(decl: AST.FuncDecl, inst: Instance | null, nested: boolean): void {
     const prevVariables = this.variables
     this.variables = new Map()
     // Create function scope with params and named returns
     const funcScope: Scope = { parent: this.currentScope, symbols: new Map() }
 
     // Add parameters and named returns to scope
-    const inst = this.currentInstance?.decl === decl ? this.currentInstance : null
     const values = inst ? genericParams(inst.of).filter(isValueParam).map((p) => p.ident as string) : []
     this.inSignature(decl.signature, () => {
       this.bindFields(decl.signature.input, funcScope, 'param')
       this.bindFields(decl.signature.output, funcScope, 'return')
     }, values)
-    if (this.currentInstance?.decl === decl) {
-      this.bindComptimeFuncs(this.currentInstance, funcScope)
-      this.bindComptimeValues(this.currentInstance, funcScope)
+    if (inst) {
+      this.bindComptimeFuncs(inst, funcScope)
+      this.bindComptimeValues(inst, funcScope)
     }
 
     // Check body
@@ -3017,7 +3247,7 @@ class CheckContext {
       if (!named && hasResult && !blockTerminates(decl.body.stmts)) {
         // The name the user wrote, not max<u32>: the message is followed by
         // the instance anyway.
-        const name = this.currentInstance?.decl === decl ? this.currentInstance.of.ident : decl.ident
+        const name = inst ? inst.of.ident : decl.ident
         this.error(decl.span.start, `function '${name ?? 'anonymous'}' can reach its end without returning a value`)
       }
     } else {
@@ -3033,9 +3263,11 @@ class CheckContext {
     }
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
-    this.settleLiterals()
+    // The literals of a nested function are the outermost function's to
+    // settle, at its end (they are in its body).
+    if (!nested) this.settleLiterals()
     this.seenInItsBlock(decl.body)
-    const name = this.currentInstance?.decl === decl ? this.currentInstance.of.ident : decl.ident
+    const name = inst ? inst.of.ident : decl.ident
     this.checkSize(`function '${name ?? 'anonymous'}'`, decl.span, decl.body.kind === 'Block' ? decl.body.stmts : decl.body.expr)
     this.variables = prevVariables
   }
@@ -3074,7 +3306,15 @@ class CheckContext {
         // reference has none of.
         const missing = kind === 'return' && param?.kind !== 'param' ? noDefault(resolvedType) : null
         if (missing) this.error(field.span.start, `result '${field.ident}' cannot start with a default: ${missing}; return the value instead`)
+        // A nested function's own names hide nothing it could use (N9):
+        // what is looked up here is what is seen where it is declared.
+        if (this.frame?.kind === 'nested' && param?.kind !== 'param') {
+          const outer = this.lookup(field.ident)
+          const taken = outer && this.capturableKind(outer)
+          if (taken) this.error(field.span.start, `'${field.ident}' is already declared: a ${kind === 'param' ? 'parameter' : 'result'} of a nested function cannot reuse the name of ${taken}`)
+        }
         scope.symbols.set(field.ident, sym)
+        this.registerVar(sym, field.ident, field.span.start, param?.kind === 'param' ? param : undefined)
         this.types.set(typeKey(field.span.start, field.kind), resolvedType)
         this.recordDefinition(field.ident, field.span.start, sym)
         if (param?.kind !== 'param') this.noteVariable(field.span.start, field.ident, resolvedType, kind)
@@ -3100,7 +3340,7 @@ class CheckContext {
 
   checkBody(body: AST.FuncBody, tailValueUsed = false): void {
     if (body.kind === 'Block') {
-      this.checkStmts(body.stmts, tailValueUsed)
+      this.inBlock(body.stmts, () => this.checkStmts(body.stmts, tailValueUsed))
     } else {
       this.inferExpr(body.expr)
     }
@@ -3109,6 +3349,10 @@ class CheckContext {
   // valueUsed: the statement is the last of a block whose value something takes.
   checkStmt(stmt: AST.Statement, valueUsed = false): void {
     switch (stmt.kind) {
+      case 'FuncDecl':
+      case 'TypeFuncDecl':
+        this.checkNestedDecl(stmt)
+        break
       case 'LetStmt':
         this.checkLetStmt(stmt)
         break
@@ -3287,13 +3531,17 @@ class CheckContext {
         this.checkCondition(stmt.expr)
         break
       case 'BreakStmt':
-      case 'ContinueStmt':
-        if (this.deferLoopDepth !== null && this.loopDepth <= this.deferLoopDepth) {
-          const what = stmt.kind === 'BreakStmt' ? 'break' : 'continue'
+      case 'ContinueStmt': {
+        const what = stmt.kind === 'BreakStmt' ? 'break' : 'continue'
+        // A nested function's loops are its own (N26).
+        if (this.loopDepth === 0 && this.frame?.kind === 'nested') {
+          this.error(stmt.span.start, `cannot ${what} out of a nested function`)
+        } else if (this.deferLoopDepth !== null && this.loopDepth <= this.deferLoopDepth) {
           this.error(stmt.span.start, `cannot ${what} out of a deferred expression`)
         }
         if (stmt.when) this.checkCondition(stmt.when)
         break
+      }
     }
   }
 
@@ -3364,7 +3612,7 @@ class CheckContext {
       }
       if (exitCond) {
         const rest = stmts.slice(i + 1)
-        this.withNarrowing(this.boundsFrom(exitCond, false), rest, () => this.checkStmts(rest, tailValueUsed))
+        this.withNarrowing(this.boundsFrom(exitCond, false), [exitCond, rest], () => this.checkStmts(rest, tailValueUsed))
         return
       }
     }
@@ -3648,13 +3896,16 @@ class CheckContext {
     const existing = this.lookup(name)
     this.currentScope = outer
     const taken = existing && takenName(existing)
-    if (taken && !this.declared.has(node)) {
+    if (!this.declared.has(node) && this.frame && this.nestedNamedBefore(name, defAt)) {
+      this.error(at, this.ownNameError(name, this.frame))
+    } else if (taken && !this.declared.has(node)) {
       const what = kind === 'loop' ? 'a loop variable' : kind === 'if let' ? 'an if let binding' : 'a match binding'
       this.error(at, `'${name}' is already declared: ${what} cannot reuse the name of ${taken}`)
     }
     if (!type) return
     const sym: Symbol = { kind: 'local', type, binding: kind }
     scope.symbols.set(name, sym)
+    this.registerVar(sym, name, defAt)
     this.types.set(typeKey(defAt, 'Binding'), type)
     this.recordDefinition(name, defAt, sym)
     this.noteVariable(defAt, name, type)
@@ -3664,12 +3915,15 @@ class CheckContext {
     switch (pattern.kind) {
       case 'IdentPattern': {
         const existing = this.lookup(pattern.name)
-        if (existing && !this.declared.has(pattern)) {
+        if (!this.declared.has(pattern) && this.frame && this.nestedNamedBefore(pattern.name, pattern.span.start)) {
+          this.error(pattern.span.start, this.ownNameError(pattern.name, this.frame))
+        } else if (existing && !this.declared.has(pattern)) {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
         }
         this.declare(pattern)
         const sym: Symbol = { kind: 'local', type }
         this.letScope().symbols.set(pattern.name, sym)
+        this.registerVar(sym, pattern.name, pattern.span.start)
         this.letAt.set(sym, pattern.span.start)
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start, sym)
@@ -3729,13 +3983,16 @@ class CheckContext {
     const varName = element.binding ?? element.field
     // Its name is its own, as a plain let's is: taking a variable's
     // would change that variable (a loop's counter, say).
-    if (this.lookup(varName) && !this.declared.has(element)) {
+    const at = namedPartAt(element)
+    if (!this.declared.has(element) && this.frame && this.nestedNamedBefore(varName, at)) {
+      this.error(pattern.span.start, this.ownNameError(varName, this.frame))
+    } else if (this.lookup(varName) && !this.declared.has(element)) {
       this.error(pattern.span.start, `'${varName}' is already declared in this scope`)
     }
     this.declare(element)
     const sym: Symbol = { kind: 'local', type }
     this.letScope().symbols.set(varName, sym)
-    const at = namedPartAt(element)
+    this.registerVar(sym, varName, at)
     this.letAt.set(sym, at)
     this.types.set(typeKey(at, 'Binding'), type)
     this.recordDefinition(varName, at, sym)
@@ -4843,17 +5100,17 @@ class CheckContext {
     // Bidirectional: propagate expected type into if-expression branches
     if (expr.kind === 'IfExpr' && !expr.pattern && expr.else_) {
       this.checkCondition(expr.condition)
-      this.withNarrowing(this.boundsFrom(expr.condition, true), expr.thenBranch, () => this.checkBodyAgainst(expr.thenBranch, expected))
+      this.withNarrowing(this.boundsFrom(expr.condition, true), [expr.condition, expr.thenBranch], () => this.checkBodyAgainst(expr.thenBranch, expected))
       const seen = [expr.condition]
       for (const elif of expr.elifs) {
-        this.withNarrowing(this.boundsAfterAllFalse(seen), elif, () => {
+        this.withNarrowing(this.boundsAfterAllFalse(seen), [...seen, elif], () => {
           this.checkElifCondition(elif)
-          this.withNarrowing(this.boundsFrom(elif.condition, true), elif.thenBranch, () => this.checkBodyAgainst(elif.thenBranch, expected))
+          this.withNarrowing(this.boundsFrom(elif.condition, true), [...seen, elif], () => this.checkBodyAgainst(elif.thenBranch, expected))
         })
         seen.push(elif.condition)
       }
       const else_ = expr.else_
-      this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.checkBodyAgainst(else_, expected))
+      this.withNarrowing(this.boundsAfterAllFalse(seen), [...seen, else_], () => this.checkBodyAgainst(else_, expected))
       this.exprTypes.set(expr, expected)
       return expected
     }
@@ -5435,6 +5692,11 @@ class CheckContext {
         this.error(expr.span.start, `'${expr.name}' is a type; a type can only be passed for a comptime parameter`)
         return RECOVERY
       }
+      const unseen = this.unseenName(expr.name, expr.span.start)
+      if (unseen) {
+        this.error(expr.span.start, unseen)
+        return RECOVERY
+      }
       this.error(expr.span.start, this.unknownIdentifier(expr.name))
       return primitive('i32')
     }
@@ -5453,6 +5715,12 @@ class CheckContext {
         return sym.type
 
       case 'func':
+        // A nested function is called, or given at compile time, and never
+        // a value (N39).
+        if (sym.nested) {
+          this.error(expr.span.start, `'${expr.name}' is a nested function: it can only be called, or given for a comptime function parameter`)
+          return RECOVERY
+        }
         if (sym.alias) {
           // It stands for a function chosen at compile time; there is no
           // value of it to hold or to pass at run time.
@@ -5560,6 +5828,17 @@ class CheckContext {
         named = sym
         this.calls.set(expr, { ...expr, callee: { ...expr.callee, name: sym.alias } })
         this.recordReference(name, expr.callee.span.start)
+        // One that captures takes the variables the instance has for it (N30).
+        if (sym.sets && sym.sets.captures.length > 0) {
+          const lowered = this.calls.get(expr) as AST.CallExpr
+          this.nestedCalls.set(lowered, { callee: sym.alias, captures: sym.sets.captures, writes: sym.sets.writes })
+        }
+      } else if (sym?.kind === 'func' && sym.nested) {
+        // A nested function: a direct call of its wasm function, which
+        // takes the variables it captures after the arguments (N23)
+        named = sym
+        this.recordReference(name, expr.callee.span.start)
+        this.nestedCalls.set(expr, { callee: sym.nested.path, captures: sym.nested.captures, writes: sym.nested.writes })
       } else if (sym?.kind === 'func' && sym === this.moduleScope.symbols.get(name)) {
         // Of functions that share the name, the arguments say which is
         // meant.
@@ -8168,20 +8447,20 @@ class CheckContext {
     const valueUsed = !this.statementExprs.has(expr)
     this.checkCondition(expr.condition)
     const branches: Branch[] = []
-    const thenType = this.withNarrowing(this.boundsFrom(expr.condition, true), expr.thenBranch, () => this.inferBody(expr.thenBranch, valueUsed))
+    const thenType = this.withNarrowing(this.boundsFrom(expr.condition, true), [expr.condition, expr.thenBranch], () => this.inferBody(expr.thenBranch, valueUsed))
     branches.push({ body: expr.thenBranch, type: thenType })
     const seen = [expr.condition]
     for (const elif of expr.elifs) {
-      this.withNarrowing(this.boundsAfterAllFalse(seen), elif, () => {
+      this.withNarrowing(this.boundsAfterAllFalse(seen), [...seen, elif], () => {
         this.checkElifCondition(elif)
-        const type = this.withNarrowing(this.boundsFrom(elif.condition, true), elif.thenBranch, () => this.inferBody(elif.thenBranch, valueUsed))
+        const type = this.withNarrowing(this.boundsFrom(elif.condition, true), [...seen, elif], () => this.inferBody(elif.thenBranch, valueUsed))
         branches.push({ body: elif.thenBranch, type })
       })
       seen.push(elif.condition)
     }
     if (expr.else_) {
       const else_ = expr.else_
-      const type = this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.inferBody(else_, valueUsed))
+      const type = this.withNarrowing(this.boundsAfterAllFalse(seen), [...seen, else_], () => this.inferBody(else_, valueUsed))
       branches.push({ body: else_, type })
     }
     // Without an else branch, the expression can't produce a value
@@ -8331,7 +8610,12 @@ class CheckContext {
   }
 
   private checkBodyAgainst(body: AST.FuncBody, expected: ResolvedType): void {
-    if (body.kind === 'Block') {
+    if (body.kind === 'Block') this.inBlock(body.stmts, () => this.checkBlockAgainst(body, expected))
+    else this.checkExpr(body.expr, expected)
+  }
+
+  private checkBlockAgainst(body: AST.Block, expected: ResolvedType): void {
+    {
       for (let i = 0; i < body.stmts.length - 1; i++) {
         this.checkStmt(body.stmts[i])
       }
@@ -8346,23 +8630,23 @@ class CheckContext {
       if (wanted && !bodyExits(body)) {
         this.error(last?.span.start ?? body.span.start, `this branch has no value: expected ${typeToString(expected)}`)
       }
-    } else {
-      this.checkExpr(body.expr, expected)
     }
   }
 
   // valueUsed: whether something takes the value of the body's last expression.
   private inferBody(body: AST.FuncBody | AST.Expr, valueUsed = true): ResolvedType {
     if (body.kind === 'Block') {
-      for (const [i, stmt] of body.stmts.entries()) {
-        this.checkStmt(stmt, valueUsed && i === body.stmts.length - 1)
-      }
-      // Block's type is the last expression statement, if any
-      const last = body.stmts[body.stmts.length - 1]
-      if (last?.kind === 'ExpressionStmt') {
-        return this.exprTypes.get(last.expr) ?? VOID
-      }
-      return VOID
+      return this.inBlock(body.stmts, () => {
+        for (const [i, stmt] of body.stmts.entries()) {
+          this.checkStmt(stmt, valueUsed && i === body.stmts.length - 1)
+        }
+        // Block's type is the last expression statement, if any
+        const last = body.stmts[body.stmts.length - 1]
+        if (last?.kind === 'ExpressionStmt') {
+          return this.exprTypes.get(last.expr) ?? VOID
+        }
+        return VOID
+      })
     }
     const expr = body.kind === 'ArrowBody' ? body.expr : body
     if (valueUsed) this.statementExprs.delete(expr)
@@ -9583,6 +9867,7 @@ class CheckContext {
       usedSite: false,
       lookedUp: new Map(),
       requests: [],
+      hidden: hiddenCaptures(held),
     }
     requester?.requests.push(inst)
     if (!requester) this.asked.set(inst, { at, told: false })
@@ -9867,7 +10152,9 @@ class CheckContext {
     return undefined
   }
 
-  // Run check with the given bounds in effect, for variables region doesn't assign.
+  // Run check with the given bounds in effect, for variables region doesn't
+  // assign. The region is the code narrowed and every condition the bounds
+  // come from (N18): code later in a condition runs after the comparison.
   private withNarrowing<T>(bounds: Map<string, bigint>, region: unknown, check: () => T): T {
     const types = new Map<string, ResolvedType>()
     for (const [name, bound] of bounds) {
@@ -9875,7 +10162,7 @@ class CheckContext {
       if (!sym || (sym.kind !== 'local' && sym.kind !== 'param' && sym.kind !== 'return')) continue
       const base = unwrap(this.narrowedType(name) ?? sym.type)
       if (base.kind !== 'primitive' || !isUnsignedName(base.name)) continue
-      if (assignsVariable(region, name)) continue
+      if (this.assignsIn(region, name, sym)) continue
       const current = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
       if (current !== null && current <= bound) continue
       if (bound > BigInt(Number.MAX_SAFE_INTEGER)) continue
@@ -9939,6 +10226,296 @@ class CheckContext {
       }
     }
     return out
+  }
+
+  // === Nested functions (reference 3.4) ===
+
+  // The function being checked, if any
+  private get frame(): FuncFrame | null {
+    return this.frames.at(-1) ?? null
+  }
+
+  // Checks `check` as the body of a function (module function, instance,
+  // test, function of a test or nested function)
+  private inFrame<T>(frame: Omit<FuncFrame, 'depth' | 'parent' | 'inTest'> & { inTest?: boolean }, nestedIn: boolean, check: () => T): T {
+    const parent = nestedIn ? this.frame : null
+    const made: FuncFrame = { ...frame, parent, depth: parent ? parent.depth + 1 : 0, inTest: frame.inTest ?? parent?.inTest ?? false }
+    this.frames.push(made)
+    try {
+      return check()
+    } finally {
+      this.frames.pop()
+    }
+  }
+
+  // A variable of the function being checked: `same` is the variable it is
+  // (a result named like a parameter is that parameter)
+  private registerVar(sym: Symbol, name: string, at: number, same?: Symbol): void {
+    const frame = this.frame
+    if (!frame || (sym.kind !== 'local' && sym.kind !== 'param' && sym.kind !== 'return')) return
+    const shared = same && this.varInfo.get(same)
+    const info: VarInfo = shared ?? { v: { id: nextVarId++, name, type: sym.type }, frame, at }
+    this.varInfo.set(sym, info)
+    this.varById.set(info.v.id, info)
+  }
+
+  // Where a function's name is written: after `func`, or `inline func`
+  private funcNameAt(decl: AST.FuncDecl): number {
+    const source = this.source
+    const base = decl.span.start % INSTANCE_STRIDE
+    const shift = decl.span.start - base
+    if (source && decl.ident) {
+      const found = /^(?:inline\s+)?func\s+/.exec(source.slice(base, base + 200))
+      if (found && source.startsWith(decl.ident, base + found[0].length)) return shift + base + found[0].length
+    }
+    return decl.ident ? Math.max(decl.span.start, decl.signature.span.start - decl.ident.length) : decl.span.start
+  }
+
+  private ownNames(frame: FuncFrame): Map<string, OwnName[]> {
+    frame.ownNames ??= ownNamesOf(frame.signature, frame.body, frame.owner.span, (d) => this.funcNameAt(d))
+    return frame.ownNames
+  }
+
+  // A nested function of the function being checked, of this name, declared
+  // before `at`: then a variable declared at `at` cannot have the name (N8)
+  private nestedNamedBefore(name: string, at: number): boolean {
+    const frame = this.frame
+    if (!frame) return false
+    return (this.ownNames(frame).get(name) ?? []).some((e) => e.func !== null && e.at < at)
+  }
+
+  private ownNameError(name: string, frame: FuncFrame): string {
+    return `'${name}' is already declared in ${frame.shown}: a nested function's name is its own in the whole function that declares it`
+  }
+
+  // What a nested function's name cannot be the name of, as N7's messages
+  // say it; null for a name it can take
+  private declarationKind(sym: Symbol, name: string): string | null {
+    if (sym.kind === 'func' && sym.nested) return 'a nested function in scope'
+    if (sym.kind === 'global' && sym.fromHost) return 'an import'
+    const taken = takenName(sym)
+    if (taken) return taken
+    if (sym.kind === 'func') return sym.host || this.origins.has(name) ? 'an import' : 'a function of the module'
+    if (sym.kind === 'generic') return 'a generic function'
+    return null
+  }
+
+  // What a nested function's own variables cannot be named like, where it is
+  // declared (N9): a variable of a function around it, a nested function, a
+  // comptime parameter of the instance it is in
+  private capturableKind(sym: Symbol): string | null {
+    if (sym.kind === 'func' && sym.nested) return 'a nested function in scope'
+    if (this.varInfo.has(sym) || (sym.kind === 'func' && sym.alias) || (sym.kind === 'def' && sym.valueParam)) return takenName(sym)
+    return null
+  }
+
+  // Whether a name the module scope has is one a test declared, outside it
+  private ofAnotherTest(sym: Symbol, name: string): boolean {
+    return !this.frame?.inTest && sym === this.moduleScope.symbols.get(name) && this.testOnly.has(name)
+  }
+
+  // The variables a nested function captures and writes, and the uses of
+  // each in its body, computed where it is declared (N13): the variables seen
+  // there that its body names, and the captures of the nested functions and
+  // comptime function parameters seen there that it calls or gives.
+  private captureSets(decl: AST.FuncDecl): CaptureSets & { named: Map<number, number[]>; hidden: Set<number> } {
+    const names = namesInBody(decl.body)
+    const used = new Map<number, CapturedVar>()
+    const named = new Map<number, number[]>()
+    const written = new Set<number>()
+    const called: CaptureSets[] = []
+    for (const [name, offsets] of names.values) {
+      const sym = this.lookup(name)
+      if (!sym) continue
+      const info = this.varInfo.get(sym)
+      if (info) {
+        used.set(info.v.id, info.v)
+        named.set(info.v.id, offsets)
+      } else if (sym.kind === 'func' && sym.sets) {
+        called.push(sym.sets)
+      }
+    }
+    for (const name of names.methods) {
+      const sym = this.lookup(name)
+      if (sym?.kind === 'func' && sym.sets) called.push(sym.sets)
+    }
+    for (const { root, target } of names.targets) {
+      const sym = this.lookup(root)
+      const info = sym && this.varInfo.get(sym)
+      if (info && (target === null || assignsItsRoot(target, info.v.type))) written.add(info.v.id)
+    }
+    for (const sets of called) {
+      for (const v of sets.captures) if (!used.has(v.id)) used.set(v.id, v)
+      for (const v of sets.writes) written.add(v.id)
+    }
+    // In order: the variables of its own functions, outer first and each in
+    // the order its text declares them, then those an instance's comptime
+    // function parameters bring, in the instance's order
+    const chain = new Set<FuncFrame>()
+    for (let f = this.frame; f; f = f.parent) chain.add(f)
+    const hiddenOrder = this.frame ? [...chain].at(-1)?.instance?.hidden.captures ?? [] : []
+    const hidden = new Set<number>()
+    const key = (v: CapturedVar): [number, number] => {
+      const info = this.varById.get(v.id)
+      if (info && chain.has(info.frame)) return [info.frame.depth, info.at]
+      hidden.add(v.id)
+      return [Number.MAX_SAFE_INTEGER, hiddenOrder.findIndex((h) => h.id === v.id)]
+    }
+    const keyed = [...used.values()].map((v) => ({ v, k: key(v) }))
+    keyed.sort((a, b) => a.k[0] - b.k[0] || a.k[1] - b.k[1])
+    const captures = keyed.map(({ v }) => v)
+    return { captures, writes: captures.filter((v) => written.has(v.id)), named, hidden }
+  }
+
+  // Declares a nested function in the scope being checked (N5 to N10, N13,
+  // N40), once: met again (a block checked twice), it is the same function.
+  // `testTop`: at the top of a test, where it uses the test's variables (N36)
+  private declareNested(decl: AST.FuncDecl, testTop = false, sets = this.captureSets(decl)): NestedFunc {
+    const known = this.nestedFuncs.get(decl)
+    if (known) {
+      this.currentScope.symbols.set(known.name, known.sym)
+      return known
+    }
+    const frame = this.frame as FuncFrame
+    const name = decl.ident as string
+    const nameAt = this.funcNameAt(decl)
+    // Its name is new where it is declared (N7), and its own in its function (N8)
+    const what = testTop ? 'a function that uses its test\'s variables' : 'a nested function'
+    const existing = this.lookup(name)
+    const kind = existing && !this.ofAnotherTest(existing, name) ? this.declarationKind(existing, name) : null
+    if (kind) {
+      this.error(nameAt, `'${name}' is already declared: ${what} cannot reuse the name of ${kind}`)
+    } else if ((this.ownNames(frame).get(name) ?? []).some((e) => e.func !== decl && e.at < nameAt)) {
+      this.error(nameAt, this.ownNameError(name, frame))
+    } else if (!existing && BUILTIN_NAMES.has(name)) {
+      this.warn(nameAt, `'${name}' replaces the builtin ${name} in the body of ${frame.shown}`)
+    }
+    const type = this.resolveSignature(decl.signature)
+    const sym: Symbol & { kind: 'func' } = { kind: 'func', type, inline: decl.inline }
+    const nested: NestedFunc = {
+      decl, name, path: `${frame.path}.${name}`, shown: `${frame.shownPath}.${name}`, type,
+      captures: sets.captures, writes: sets.writes, hidden: sets.hidden, parent: frame.owner, nameAt, sym,
+    }
+    sym.nested = nested
+    sym.sets = nested
+    this.nestedFuncs.set(decl, nested)
+    const siblings = this.nestedOf.get(frame.owner) ?? []
+    siblings.push(decl)
+    siblings.sort((a, b) => a.span.start - b.span.start)
+    this.nestedOf.set(frame.owner, siblings)
+    // Its wasm function takes its parameters and the registers of what it
+    // captures, and gives back its results and those of what it writes (N40)
+    const memo = new Map<ResolvedType, number>()
+    const count = (types: readonly ResolvedType[]) => types.reduce((a, t) => Math.min(a + (t === RECOVERY ? 0 : typeRegisters(t, memo)), Number.MAX_SAFE_INTEGER), 0)
+    const params = count(type.params.map((p) => p.type))
+    const results = count(type.returns.map((r) => r.type))
+    const taken = params + count(sets.captures.map((v) => v.type))
+    const given = results + count(sets.writes.map((v) => v.type))
+    if (params <= MAX_PARAM_REGISTERS && taken > MAX_PARAM_REGISTERS) {
+      this.error(nameAt, `the parameters are ${taken} registers with the variables '${name}' captures, more than the ${MAX_PARAM_REGISTERS} a wasm function takes — pass a large value by pointer`)
+    }
+    if (results <= MAX_RESULT_REGISTERS && given > MAX_RESULT_REGISTERS) {
+      this.error(nameAt, `the results are ${given} registers with the variables '${name}' writes, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — give a large value back through a pointer`)
+    }
+    this.currentScope.symbols.set(name, sym)
+    this.recordDefinition(name, nameAt, sym)
+    return nested
+  }
+
+  // A `func` statement in a body (N1 to N4)
+  private checkNestedDecl(decl: AST.FuncDecl | AST.TypeFuncDecl): void {
+    const where = this.frame?.inTest ? 'a test' : 'a function'
+    if (decl.kind === 'TypeFuncDecl') {
+      this.error(decl.span.start, `a generic type is declared at module level, not inside ${where}`)
+      // Known by name all the same, so that its uses say nothing more.
+      if (!this.lookup(decl.ident)) this.currentScope.symbols.set(decl.ident, { kind: 'typefunc', decl, owner: this, cache: new Map(), valid: false })
+      return
+    }
+    if (isGenericDecl(decl)) {
+      this.error(decl.span.start, `a generic function is declared at module level, not inside ${where}`)
+      if (decl.ident && !this.lookup(decl.ident)) this.currentScope.symbols.set(decl.ident, { kind: 'generic', decl, owner: this, instances: new Map(), valid: false })
+      return
+    }
+    if (!decl.ident) {
+      this.error(decl.span.start, `a function declared in a function body needs a name: func name(x: T) -> R => ...`)
+      return
+    }
+    const nested = this.declareNested(decl)
+    this.checkFuncBody(decl, nested)
+  }
+
+  // Checks the statements of a block in a scope of its own where it
+  // declares a nested function, which is seen to the end of the block (N5).
+  // A `let` there still goes to the scope of its function (N10).
+  private inBlock<T>(stmts: readonly AST.Statement[], check: () => T): T {
+    if (!stmts.some((st) => st.kind === 'FuncDecl' || st.kind === 'TypeFuncDecl')) return check()
+    const outer = this.currentScope
+    this.currentScope = { parent: outer, symbols: new Map(), bindings: true }
+    try {
+      return check()
+    } finally {
+      this.currentScope = outer
+    }
+  }
+
+  // Whether some code assigns the variable `name` (N18): as the root of an
+  // assignment target that assigns its root or as a name in a set pattern,
+  // anywhere in it, the bodies of the functions declared in it included; or
+  // by naming, as a callee, a method or an argument, a nested function or a
+  // comptime function parameter seen here that writes the variable.
+  private assignsIn(region: unknown, name: string, sym: Symbol): boolean {
+    const id = this.varInfo.get(sym)?.v.id
+    const type = sym.kind === 'local' || sym.kind === 'param' || sym.kind === 'return' ? sym.type : null
+    const writes = (callee: string): boolean => {
+      if (id === undefined) return false
+      const g = this.lookup(callee)
+      return g?.kind === 'func' && !!g.sets?.writes.some((w) => w.id === id)
+    }
+    const walk = (node: unknown): boolean => {
+      if (Array.isArray(node)) return node.some(walk)
+      if (!node || typeof node !== 'object') return false
+      const n = node as { kind?: string }
+      if (n.kind === 'AssignmentStmt') {
+        const target = (node as AST.AssignmentStmt).target
+        if (targetRoot(target)?.name === name && type && assignsItsRoot(target, type)) return true
+      } else if (n.kind === 'SetStmt') {
+        if (setPatternNames((node as AST.SetStmt).pattern).some((p) => p.name === name)) return true
+      } else if (n.kind === 'CallExpr') {
+        const call = node as AST.CallExpr
+        if (call.callee.kind === 'IdentExpr' && writes(call.callee.name)) return true
+        if (call.callee.kind === 'MemberExpr' && call.callee.member.kind === 'field' && writes(call.callee.member.name)) return true
+        for (const arg of call.args) if (arg.value?.kind === 'IdentExpr' && writes(arg.value.name)) return true
+      }
+      for (const child of codeEntries(node)) if (walk(child)) return true
+      return false
+    }
+    return walk(region)
+  }
+
+  // What a name nothing is known by is, where it is a nested function's or
+  // a variable a nested function cannot see (N5, N11), or a group's (N36)
+  private unseenName(name: string, at: number): string | null {
+    for (let scope: Scope | null = this.currentScope; scope; scope = scope.parent) {
+      if (scope.cut?.names.has(name)) {
+        return `'${name}' is a variable of the group "${scope.cut.group}", whose statements are never run (12.3): a test nested in it cannot use it`
+      }
+    }
+    for (let f = this.frame; f; f = f.parent) {
+      const funcs = (this.ownNames(f).get(name) ?? []).filter((e) => e.func !== null)
+      if (funcs.length === 0) continue
+      const before = funcs.some((e) => e.at > at && at >= e.block.start && at < e.block.end)
+      return before
+        ? `'${name}' is used before its declaration: a nested function is seen from its declaration to the end of its block`
+        : `'${name}' is seen only in the block it is declared in`
+    }
+    for (let child = this.frame, f = child?.parent ?? null; child && f; child = f, f = f.parent) {
+      const declared = child.nested?.decl.span.start
+      if (declared === undefined) continue
+      if ((this.ownNames(f).get(name) ?? []).some((e) => e.func === null && e.at > declared)) {
+        return `'${name}' is declared after '${child.nested?.name}': a nested function uses only the variables declared before it`
+      }
+    }
+    return null
   }
 
   lookup(name: string): Symbol | undefined {
@@ -11760,6 +12337,229 @@ function holdsSlice(t: ResolvedType, seen = new Set<ResolvedType>()): boolean {
   return false
 }
 
+// === Nested functions: what a body names (reference 3.4, N13) ===
+
+// The keys of a node that hold no code of the body: its place, the types it
+// writes (in an instance's copy a type can be a resolved type, which can
+// refer to itself), a signature, and the patterns and bindings that declare
+// names rather than use them.
+const NOT_CODE = new Set(['span', 'type', 'signature', 'pattern', 'patterns', 'binding'])
+
+function codeEntries(node: object): unknown[] {
+  if (ArrayBuffer.isView(node)) return []
+  return Object.entries(node).flatMap(([k, v]) => (NOT_CODE.has(k) || !v || typeof v !== 'object' ? [] : [v]))
+}
+
+// The variable an assignment target is a part of, or that a range or an
+// element through it is taken of: x in x, p.x, s[i], q.*.x
+function targetRoot(target: AST.LValue): AST.IdentExpr | null {
+  let t = target as AST.Expr | AST.Pattern
+  while (t.kind === 'MemberExpr' || t.kind === 'IndexExpr' || t.kind === 'SliceExpr' || t.kind === 'GroupExpr') {
+    t = t.kind === 'GroupExpr' ? t.expr : t.object
+  }
+  return t.kind === 'IdentExpr' ? t : null
+}
+
+// Whether assigning to `target` assigns the variable at its root (N13): each
+// step from the root is a field or a tuple element of a struct or tuple, an
+// index of a fixed array, or the ptr or len of a slice, all of them held in
+// the variable's registers. A step through memory (.*, a type view, a range,
+// an index of a slice or of what a pointer points to, a field of what a
+// pointer points to) writes memory, and only reads the variable.
+function assignsItsRoot(target: AST.LValue, rootType: ResolvedType): boolean {
+  const steps: AST.Expr[] = []
+  let t = target as AST.Expr | AST.Pattern
+  while (t.kind === 'MemberExpr' || t.kind === 'IndexExpr' || t.kind === 'SliceExpr' || t.kind === 'GroupExpr') {
+    if (t.kind !== 'GroupExpr') steps.push(t)
+    t = t.kind === 'GroupExpr' ? t.expr : t.object
+  }
+  if (t.kind !== 'IdentExpr') return false
+  let type = rootType
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i]
+    const u = unwrap(type)
+    if (step.kind === 'MemberExpr' && u.kind === 'tuple' && (step.member.kind === 'field' || step.member.kind === 'index')) {
+      const m = step.member
+      const f = m.kind === 'field' ? u.fields.find((g) => g.name === m.name) : u.fields[m.value]
+      if (!f) return false
+      type = f.type
+    } else if (step.kind === 'MemberExpr' && u.kind === 'slice' && step.member.kind === 'field' && (step.member.name === 'ptr' || step.member.name === 'len')) {
+      type = primitive('u32')
+    } else if (step.kind === 'IndexExpr' && u.kind === 'array' && isValueArray(u)) {
+      type = u.element
+    } else {
+      return false
+    }
+  }
+  return true
+}
+
+// The names a set pattern assigns, with where each stands
+function setPatternNames(pattern: AST.Pattern, found: { name: string; at: number }[] = []): { name: string; at: number }[] {
+  if (pattern.kind === 'IdentPattern') found.push({ name: pattern.name, at: pattern.span.start })
+  else {
+    for (const e of pattern.elements) {
+      if (e.kind === 'positional') setPatternNames(e.pattern, found)
+      else found.push({ name: e.binding ?? e.field, at: namedPartAt(e) })
+    }
+  }
+  return found
+}
+
+// What a nested function's body names, with the bodies of the functions
+// nested in it (N13): every name that stands for a value (an operand, an
+// argument, a receiver, a callee, the root of an assignment target, a name
+// in a set pattern, the name of a shorthand argument), the names called as
+// methods, and the assignment targets with the names they assign through.
+interface BodyNames {
+  values: Map<string, number[]>
+  methods: Set<string>
+  targets: { root: string; target: AST.LValue | null }[]
+}
+
+function namesInBody(body: AST.FuncBody): BodyNames {
+  const names: BodyNames = { values: new Map(), methods: new Set(), targets: [] }
+  const add = (name: string, at: number) => {
+    const list = names.values.get(name)
+    if (list) list.push(at)
+    else names.values.set(name, [at])
+  }
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n)
+      return
+    }
+    if (!node || typeof node !== 'object') return
+    const n = node as { kind?: string }
+    switch (n.kind) {
+      case 'IdentExpr': {
+        const e = node as AST.IdentExpr
+        add(e.name, e.span.start)
+        return
+      }
+      case 'Arg': {
+        const a = node as AST.Arg
+        if (!a.value && a.name) add(a.name, a.span.start)
+        else walk(a.value)
+        return
+      }
+      case 'SetStmt': {
+        const st = node as AST.SetStmt
+        for (const { name, at } of setPatternNames(st.pattern)) {
+          add(name, at)
+          names.targets.push({ root: name, target: null })
+        }
+        walk(st.value)
+        return
+      }
+      case 'AssignmentStmt': {
+        const st = node as AST.AssignmentStmt
+        const root = targetRoot(st.target)
+        if (root) names.targets.push({ root: root.name, target: st.target })
+        walk(st.target)
+        walk(st.value)
+        return
+      }
+      case 'CallExpr': {
+        const call = node as AST.CallExpr
+        if (call.callee.kind === 'MemberExpr' && call.callee.member.kind === 'field') names.methods.add(call.callee.member.name)
+        break
+      }
+      case 'FuncDecl':
+        walk((node as AST.FuncDecl).body)
+        return
+      case 'TypeFuncDecl':
+        return
+    }
+    for (const child of codeEntries(node)) walk(child)
+  }
+  walk(body)
+  return names
+}
+
+// The names a function declares itself, wherever in it, with where (N8):
+// its parameters and named results, the variables its body declares, and
+// its nested functions with the block each is seen in. The names declared
+// in its nested functions are theirs. At the top of a test, what is
+// declared there beside the statements (functions, defs, data, imports,
+// tests) is not counted: a function there that becomes a nested function of
+// the test's is added when it does (see checkTestDecl).
+function ownNamesOf(
+  signature: AST.FuncSignature | null, body: AST.FuncBody | readonly AST.TestItem[], span: AST.Span, nameAt: (decl: AST.FuncDecl) => number,
+): Map<string, OwnName[]> {
+  const names = new Map<string, OwnName[]>()
+  const add = (name: string, at: number, block: AST.Span, func: AST.FuncDecl | null = null) => {
+    const list = names.get(name)
+    if (list) list.push({ at, func, block })
+    else names.set(name, [{ at, func, block }])
+  }
+  for (const t of signature ? [signature.input, signature.output] : []) {
+    if (t.kind === 'CompositeType') for (const f of t.fields) if (f.ident && !f.comptime) add(f.ident, f.span.start, span)
+  }
+  const pattern = (p: AST.Pattern, block: AST.Span) => {
+    if (p.kind === 'IdentPattern') add(p.name, p.span.start, block)
+    else {
+      for (const e of p.elements) {
+        if (e.kind === 'positional') pattern(e.pattern, block)
+        else add(e.binding ?? e.field, namedPartAt(e), block)
+      }
+    }
+  }
+  const matched = (p: AST.MatchPattern, at: number, block: AST.Span) => {
+    if (p.kind === 'binding') add(p.name, p.span?.start ?? at, block)
+    else if (p.kind === 'constructor' || p.kind === 'tuple') {
+      for (const e of p.elements) {
+        if (e.kind === 'namedShort') add(e.field, at, block)
+        else matched(e.pattern, at, block)
+      }
+    }
+  }
+  const walk = (node: unknown, block: AST.Span): void => {
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n, block)
+      return
+    }
+    if (!node || typeof node !== 'object') return
+    const n = node as { kind?: string }
+    switch (n.kind) {
+      case 'FuncDecl': {
+        const d = node as AST.FuncDecl
+        if (d.ident) add(d.ident, nameAt(d), block, d)
+        return
+      }
+      case 'TypeFuncDecl':
+        return
+      case 'Block': {
+        const b = node as AST.Block
+        for (const st of b.stmts) walk(st, b.span)
+        return
+      }
+      case 'LetStmt':
+        pattern((node as AST.LetStmt).pattern, block)
+        break
+      case 'ForStmt':
+        for (const { name, offset } of forNames((node as AST.ForStmt).binding)) add(name, offset, block)
+        break
+      case 'IfExpr':
+      case 'ElifBranch': {
+        const p = (node as AST.IfExpr | AST.ElifBranch).pattern
+        if (p) matched(p, (node as AST.IfExpr).span.start, block)
+        break
+      }
+      case 'MatchArm':
+        for (const p of (node as AST.MatchArm).patterns) matched(p, (node as AST.MatchArm).span.start, block)
+        break
+    }
+    for (const child of codeEntries(node)) walk(child, block)
+  }
+  if (Array.isArray(body)) {
+    for (const item of body as readonly AST.TestItem[]) if (STATEMENT_KINDS.has(item.kind)) walk(item, span)
+  } else {
+    walk(body, (body as AST.FuncBody).kind === 'Block' ? (body as AST.FuncBody).span : span)
+  }
+  return names
+}
+
 // The kinds of statement, which a test's body holds among its declarations
 const STATEMENT_KINDS: ReadonlySet<string> = new Set<AST.Statement['kind']>([
   'LetStmt', 'SetStmt', 'WhileStmt', 'ForStmt', 'LoopStmt', 'ReturnStmt', 'BreakStmt',
@@ -11822,6 +12622,21 @@ function takenName(sym: Symbol): string | null {
     default:
       return null
   }
+}
+
+// The variables an instance takes for the functions given for its comptime
+// function parameters (N30): those the first one captures in its order, then
+// those of the next not listed yet, and so on; and of them those some given
+// function writes, in the same order.
+function hiddenCaptures(args: readonly ComptimeValue[]): CaptureSets {
+  const captures: CapturedVar[] = []
+  const written = new Set<number>()
+  for (const arg of args) {
+    if (arg.kind !== 'func' || !arg.sets) continue
+    for (const v of arg.sets.captures) if (!captures.some((c) => c.id === v.id)) captures.push(v)
+    for (const v of arg.sets.writes) written.add(v.id)
+  }
+  return { captures, writes: captures.filter((v) => written.has(v.id)) }
 }
 
 // The names a match pattern binds, wherever they are in it.
@@ -12119,19 +12934,6 @@ function alwaysExits(body: AST.FuncBody): boolean {
   if (body.kind !== 'Block') return false
   const last = body.stmts.at(-1)
   return !!last && (last.kind === 'ReturnStmt' || last.kind === 'BreakStmt' || last.kind === 'ContinueStmt') && !last.when
-}
-
-// Whether anything in an AST subtree assigns to the variable `name`.
-function assignsVariable(node: unknown, name: string): boolean {
-  if (Array.isArray(node)) return node.some(n => assignsVariable(n, name))
-  if (!node || typeof node !== 'object') return false
-  const n = node as { kind?: string; target?: { kind?: string; name?: string }; pattern?: { kind?: string; name?: string } }
-  if (n.kind === 'AssignmentStmt' && n.target?.kind === 'IdentExpr' && n.target.name === name) return true
-  if (n.kind === 'SetStmt' && n.pattern?.kind === 'IdentPattern' && n.pattern.name === name) return true
-  for (const [k, v] of Object.entries(node)) {
-    if (k !== 'span' && typeof v === 'object' && assignsVariable(v, name)) return true
-  }
-  return false
 }
 
 // The literals laid out as parts of `expr`: its elements, the value it
