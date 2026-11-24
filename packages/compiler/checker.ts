@@ -2484,8 +2484,10 @@ class CheckContext {
 
     // A declared type that did not resolve (an unknown type, a length that
     // is a refused value) has its error: the data is declared all the same,
-    // of that type, so its uses say nothing more.
+    // of that type, so its uses say nothing more. Its values are constants
+    // or not whatever the type is.
     if (declaredType && unresolved(declaredType)) {
+      this.requireConstants(decl.ident, value)
       const sym = { kind: 'def' as const, type: declaredType, value: { kind: 'data_ptr' as const, id: value.span.start } }
       this.moduleScope.symbols.set(dataKey, sym)
       this.currentScope.symbols.set(decl.ident, sym)

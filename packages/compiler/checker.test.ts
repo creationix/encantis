@@ -4871,6 +4871,11 @@ describe('a refused value says nothing more where it is used', () => {
       "'Point' is a type; a type can only be passed for a comptime parameter",
       "'-' needs a number, not bool",
     ])
+    // Its values are constants or not whatever its type is
+    expect(errs('global g: u32 = 1\ndata d: *[2]Nope = [g, 1]\nexport func f() -> u32 => 0')).toEqual([
+      "unknown type 'Nope'",
+      "data 'd' is laid out at compile time: its values must be constants",
+    ])
   })
   test('a refused value given for a comptime value parameter says nothing more', () => {
     expect(errs('type Point = (x: i32, y: i32)\ndef bad = Point\ndef worse = -true\nfunc id(comptime n: u32) -> u32 => n\nfunc Buf(comptime n: u32) -> type => (items: [n]u8)\nfunc f(r: Buf(bad), s: Buf(worse), t: Buf(-true), x: u32) -> u32 {\n  return id(-true) + id(true + 1) + id(bad) + id(worse) + id(x)\n}')).toEqual([
