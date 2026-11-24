@@ -932,7 +932,9 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
         const addr = addressOfIndexToWat(expr, expr.operand, ctx)
         if (addr) return addr
       }
-      // If operand is already a pointer, just return it
+      // A place in memory is its address (the operand is addressed, so its
+      // code is that address), and a string literal is its own: the checker
+      // refuses & before any other pointer.
       const innerType = lookupExprType(expr.operand, ctx)
       if (innerType && (innerType.kind === 'pointer' || innerType.kind === 'slice')) {
         return operand

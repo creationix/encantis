@@ -4737,7 +4737,10 @@ class CheckContext {
     const h = unwrap(holder)
     const mutable = (h.kind === 'pointer' || h.kind === 'slice') && !!h.mutable
     const u = unwrap(type)
-    if (u.kind !== 'array') return u.kind === 'tuple' || u.kind === 'primitive' ? pointer(type, false, mutable) : null
+    if (u.kind !== 'array') {
+      const held = u.kind === 'tuple' || u.kind === 'primitive' || u.kind === 'pointer' || u.kind === 'slice'
+      return held ? pointer(type, false, mutable) : null
+    }
     const sizes: number[] = []
     let element: ResolvedType = type
     for (let a = unwrap(element); a.kind === 'array' && isValueArray(a); a = unwrap(element)) {
@@ -7103,6 +7106,17 @@ class CheckContext {
     if (expr.op === '&' && expr.operand.kind === 'IndexExpr') {
       const addr = this.addressOfIndex(expr.operand)
       if (addr) return addr
+      // An element of a *[!]T would be checked against the length its scan
+      // finds: no address is given for one, which a slice of it has.
+      const object = this.exprTypes.get(expr.operand.object)
+      const framed = object && pointeeArray(object)
+      if (object && framed && framed.sizes?.length === 1 && framed.sizes[0] === '!') {
+        const text = this.textOf(expr.operand.object) ?? exprText(expr.operand.object) ?? 'z'
+        this.error(expr.span.start, `cannot take the address of an element of ${typeToString(object)}: make a slice of it first, (${text}.ptr, ${text}.len), and take the address of the slice's element`)
+        this.inferIndexValue(expr.operand.index)
+        const u = unwrap(object)
+        return pointer(framed.element, false, u.kind === 'pointer' && !!u.mutable, true)
+      }
     }
     const said = this.errorsReported
     const operandType = this.inferExpr(expr.operand)
@@ -7132,12 +7146,9 @@ class CheckContext {
           const addr = this.addressOfIndex(expr.operand)
           if (addr) return addr
         }
-        if (operandType.kind === 'pointer' || operandType.kind === 'slice') {
-          return operandType
-        }
         // A value that lies in memory (a field of a struct a pointer points
-        // to, and what is in it): where it is, as a pointer as mutable as
-        // the place.
+        // to, and what is in it, a pointer or a slice too): where it is, as
+        // a pointer as mutable as the place.
         const place = this.placeAddress(expr.operand, operandType)
         if (place) {
           this.addressed.add(expr.operand)
@@ -7147,8 +7158,22 @@ class CheckContext {
         // Address-of on a value: anonymous data section allocation
         const innerExpr = expr.operand
         const litExpr = addressedLiteral(innerExpr)
-        if (litExpr.kind === 'LiteralExpr' || litExpr.kind === 'ArrayExpr' ||
-            litExpr.kind === 'RepeatExpr' || litExpr.kind === 'TupleExpr') {
+        const literal = litExpr.kind === 'LiteralExpr' || litExpr.kind === 'ArrayExpr' ||
+          litExpr.kind === 'RepeatExpr' || litExpr.kind === 'TupleExpr'
+        // A string literal is its own address, as it is without the &.
+        if (literal && (operandType.kind === 'pointer' || operandType.kind === 'slice')) return operandType
+        // A row of a packed array, *[NxM]T, is a place, and the *[M]T it is
+        // read as is its address: &m.tiles[0], &p[1].
+        if (this.packedRow(expr.operand)) return operandType
+        // A pointer, a slice or a many-pointer that has no place in memory
+        // (a variable, a call's result, a cast) has no address to give, and
+        // it is no cell's: & before one is refused, not read as the pointer.
+        const pointerLike = unwrap(operandType)
+        if (!literal && (pointerLike.kind === 'pointer' || pointerLike.kind === 'slice')) {
+          if (!unresolved(operandType) && this.errorsReported === said) this.error(expr.span.start, this.alreadyPointer(expr.operand, operandType))
+          return operandType
+        }
+        if (literal) {
           const dataId = litExpr.span.start
           if (litExpr.kind === 'LiteralExpr' || litExpr.kind === 'ArrayExpr' || litExpr.kind === 'RepeatExpr') {
             (litExpr as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = dataId
@@ -7190,11 +7215,50 @@ class CheckContext {
             ? `'${name}' has no address: a variable is held in registers`
             : `'${exprText(held) ?? name}' has no address: it is part of '${name}', a variable held in registers`)
         } else {
-          this.error(expr.span.start, `& requires a literal, a pointer, a value in memory, or an element of an array, slice or many-pointer`)
+          this.error(expr.span.start, `& requires a literal, a value in memory, or an element of an array, slice or many-pointer`)
         }
         return pointer(operandType, false, true)
       }
     }
+  }
+
+  // Whether an expression is a row of a packed array (*[NxM]T, in place or
+  // not): it lies in memory, and its value is the *[M]T where it is.
+  private packedRow(expr: AST.Expr): boolean {
+    const e = ungrouped(expr)
+    if (e.kind !== 'IndexExpr') return false
+    const object = this.exprTypes.get(e.object)
+    const u = object && unwrap(object)
+    return u?.kind === 'pointer' && (pointeeArray(u)?.sizes?.length ?? 0) > 1
+  }
+
+  // What & before a pointer, slice or many-pointer that has no place in
+  // memory is told. A cast binds tighter than &, so `&p[1] as [*]u8` is
+  // the cast's &: where the cast is of something & takes the address of,
+  // the parentheses that mean that are said.
+  private alreadyPointer(operand: AST.Expr, type: ResolvedType): string {
+    // (Without the source, a cast is said as the syntax tree has it.)
+    const castText = (e: AST.Expr): string | null => {
+      const grouped = groupedExpr(e)
+      if (grouped) {
+        const inner = castText(grouped)
+        return inner === null ? null : `(${inner})`
+      }
+      if (e.kind !== 'CastExpr') return exprText(e)
+      const inner = exprText(e.expr)
+      return inner === null ? null : `${inner} as ${typeText(e.type)}`
+    }
+    const text = this.textOf(operand) ?? castText(operand)
+    const what = text === null ? 'this value' : `'${text}'`
+    let hint = ''
+    if (operand.kind === 'CastExpr') {
+      const inner = ungrouped(operand.expr)
+      const innerText = this.textOf(operand.expr) ?? exprText(operand.expr)
+      if (text !== null && innerText !== null && text.startsWith(innerText) && (inner.kind === 'IndexExpr' || inner.kind === 'MemberExpr')) {
+        hint = ` (a cast binds tighter than &: for the address of ${innerText}, write (&${innerText}) ${text.slice(innerText.length).trim()})`
+      }
+    }
+    return `${what} is already a pointer (${typeToString(type)}): drop the &${hint}`
   }
 
   // .len of a *[!]T is found by a scan; a *[?]T's length prefix is not read

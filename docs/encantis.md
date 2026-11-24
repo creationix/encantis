@@ -5837,7 +5837,51 @@ func value(x: i32) -> i32 => get(&x)
 
 <!-- spec:end -->
 
-Write `&` only before a literal, an element, or a value that lies in memory. Before a value that is already a pointer it is accepted and gives that pointer, not the address of a cell holding it (`&p`, with `p` a pointer variable, is `p`): a known bug, and the rule for it is undecided, so do not write it. A string is already its address, so `&` before one is not needed. `let p = &"abc"` is the string's own constant `*[3]u8` ([String Literals](#string-literals)), not a writable copy (write `mut "abc"` for that). Where a pointer is wanted, `&"abc"` is refused (`cannot assign *[3]u8 to [3]u8`, a known bug): write `"abc"`. A cast binds tighter than `&` ([Precedence](#precedence)): `&p[1] as [*]u8` takes the address of `p[1] as [*]u8`; write `(&p[1]) as [*]u8`.
+Write `&` only before a literal, an element, or a value that lies in memory. A pointer, a slice, a many-pointer or an optional one that has no place in memory is already an address and lies in no cell: `&` before one is an error (`'p' is already a pointer (*i32): drop the &`), whatever it is (a variable, a parameter, a global, a `data` name, a call's result, a method call's, a cast, an `if` or a `??`), also in an instance of a generic whose type parameter is a pointer. One that lies in memory has an address as any value there has: `&n.next`, with `n` a `*Node` and `next` a `*Node` field, is the `**Node` where that field is, `&b.items` with `items` a `[]u8` field is a `*[]u8`, and `&ptrs[i]` with `ptrs` a `[*]*i32` is a `**i32`. A row of a packed array lies in memory, and the `*[M]T` it is read as is its address: `&m.tiles[0]` and, with `p` a `*[3x4]u8`, `&p[1]` are that `*[M]T`. An element of a `*[!]T` is given no address (`cannot take the address of an element of *[!]u8: make a slice of it first, (z.ptr, z.len), and take the address of the slice's element`): `let s: []u8 = (z.ptr, z.len)` and then `&s[i]`. A string is already its address, so `&` before one is not needed. `let p = &"abc"` is the string's own constant `*[3]u8` ([String Literals](#string-literals)), not a writable copy (write `mut "abc"` for that). Where a pointer is wanted, `&"abc"` is refused (`cannot assign *[3]u8 to [3]u8`, a known bug): write `"abc"`. A cast binds tighter than `&` ([Precedence](#precedence)): `&p[1] as [*]u8` is `&(p[1] as [*]u8)`, which a cast to a pointer makes an error, and the message says so (`'p[1] as [*]u8' is already a pointer ([*]u8): drop the & (a cast binds tighter than &: for the address of p[1], write (&p[1]) as [*]u8)`); write `(&p[1]) as [*]u8`.
+
+<!-- spec:begin compile -->
+
+```ents
+type Node = (val: i32, next: ?*Node)
+
+data first: Node = mut (1, 0)
+data second: Node = mut (2, 0)
+
+// Where n keeps its successor
+func link(n: *mut Node) -> *mut ?*Node => &n.next
+func row(p: *[3x4]u8) -> *[4]u8 => &p[1]          // the row's address
+
+test "a pointer that lies in memory has an address" {
+  let slot = link(first)
+  slot.* = second
+  assert (first.next ?? first).val == 2
+  assert (slot as u32) == (first as u32) + 4
+}
+```
+
+```ents
+type Pt = (x: i32, y: i32)
+
+func get(p: *i32) -> i32 => p.*
+func id(p: *i32) -> *i32 => p
+func again(p: *i32) -> i32 => get(&p)
+func called(p: *i32) -> i32 => get(&id(p))
+func size(s: []u8) -> u32 => (&s).len
+func at(base: [*]u32, k: u32) -> [*]Pt => &base[k] as [*]Pt
+func head(z: *[!]u8) -> ?*u8 => &z[0]
+func bytes(p: [*]u32) -> [*]u8 => &p[1] as [*]u8
+```
+
+```errors
+'p' is already a pointer (*i32): drop the &
+'id(p)' is already a pointer (*i32): drop the &
+'s' is already a pointer ([]u8): drop the &
+'base[k] as [*]Pt' is already a pointer ([*]Pt): drop the & (a cast binds tighter than &: for the address of base[k], write (&base[k]) as [*]Pt)
+cannot take the address of an element of *[!]u8: make a slice of it first
+'p[1] as [*]u8' is already a pointer ([*]u8): drop the &
+```
+
+<!-- spec:end -->
 
 ### 4.8 Slice/Range Syntax
 
