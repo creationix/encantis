@@ -754,6 +754,15 @@ export function documentSymbols(
         }
         break
       }
+      case 'TestDecl': {
+        // The nested functions of a test, of its nested tests and of the
+        // functions it declares, named as messages name them (test "t".plus)
+        const inTest = [...checkResult.nested.values()].filter((n) => n.decl.span.start >= decl.span.start && n.decl.span.end <= decl.span.end)
+        for (const nested of inTest.sort((a, b) => a.nameAt - b.nameAt)) {
+          symbols.push({ name: nested.shown, kind: 'func', type: typeToString(nested.type), offset: nested.nameAt, length: nested.name.length, exported: false })
+        }
+        break
+      }
     }
   }
 

@@ -2637,6 +2637,28 @@ test {
     expect(hoverText(hover(src, module, result, at('plus(x', 1))!)).toBe('func plus: func(x: u32) -> u32 — nested in test "g > inner > b"; captures z')
   })
 
+  test('document symbols list the nested functions of a test, in its blocks too', () => {
+    const src = `test "t" {
+  let z: u32 = 1
+  func plus(x: u32) -> u32 => x + z
+  if true {
+    func deep() -> u32 => z
+    assert deep() == 1
+  }
+  for i in 2 {
+    func step() -> u32 => i + z
+    assert step() > 0
+  }
+  assert plus(1) == 2
+}`
+    const { module, result } = checkWithTests(src)
+    expect(documentSymbols(src, module, result).map((s) => `${s.name}: ${s.type}`)).toEqual([
+      'test "t".plus: func(x: u32) -> u32',
+      'test "t".deep: func() -> u32',
+      'test "t".step: func() -> u32',
+    ])
+  })
+
   // The module's function, given after a test took its name over, is a use
   // of the module's function: renamed with it, defined at it
   test('the editor finds the module\'s function where a comptime argument gives it after a test took its name', () => {

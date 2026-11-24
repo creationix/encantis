@@ -758,3 +758,43 @@ export func h() -> u8 => 'd'
     for (const at of [0, 1, 2, 3, 4, 5]) expect(hover(source.indexOf('c\\${d') + at)).toContain('"c\\${d ":[]u8')
   })
 })
+
+// What hover says of a nested function and of what it captures, as the CLI
+// does, and where a name given for a comptime function parameter is defined
+describe('nested functions in the editor', () => {
+  const source = `func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+export func count_over(xs: []u32, limit: u32) -> u32 {
+  let n: u32 = 0
+  func note(x: u32) {
+    if x > limit { n += 1 }
+  }
+  for x in xs { note(x) }
+  return n
+}
+export func outer(n: u32) -> u32 {
+  func g(x: u32) -> u32 => x + n
+  return apply(g, 1)
+}
+test "t" {
+  let z: u32 = 1
+  func plus(x: u32) -> u32 => x + z
+  assert apply(plus, 1) == 2
+}
+`
+  test('hover shows where it is nested, what it captures and where a capture is from', () => {
+    const hover = hoverIn(source)
+    expect(hover(source.indexOf('note(x: u32)'))).toContain('nested in `count_over`; captures limit, n (writes n)')
+    expect(hover(source.indexOf('note(x) }'))).toContain('nested in `count_over`; captures limit, n (writes n)')
+    expect(hover(source.indexOf('limit { n'))).toContain('captured from `count_over`')
+    expect(hover(source.indexOf('apply(g') + 6)).toContain('nested in `outer`; captures n')
+    expect(hover(source.indexOf('apply(plus') + 6)).toContain('nested in `test "t"`; captures z')
+  })
+
+  test('definition at a name given for a comptime function parameter', () => {
+    const ask = serverFor(source)
+    const line = (offset: number) => source.slice(0, offset).split('\n').length - 1
+    const def = (offset: number) => (ask('onDefinition', offset) as Location | null)?.range.start.line
+    expect(def(source.indexOf('apply(g') + 6)).toBe(line(source.indexOf('func g')))
+    expect(def(source.indexOf('apply(plus') + 6)).toBe(line(source.indexOf('func plus')))
+  })
+})

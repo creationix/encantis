@@ -5,6 +5,7 @@
 
 import type { Declaration, Field, ImportDecl, Module, Pattern, Span, TestItem, Type } from '@encantis/compiler/ast';
 import { type DocumentSymbol, type Range, SymbolKind } from 'vscode-languageserver/lib/common/api';
+import { spellString } from '@encantis/compiler/checker';
 import { nameAfter } from './scan';
 
 // The type of what is named at an offset, as hover shows it, if known
@@ -99,15 +100,15 @@ export function outline(module: Module, text: string, positionAt: (offset: numbe
         return [imported(decl)];
       case 'TestDecl': {
         const children = decl.children.flatMap((child) => symbolsOf(child));
-        const name = decl.name === null ? 'test' : `test "${decl.name}"`;
+        const name = decl.name === null ? 'test' : `test ${spellString(decl.name)}`;
         const quote = decl.name === null ? -1 : text.indexOf('"', decl.span.start);
         const close = quote < 0 ? -1 : text.indexOf('"', quote + 1) + 1;
         const selection = quote >= 0 && close > quote && close <= decl.span.end ? range(quote, close) : range(decl.span.start, decl.span.start + 'test'.length);
         return [{ name, kind: SymbolKind.Namespace, range: range(decl.span.start, decl.span.end), selectionRange: selection, ...(children.length > 0 ? { children } : {}) }];
       }
       default:
-        // A statement of a test
-        return [];
+        // A statement of a test: the functions declared in its blocks
+        return nested(decl);
     }
   }
 

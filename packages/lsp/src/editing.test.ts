@@ -123,6 +123,29 @@ describe('the outline', () => {
     expect(names(symbols)).toEqual([['f', [['g', ['h']], 'k']]])
   })
 
+  // In a test as in a function: those at its top and those in its blocks,
+  // and the test named as a string is written
+  test('lists the functions declared in a test\'s blocks inside the test', async () => {
+    const s = server()
+    const text = `test "say \\"hi\\"" {
+  let z: u32 = 1
+  func plus(x: u32) -> u32 => x + z
+  if true {
+    func deep() -> u32 => z
+    assert deep() == 1
+  }
+  for i in 2 {
+    func step() -> u32 => i + z
+    assert step() > 0
+  }
+  assert plus(1) == 2
+}
+`
+    await s.open(uri, text)
+    const symbols = s.ask<DocumentSymbol[]>('onDocumentSymbol', { textDocument: { uri } })
+    expect(names(symbols)).toEqual([['test "say \\"hi\\""', ['plus', 'deep', 'step']]])
+  })
+
   test('keeps a declaration that does not parse while it is written', async () => {
     const s = server()
     await s.open(uri, SHAPES)
