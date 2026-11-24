@@ -4866,6 +4866,12 @@ describe('a refused value says nothing more where it is used', () => {
       'repeat count must be a compile-time integer',
     ])
   })
+  test('data whose declared type did not resolve is declared, and its uses say nothing more', () => {
+    expect(errs('type Point = (x: i32)\ndef k = Point\ndef m = -true\ndata d3: *[k]u8 = mut [0; 4]\ndata d4: *[m]u8 = [0; 4]\nglobal h: [m]u8 = [0; 4]\nexport func f() -> u8 => d3[0] + d4[1] + h[0]')).toEqual([
+      "'Point' is a type; a type can only be passed for a comptime parameter",
+      "'-' needs a number, not bool",
+    ])
+  })
   test('a refused value given for a comptime value parameter says nothing more', () => {
     expect(errs('type Point = (x: i32, y: i32)\ndef bad = Point\ndef worse = -true\nfunc id(comptime n: u32) -> u32 => n\nfunc Buf(comptime n: u32) -> type => (items: [n]u8)\nfunc f(r: Buf(bad), s: Buf(worse), t: Buf(-true), x: u32) -> u32 {\n  return id(-true) + id(true + 1) + id(bad) + id(worse) + id(x)\n}')).toEqual([
       "'Point' is a type; a type can only be passed for a comptime parameter",
