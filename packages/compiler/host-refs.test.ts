@@ -164,8 +164,8 @@ export func unset() -> ?Canvas {
   })
 
   // A 0 that reaches its place only through a conversion (an element of a
-  // literal, a branch with no type of its own, a def, an instance) is the
-  // null reference as well, not an i32.
+  // literal, a branch with no type of its own, an if let's or elif let's
+  // too, a def, an instance) is the null reference as well, not an i32.
   test('none written 0 is null wherever it is written', async () => {
     const source = `type Canvas = host
 type W = (cs: [2]?Canvas, n: i32)
@@ -195,6 +195,11 @@ export func untyped(c: ?Canvas) -> ?Canvas {
 }
 func pr(comptime T: type, x: T) -> [2]?T => [x, 0]
 export func gen(c: Canvas) -> [2]?Canvas => pr(c)
+data cell = 7:u32
+func at(k: u32) -> ?*u32 => if k == 0 { 0 } else { cell }
+export func iflet(k: u32) -> ?Canvas => (if let v = at(k) { 0 } else { 0 }) as ?Canvas
+export func eliflet(b: bool, k: u32) -> ?Canvas => (if b { 0 } elif let v = at(k) { 0 } else { 0 }) as ?Canvas
+export func eqlet(k: u32, c: ?Canvas) -> bool => c == (if let v = at(k) { 0 } else { 0 })
 `
     const { instance } = await WebAssembly.instantiate(await wasmOfSource(source), {})
     const m = instance.exports as Record<string, CallableFunction>
@@ -211,6 +216,9 @@ export func gen(c: Canvas) -> [2]?Canvas => pr(c)
     expect(m.defz(o)).toEqual([o, null])
     expect(m.untyped(o)).toBe(null)
     expect(m.gen(o)).toEqual([o, null])
+    expect([m.iflet(0), m.iflet(1)]).toEqual([null, null])
+    expect([m.eliflet(1, 0), m.eliflet(0, 0), m.eliflet(0, 1)]).toEqual([null, null, null])
+    expect([m.eqlet(0, null), m.eqlet(1, null), m.eqlet(1, o)]).toEqual([1, 1, 0])
   })
 
   // An array literal indexed where it is written is its elements: a

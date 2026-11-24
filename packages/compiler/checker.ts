@@ -6754,9 +6754,10 @@ class CheckContext {
   }
 
   // Whether a constant is none as it is written: the literal 0 (-0 is one,
-  // written with its sign), also in parentheses, or as each value of an if or
-  // a match. Nothing computed is (0 + 0, -(0), "".len), whatever its value.
-  // A def's name is its value written there, and a value parameter's is the
+  // written with its sign), also in parentheses, or as each value of an if
+  // (an if let and an elif let among its branches too) or a match. Nothing
+  // computed is (0 + 0, -(0), "".len), whatever its value. A def's name is
+  // its value written there, and a value parameter's is the
   // number its call gave (8.7), before this is asked: `def z = 0` and a
   // parameter given 0 are the literal 0 here, `def z = 0 + 0` is 0 + 0.
   private writtenZero(expr: AST.Expr): boolean {
@@ -6765,7 +6766,7 @@ class CheckContext {
       case 'LiteralExpr':
         return e.value.kind === 'int' && e.value.value === 0n
       case 'IfExpr': {
-        if (e.pattern || !e.else_) return false
+        if (!e.else_) return false
         const bodies = [e.thenBranch, ...e.elifs.map((elif) => elif.thenBranch), e.else_]
         return bodies.every((body) => bodyExits(body) || this.branchZero(body))
       }

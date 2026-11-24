@@ -3231,7 +3231,7 @@ A plain host type is never null: a `Canvas` is always a value the host gave. So 
 
 A reference that may be null is a `?Canvas`, the optional form, written as `?*T` is for a pointer ([Optional Types](#optional-types)); `?Screen` is the same type through another name for it. It follows the rules of `?*T`:
 
-- none is written `0`, the literal: also `-0` (the literal with its sign), in parentheses, as the value of a branch, or as a `def` of 0, but nothing computed (`0 + 0` and `-(0)` are not none). A comptime value parameter is the number its call gave, written in its place ([8.7](#87-comptime-value-parameters)): in an instance given 0 it is the literal 0, however the call wrote the 0;
+- none is written `0`, the literal: also `-0` (the literal with its sign), in parentheses, as the value of each branch of an `if` that has an `else` (an `if let` or an `elif let` branch too) or of a `match`, a branch that exits aside, or as a `def` of 0, but nothing computed (`0 + 0` and `-(0)` are not none). A comptime value parameter is the number its call gave, written in its place ([8.7](#87-comptime-value-parameters)): in an instance given 0 it is the literal 0, however the call wrote the 0;
 - it starts as none: a `let` or a global of one given no value is none;
 - `opt == 0` and `opt != 0` ask whether it is none, and are its only comparisons;
 - `if let c = opt { ... }` gives a plain `Canvas` where it is not none, and `opt ?? other` is `opt` unless it is none, and `other` (a `Canvas`) then;
@@ -3349,7 +3349,11 @@ export func untyped(c: ?Canvas) -> ?Canvas {
 func with-none(comptime T: type, x: T) -> [2]?T => [x, 0]
 export func generic(c: Canvas) -> [2]?Canvas => with-none(c)
 func given(comptime n: i32) -> ?Canvas => n
+data seven = 7:u32
 export func signed() -> [2]?Canvas => [-0, given(1 - 1)]
+export func found(p: ?*u32) -> ?Canvas => (if let v = p { 0 } else { 0 }) as ?Canvas
+export func either(b: bool, p: ?*u32) -> ?Canvas => (if b { 0 } elif let v = p { 0 } else { 0 }) as ?Canvas
+export func neither(p: ?*u32, x: ?Canvas) -> bool => x == (if let v = p { 0 } else { 0 })
 
 func none(a: [2]?Canvas) -> bool => a[0] == 0 && a[1] == 0
 test "none is 0 in each place" {
@@ -3360,6 +3364,10 @@ test "none is 0 in each place" {
   assert pick(2, 0) == 0
   assert three()[2] == 0
   assert none(signed())
+  assert found(seven) == 0
+  assert found(0) == 0
+  assert either(false, seven) == 0
+  assert neither(0, 0)
 }
 ```
 
@@ -5812,10 +5820,13 @@ An `elif let name = value` branch is an `if let` in the place of an `elif`: it i
 
 ```ents
 type Node = (value: u32, next: ?*Node)
+type Canvas = host
 
 data nodes = [Node(1, 0), Node(2, 0)]
 data cells = [7:u32, 8, 9]
 data names = ["ab", "cde"]
+global calls: u32 = 0
+import "env" "screen" global screen: Canvas
 
 // The cell at i, else the length of the name at j plus 100, else 0.
 func lookup(i: u32, j: u32) -> u32 {
@@ -5843,7 +5854,32 @@ func measure(p: ?*u32, q: ?[]u8) -> u32 {
   return 0
 }
 
+// Counts its calls, and gives the first cell.
+func bump() -> ?*u32 {
+  calls += 1
+  return &cells[0]
+}
+
+// bump() is called only when c is false.
+func lazy(c: bool) -> u32 {
+  if c { return 1 } elif let p = bump() { return p.* }
+  return 0
+}
+
+// A host reference that may be none, bound as a plain one.
+func tagged(c: Canvas, n: u32) -> u32 => n
+func which(c: bool, a: ?Canvas, b: ?Canvas) -> u32 =>
+  if c { 9 } elif let x = a { tagged(x, 1) } elif let y = b { tagged(y, 2) } else { 0 }
+
 test "elif let binds as an if let does" {
+  assert lazy(true) == 1
+  assert calls == 0
+  assert lazy(false) == 7
+  assert calls == 1
+  assert which(true, screen, screen) == 9
+  assert which(false, screen, 0) == 1
+  assert which(false, 0, screen) == 2
+  assert which(false, 0, 0) == 0
   assert measure(&cells[1], 0) == 8
   assert measure(0, names[1]) == 4
   assert measure(0, 0) == 0
@@ -6357,7 +6393,7 @@ A `for` binds one variable, `for x in xs`, or two, `for i, x in xs`: the index f
 
 #### Counting
 
-`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`, or `... not f64` for a float), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that counts up from 0 while it is below the count, so a negative count runs the loop zero times: before the first pass the loop tests whether the count is above 0, signed for a signed count, and after each pass whether `i + 1` is below it, as a `u32` for either kind ([11.3](#113-control-flow-instructions)). So whatever the count's type, assigning `i` a value at or past the count ends the loop after that pass: with `n: i32` of 5, an `i = 0x80000000` in the body ends it, as it does with `n: u32` ([Loop Variables](#loop-variables)). With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A count that is a variable gives `i` no range, a ranged one too: with `n: u32#4`, `for i in n` makes `i` a plain `u32`. To index with it, count to the constant and stop at the variable, `for i in 4 { break when i >= n ... }`, where `i` is a `u32#4`. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`. A count computed from constants with operators should be its value; the compiler takes the number furthest from zero among its operands instead (the number [Comptime Literal Promotion](#comptime-literal-promotion) checks; for a count, a known bug). So `for k in n / 4` with `def n = 8` gives `k` the range `u32#8`, and `two[k]` on a `*[2]u32` is refused. A negative count whose largest operand is positive, such as `2 - 3`, runs as the `u32` 4294967295 with `i` taken as a `u32#3`, so an index that range claims to prove is read past the array with no check. Write a constant count as a literal, a `.len`, or a `def` whose value is a literal (`def half = 4`).
+`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`, or `... not f64` for a float), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that starts at 0. Before the first pass the loop tests whether the count is above 0, signed for a signed count, so a negative count runs the loop zero times, and a count that isn't negative is the same number as a `u32`. After each pass, one a `continue` ends too, `i` is stepped by 1, wrapping at 2^32, and the next pass runs while the stepped `i` is below the count, the two compared as `u32`s for either kind of count ([11.3](#113-control-flow-instructions)). So whatever the count's type, a pass that sets `i` to a value from the count minus 1 up to `0xFFFFFFFE` is the last one; one that sets it to a smaller value, or to `0xFFFFFFFF`, which the step wraps to 0, is followed by a pass with the stepped `i` ([Loop Variables](#loop-variables)). With `n: i32` of 5, an `i = 0x80000000` in the body ends the loop, as it does with `n: u32`, and an `i = 0xFFFFFFFF` in the first pass is followed by five more, with `i` from 0 to 4. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A count that is a variable gives `i` no range, a ranged one too: with `n: u32#4`, `for i in n` makes `i` a plain `u32`. To index with it, count to the constant and stop at the variable, `for i in 4 { break when i >= n ... }`, where `i` is a `u32#4`. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`. A count computed from constants with operators should be its value; the compiler takes the number furthest from zero among its operands instead (the number [Comptime Literal Promotion](#comptime-literal-promotion) checks; for a count, a known bug). So `for k in n / 4` with `def n = 8` gives `k` the range `u32#8`, and `two[k]` on a `*[2]u32` is refused. A negative count whose largest operand is positive, such as `2 - 3`, runs as the `u32` 4294967295 with `i` taken as a `u32#3`, so an index that range claims to prove is read past the array with no check. Write a constant count as a literal, a `.len`, or a `def` whose value is a literal (`def half = 4`).
 
 There is no range form: `for i in 2..10` is a syntax error. Count from 0 and add the start, or loop over the elements of a range of an array or slice ([4.8](#48-slicerange-syntax)). A count loop has one variable; with two, `for i, j in n`, the first is never set (a known bug).
 
@@ -6418,6 +6454,15 @@ func c_assign_signed(n: i32) -> (t: u32) {
   }
 }
 
+// How many passes run when the first one sets i to v.
+func c_assign(n: i32, v: u32) -> (t: u32) {
+  for i in n {
+    t += 1
+    if t == 1 { i = v }
+    break when t > 10
+  }
+}
+
 test "counting" {
   assert total() == 724
   assert span(2, 5) == 9
@@ -6431,6 +6476,10 @@ test "counting" {
   assert past() == 4
   assert c_assign_signed(5) == 1
   assert c_assign_signed(-5) == 0
+  assert c_assign(5, 4) == 1            // the count minus 1: stepped to the count
+  assert c_assign(5, 3) == 2
+  assert c_assign(5, 0xFFFFFFFE) == 1
+  assert c_assign(5, 0xFFFFFFFF) == 6   // stepped to 0: five more passes
 }
 ```
 
@@ -6695,7 +6744,7 @@ test "a loop's variables are its body's" {
 
 <!-- spec:end -->
 
-The body can assign its loop's variables. The element is a copy, so assigning to it changes nothing else. A count's variable is the one the loop steps: after each pass it goes up by one from the value it holds and is compared with the count as a `u32`, a signed count too, so assigning to it changes the passes that follow, never the rest of the pass it is in: `i = n - 1` makes the pass the last, and so does any value at or past the count, `i = 0x80000000` with a count of 5 among them. The step wraps, so after `i = 0xFFFFFFFF` the next pass has `i` 0. An element loop's index counts on from a value assigned to it, while the elements are walked as before: as many passes, over the same elements. A `u32#N` variable takes only values below `N` (`cannot assign int(20) to u32#10`).
+The body can assign its loop's variables. The element is a copy, so assigning to it changes nothing else. A count's variable is the one the loop steps: after each pass it goes up by one from the value it holds and is compared with the count as a `u32`, a signed count too, so assigning to it changes the passes that follow, never the rest of the pass it is in: `i = n - 1` makes the pass the last, and so does any value past it up to `0xFFFFFFFE`, `i = 0x80000000` with a count of 5 among them. The step wraps, so after `i = 0xFFFFFFFF` the next pass has `i` 0. An element loop's index counts on from a value assigned to it, while the elements are walked as before: as many passes, over the same elements. A `u32#N` variable takes only values below `N` (`cannot assign int(20) to u32#10`).
 
 <!-- spec:begin compile -->
 
