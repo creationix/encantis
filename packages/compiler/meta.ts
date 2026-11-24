@@ -1105,7 +1105,8 @@ class MetaBuilder {
         const name = item.item.ident ?? item.name
         const offset = this.findImportFuncOffset(item, name)
         const again = this.checkResult.symbolRefs.get(offset)
-        const symbolIndex = again !== undefined ? this.symbolIndexByDef.get(again) : this.ownSymbolAt(item.item.span.start, 'func', offset) ?? this.symbolIndexByName.get(this.checkResult.funcNames.get(item.item) ?? name)
+        // (another module's generic is recorded where the item starts)
+        const symbolIndex = again !== undefined ? this.symbolIndexByDef.get(again) : this.ownSymbolAt(item.item.span.start, 'func', offset) ?? this.ownSymbolAt(item.span.start, 'func', offset) ?? this.symbolIndexByName.get(this.checkResult.funcNames.get(item.item) ?? name)
         if (symbolIndex !== undefined) {
           this.addHint(offset, name.length, this.symbols[symbolIndex].type, symbolIndex)
         }
@@ -1557,7 +1558,10 @@ class MetaBuilder {
     let last = meant
     for (let next = this.checkResult.calls.get(last); next?.kind === 'CallExpr'; next = this.checkResult.calls.get(last)) last = next
     const called = last.callee.kind === 'IdentExpr' ? last.callee.name : name
-    const symbolIndex = this.symbolIndexByName.get(called) ?? this.symbolIndexByName.get(name)
+    // Where the checker recorded which declaration the name is (a generic's
+    // call, also where a second generic of the name was refused), that one
+    const recorded = method === null ? this.checkResult.symbolRefs.get(this.checked(callee).span.start) : undefined
+    const symbolIndex = (recorded !== undefined ? this.symbolIndexByDef.get(recorded) : undefined) ?? this.symbolIndexByName.get(called) ?? this.symbolIndexByName.get(name)
     if (method !== null) this.generateHintsForExpr((callee as AST.MemberExpr).object)
     // The checker typed the callee it resolved: f of f(x, a), or the name as written.
     const type = this.checkResult.exprTypes.get(method !== null ? meant.callee : this.checked(callee)) ?? BUILTIN_SIGNATURES[name]

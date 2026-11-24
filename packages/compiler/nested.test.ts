@@ -3824,5 +3824,111 @@ export func above() -> u32 => gen(1 as u32)
     const call = source.indexOf('tf()\n}')
     expect(result.unseen.has(call)).toBe(false)
     expect(hoverText(hover(source, parsed.module!, result, call)!)).toBe('func tf: func() -> u32 — nested in gen(T = u32)')
+    const declared = source.indexOf('tf() -> u32 => 3')
+    expect(gotoDefinition(source, parsed.module!, result, call)?.location.offset).toBe(declared)
   })
+
+  // At its call, a generic's nested function is the generic's for every
+  // question, not a test's function of the name: definition, references and
+  // rename (Nested Functions, 12.4)
+  test('definition, references and rename at a generic\'s nested function named like a test\'s', () => {
+    const source = `func wrap(comptime T: type, x: T) -> T {
+  func helper(a: T) -> T => a
+  return helper(x)
+}
+export func one() -> u32 => wrap(1:u32)
+test "t" {
+  func helper(a: u32) -> u32 => a + 1
+  assert wrap(3:u32) == 3 && helper(1) == 2
+}
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    const call = source.indexOf('helper(x)')
+    const declared = source.indexOf('helper(a: T)')
+    expect(gotoDefinition(source, parsed.module!, result, call)?.location.offset).toBe(declared)
+    expect(findReferences(source, parsed.module!, result, call)?.references.map((r) => r.offset)).toEqual([call])
+    expect(rename(source, parsed.module!, result, call)?.locations.map((l) => l.offset)).toEqual([declared, call])
+    // The test's function is its own
+    const testCall = source.indexOf('helper(1)')
+    expect(rename(source, parsed.module!, result, testCall)?.locations.map((l) => l.offset)).toEqual([source.indexOf('helper(a: u32)'), testCall])
+  })
+
+  // One function imported twice is one name: the second import's local
+  // name is one more place of the first, also where a test imports it
+  // again (3.4, 12.4)
+  test('definition, references and rename at a function imported again', () => {
+    const source = `import "./lib" "dbl" func dbl(x: u32) -> u32
+import "./lib" "dbl" func dbl(x: u32) -> u32
+export func m() -> u32 => dbl(1) + dbl(2)
+test "t" {
+  import "./lib" "dbl" func dbl(x: u32) -> u32
+  assert dbl(3) == 6
+}
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    const second = source.indexOf('dbl(x', source.indexOf('\n'))
+    const first = source.indexOf('func dbl')
+    const uses = [second, source.indexOf('dbl(1)'), source.indexOf('dbl(2)')]
+    expect(gotoDefinition(source, parsed.module!, result, second)?.location.offset).toBe(first)
+    expect(findReferences(source, parsed.module!, result, second)?.references.map((r) => r.offset)).toEqual(uses)
+    expect(rename(source, parsed.module!, result, second)?.locations.map((l) => l.offset)).toEqual([first + 5, ...uses])
+  })
+
+  // A test's function refused its name shows its own type in hover, as the
+  // language server shows it (12.4)
+  test('hover at a refused test function shows its own type', () => {
+    const source = `func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+test "declares a name it cannot" {
+  func hash(k: f64) -> f64 => k
+  assert hash(1.0) == 1.0
+}
+export func m() -> u32 => hash(2:u32)
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    expect(hover(source, parsed.module!, result, source.indexOf('hash(k: f64)'))?.type).toBe('func(k: f64) -> f64')
+    expect(hover(source, parsed.module!, result, source.indexOf('hash(k: u64)'))?.type).toBe('func(k: u64) -> u32')
+  })
+
+  // Where every instance of a generic's nested function has one signature,
+  // hover gives it as before, however the source spaces it, with no
+  // signature per instance (hover --json keeps its shape)
+  test('hover at a generic\'s nested function whose instances agree gives their one signature', () => {
+    const source = `type Num = u32
+func gapply(comptime f: (u32) -> u32, x: u32) -> u32 {
+  let v: u32 = x
+  func gh( y:Num,
+          // the second
+          z: Num )->Num => f(y) + v + z
+  return gh(x, x)
+}
+func modf(x: u32) -> u32 => x + 1
+func bf(x: u32) -> u32 => x
+export func agree(n: u32) -> u32 => gapply(modf, 2) + gapply(bf, 3)
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    expect(hover(source, parsed.module!, result, source.indexOf('gh('))).toEqual({
+      name: 'gh',
+      type: 'func(y: u32, z: u32) -> u32',
+      kind: 'func',
+      nestedIn: 'gapply',
+      capturesIn: [{ in: ['gapply(f = modf)', 'gapply(f = bf)'], type: 'v' }],
+    })
+    // Where they differ, the generic's own, on one line and without comments
+    const typed = `func gapply(comptime T: type, x: T) -> u32 {
+  func gh(a: [*]T, // first
+          b: [*]T /* second */) -> T => 1 as T
+  return gh(0 as [*]T, 0 as [*]T) as u32
+}
+export func two() -> u32 => gapply(u32, 2) + gapply(u64, 3)
+`
+    const typedParsed = parse(typed, { filePath: 'test.ents' })
+    const typedResult = typecheck(typedParsed.module!, { source: typed })
+    expect(hover(typed, typedParsed.module!, typedResult, typed.indexOf('gh('))?.type).toBe('func(a: [*]T, b: [*]T) -> T')
+  })
+
 })

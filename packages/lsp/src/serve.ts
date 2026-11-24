@@ -167,9 +167,9 @@ function nestedDetails(analysis: Analysis, offset: number): string {
     ...(found?.captures !== undefined ? [`captures ${found.captures}`] : []),
     ...(found?.capturedFrom !== undefined ? [`captured from ${codeSpan(found.capturedFrom)}`] : []),
   ];
-  // One in a generic's body: its signature and what it captures in each
-  // instance
-  const listed = (found?.capturesIn ?? []).map((i) => `- in ${i.in.map((n) => codeSpan(n)).join(', ')}: ${i.signature ? `${i.signature}, ` : ''}captures ${i.type}`);
+  // One in a generic's body: its signature, as code, and what it captures
+  // in each instance
+  const listed = (found?.capturesIn ?? []).map((i) => `- in ${i.in.map((n) => codeSpan(n)).join(', ')}: ${i.signature ? `${codeSpan(i.signature)}, ` : ''}captures ${i.type}`);
   return (parts.length > 0 ? `\n\n${parts.join('; ')}` : '') + (listed.length > 0 ? `\n\n${listed.join('\n')}` : '');
 }
 

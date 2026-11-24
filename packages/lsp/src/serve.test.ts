@@ -1081,7 +1081,38 @@ export func m() -> u32 => gapply(u32, modf, 2) + gapply(u64, bf, 3) as u32
 `
     const shown = hoverIn(typed)(typed.indexOf('gh(y'))
     expect(shown).toContain('func gh(y:u32) -> u32')
-    expect(shown).toContain('- in `gapply(T = u32, f = modf)`: func(y: u32) -> u32, captures v')
-    expect(shown).toContain('- in `gapply(T = u64, f = bf)`: func(y: u64) -> u64, captures v')
+    expect(shown).toContain('- in `gapply(T = u32, f = modf)`: `func(y: u32) -> u32`, captures v')
+    expect(shown).toContain('- in `gapply(T = u64, f = bf)`: `func(y: u64) -> u64`, captures v')
+  })
+
+  // A generic's call is the generic the checker found, also where a second
+  // generic of its name, declared or imported, was refused: its references
+  // and highlights hold the call (seventh review)
+  test('a generic\'s call is the first generic of the name where a second is refused', () => {
+    const twice = `func apply(comptime k: () -> u32) -> u32 => k()
+func apply(comptime k: () -> u32) -> u32 => k() + 1
+func one() -> u32 => 1
+export func m() -> u32 => apply(one)
+`
+    const ask = serverFor(twice)
+    const call = twice.indexOf('apply(one')
+    const lines = (found: unknown) => (found as { range: { start: { line: number } } }[] | null)?.map((l) => l.range.start.line)
+    expect(lines(ask('onReferences', call, { context: { includeDeclaration: true } }))).toEqual([0, 3])
+    expect(lines(ask('onDocumentHighlight', call))).toEqual([0, 3])
+    expect((ask('onDefinition', call) as Location | null)?.range.start.line).toBe(0)
+    expect(lines(ask('onReferences', twice.indexOf('apply(comptime k: () -> u32) -> u32 => k() + 1'), { context: { includeDeclaration: true } }))).toEqual([1])
+  })
+
+  // The signature of each instance of a generic's nested function is code,
+  // which markdown reads nothing in (seventh review)
+  test('the signatures hover lists for instances are code', () => {
+    const pointers = `func gapply(comptime T: type, x: T) -> u32 {
+  func gh(a: [*]T, b: [*]T) -> u32 => 1
+  return gh(0 as [*]T, 0 as [*]T)
+}
+export func agree2() -> u32 => gapply(u32, 2) + gapply(u64, 3)
+`
+    const shown = hoverIn(pointers)(pointers.indexOf('gh(a'))
+    expect(shown).toContain('- in `gapply(T = u32)`: `func(a: [*]u32, b: [*]u32) -> u32`, captures nothing')
   })
 })

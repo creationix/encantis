@@ -240,6 +240,10 @@ function definitionOf(
   if (checkResult.unseen?.has(start)) return undefined
   const decl = funcDeclaredAt(module, checkResult, start, name)
   if (decl) {
+    // The same function imported again: its local name is one more place of
+    // the first import's (the checker recorded it there)
+    const again = checkResult.symbolRefs.get(start)
+    if (again !== undefined) return again
     // A function a test declared under a module function's name (#74), or
     // under another test's, holds the name in the module's table: the
     // declaration written here is still its own, with its own uses.
@@ -248,6 +252,10 @@ function definitionOf(
   }
   const value = valueDeclaredAt(module, start, name)
   if (value !== undefined && checkResult.references.has(value)) return value
+  const exact = checkResult.symbolRefs.get(offset) ?? checkResult.symbolRefs.get(start)
+  // A nested function of a generic's body is the body's own, whatever the
+  // module or a test declares of the name, as hover has it
+  if (exact !== undefined && nestedDefinedAt(checkResult, exact)) return exact
   // A call in a generic's body means, of functions that share a name, one
   // function per instance, and is recorded as a use of each: it goes to the
   // one the first instance calls, which is the one hover shows there.
@@ -255,7 +263,6 @@ function definitionOf(
   const shift = generic && firstInstanceShift(checkResult, generic)
   const called = shift ? calledAt(checkResult, start + shift, name) : undefined
   if (called !== undefined) return checkResult.symbolDefOffsets.get(called)
-  const exact = checkResult.symbolRefs.get(offset) ?? checkResult.symbolRefs.get(start)
   if (exact !== undefined) return exact
   if (genericDeclaring(module, start, name)) {
     return checkResult.references.has(start) ? start : undefined
@@ -356,13 +363,15 @@ function nestedHover(module: AST.Module, checkResult: TypeCheckResult, defined: 
   const label = labelOf(nested)
   const parent = nestedParent(nested)
   const nestedIn = label && parent.startsWith(label) ? `${generic.ident}${parent.slice(label.length)}` : parent
-  // The signature the generic's source writes, and each instance's where
-  // that is another (one written in terms of T)
+  // Where the instances' signatures differ (one written in terms of T), the
+  // signature the generic's source writes, and each instance's; otherwise
+  // the one they all have
   const { input, output } = nested.decl.signature
   const at = (offset: number) => offset % INSTANCE_STRIDE
-  const results = output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${source.slice(at(output.span.start), at(output.span.end))}`
-  const type = `func${source.slice(at(input.span.start), at(input.span.end))}${results}`
-  const signed = copies.some((n) => typeToString(n.type) !== type)
+  const written = (node: AST.Type) => writtenType(source.slice(at(node.span.start), at(node.span.end)))
+  const signed = new Set(copies.map((n) => typeToString(n.type))).size > 1
+  const results = output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${written(output)}`
+  const type = signed ? `func${written(input)}${results}` : typeToString(nested.type)
   const groups = new Map<string, { in: string[]; type: string; signature?: string }>()
   for (const n of copies) {
     const captures = capturesText(n) ?? 'nothing'
@@ -373,6 +382,19 @@ function nestedHover(module: AST.Module, checkResult: TypeCheckResult, defined: 
     groups.set(key, group)
   }
   return { type, nestedIn, capturesIn: [...groups.values()] }
+}
+
+// A type as the source writes it, on one line, without its comments and
+// spaced as a type is shown: func(y: T, z: T) -> T
+function writtenType(text: string): string {
+  return text
+    .replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\s*([,:])\s*/g, '$1 ')
+    .replace(/\s*->\s*/g, ' -> ')
+    .replace(/\s+/g, ' ')
+    .replace(/([([])\s+/g, '$1')
+    .replace(/\s+([)\]])/g, '$1')
+    .trim()
 }
 
 // The innermost nested function whose declaration holds `offset`, of those
@@ -484,9 +506,10 @@ export function hover(
 
   // Check module-scope symbols first. A function that shares its name is, at
   // its own declaration, the one declared there, and so is one whose name a
-  // test took over.
+  // test took over, and a test's function refused its name, which has a
+  // type of its own all the same (funcSyms).
   const declaration = funcDeclaredAt(module, checkResult, start, name)
-  const sym = testOwn ?? (declaration && checkResult.takenOver.get(declaration.span.start))
+  const sym = testOwn ?? (declaration && (checkResult.takenOver.get(declaration.span.start) ?? checkResult.funcSyms?.get(declaration)))
     ?? checkResult.symbols.get(declaredAt(module, checkResult, start, name) ?? name)
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded
