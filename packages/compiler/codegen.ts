@@ -2875,6 +2875,16 @@ function makesCall(node: unknown): boolean {
   return Object.entries(node).some(([k, v]) => k !== 'span' && typeof v === 'object' && makesCall(v))
 }
 
+// The two scratch locals of an element loop: the pointer (`$p` in 11.3), and
+// the end address of a *[N]T walk (`$end`) or the elements a slice walk has
+// left (`$left`).
+function forLocals(stmt: AST.ForStmt, ctx: CodegenContext): [string, string] {
+  const uid = scratchId(stmt.span.start)
+  const type = lookupExprType(stmt.iterable, ctx)
+  const slice = type !== undefined && unwrap(type).kind === 'slice'
+  return [`__for_ptr_${uid}`, slice ? `__for_left_${uid}` : `__for_end_${uid}`]
+}
+
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   // The locals collectLocals gave the loop's variables, which its names stand
   // for in the body only: neither in the iterable nor after the loop.
@@ -2944,10 +2954,7 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   if (!u || !elemType) throw new Error('for loop over an untyped iterable')
   const stride = byteSize(elemType)
   if (!stride) throw new Error(`for loop over elements of unknown size: ${RT.typeToString(elemType)}`)
-  const uid = scratchId(stmt.span.start)
-  const ptr = `$__for_ptr_${uid}`
-  // The end address of a *[N]T walk, or the elements a slice walk has left.
-  const end = `$__for_end_${uid}`
+  const [ptr, end] = forLocals(stmt, ctx).map((name) => `$${name}`)
   const load = loadFromMemory(elemType, `(local.get ${ptr})`, ctx)
   const bind = valueLocals.length === 1
     ? `(local.set $${valueLocals[0]} ${load})`
@@ -2987,8 +2994,9 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   const pointee = u.kind === 'pointer' ? unwrap(u.pointee) : null
   const count = pointee?.kind === 'array' ? pointee.sizes?.[0] : null
   if (typeof count !== 'number') throw new Error(`cannot iterate over ${RT.typeToString(u)}`)
-  // A *[0]T has no element: the pointer is evaluated, and there is no pass.
-  if (count === 0) return `(drop ${iterWat})`
+  // A *[0]T has no element: the index is set and the pointer evaluated, as
+  // in any walk, and there is no pass.
+  if (count === 0) return `${startIndex}(drop ${iterWat})`
   // Any other *[N]T has a pass, so the walk is tested after each one:
   //   (local.set $p P) (local.set $end (i32.add (local.get $p) (i32.const N*SIZE)))
   //   (block $break (loop $next
@@ -3457,9 +3465,9 @@ function collectLocals(
       const bindingType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
       if (bindingType) declare(stmt, stmt.binding.value, claimLocals(ctx, stmt.binding.value, bindingType, locals))
       if (stmt.binding.index) declare(stmt, stmt.binding.index, claimLocals(ctx, stmt.binding.index, RT.primitive('u32'), locals))
-      // Element loops walk a pointer up to an end address.
-      const uid = scratchId(stmt.span.start)
-      locals.push({ name: `__for_ptr_${uid}`, type: 'i32' }, { name: `__for_end_${uid}`, type: 'i32' })
+      // An element loop's pointer, and the end address of a *[N]T walk or the
+      // elements a slice walk has left (a count loop uses neither).
+      for (const name of forLocals(stmt, ctx)) locals.push({ name, type: 'i32' })
       visitBody(stmt.body)
     }
     // Handle expression statements that may contain if expressions

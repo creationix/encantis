@@ -1046,7 +1046,7 @@ describe('counted loops', () => {
 // instruction, and what follows from them in 5.2.
 describe('for loop lowerings', () => {
   // A loop's scratch locals are named by its offset in the source.
-  const shape = (code: string, name: string) => bodyOf(code, name).map((l) => l.replace(/__for_(ptr|end)_\d+/g, '__for_$1'))
+  const shape = (code: string, name: string) => bodyOf(code, name).map((l) => l.replace(/__for_(ptr|end|left)_\d+/g, '__for_$1'))
   const COUNTS = `
     func next() -> u32 => 3
     func constant() -> (t: u32) { for i in 4 { t += i } }
@@ -1100,6 +1100,7 @@ describe('for loop lowerings', () => {
     func slice_index(s: []u16) -> (t: u32) { for i, x in s { t += x + i } }
     func spots(s: []Spot) -> (t: i32) { for p in s { t += p.room } }
     func empty() -> (t: u32) { for x in none { t += x } }
+    func empty_index() -> (t: u32) { for i, x in none { t += i } }
   `
 
   test('a *[N]T walk is tested after each pass, for the pointer being at the end', () => {
@@ -1126,24 +1127,26 @@ describe('for loop lowerings', () => {
         '(local.set $i (i32.add (local.get $i) (i32.const 1)))',
       ]),
     ])
-    // A *[0]T has no pass: the pointer is evaluated, and that is all.
+    // A *[0]T has no pass: the pointer is evaluated, and that is all, after
+    // the index is set, as in any walk.
     expect(shape(WALKS, 'empty')).toEqual(['(drop (i32.const 0))', '(local.get $t)'])
+    expect(shape(WALKS, 'empty_index')).toEqual(['(local.set $i (i32.const 0))', '(drop (i32.const 0))', '(local.get $t)'])
   })
 
   test('a slice walk counts the elements it has left', () => {
     const walk = (bind: string[], body: string, stride: number, step: string[]) => [
       '(local.get $s_ptr) (local.get $s_len)',
-      '(local.set $__for_end)',
+      '(local.set $__for_left)',
       '(local.set $__for_ptr)',
       '(block $break',
       '(loop $next',
-      '(br_if $break (i32.eqz (local.get $__for_end)))',
+      '(br_if $break (i32.eqz (local.get $__for_left)))',
       ...bind,
       '(block $continue',
       body,
       ')',
       `(local.set $__for_ptr (i32.add (local.get $__for_ptr) (i32.const ${stride})))`,
-      '(local.set $__for_end (i32.sub (local.get $__for_end) (i32.const 1)))',
+      '(local.set $__for_left (i32.sub (local.get $__for_left) (i32.const 1)))',
       ...step,
       '(br $next)',
       ')',
