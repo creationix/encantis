@@ -85,6 +85,12 @@ export interface CodegenContext {
   addressed: Set<AST.Expr>
   // Range assignments that fill (see TypeCheckResult.fills)
   fills: Set<AST.SliceExpr>
+  // The variant each variant value and constructor is, its payload, and the
+  // variant each variant pattern names (see TypeCheckResult.variants,
+  // payloads and patternVariants)
+  variants?: Map<AST.Expr, number>
+  payloads?: Map<AST.CallExpr, AST.TupleExpr>
+  patternVariants?: Map<AST.MatchPattern, number>
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -107,6 +113,9 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     unproven: checkResult.unproven,
     addressed: checkResult.addressed,
     fills: checkResult.fills,
+    variants: checkResult.variants,
+    payloads: checkResult.payloads,
+    patternVariants: checkResult.patternVariants,
   }
 }
 
@@ -213,6 +222,14 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
           wasmType: n.wasmType,
         }))
       })
+
+    case 'enum': {
+      // Its tag, then its slots by number; one of unit variants only is its
+      // tag alone, named as the variable is.
+      const slots = RT.enumSlots(u)
+      if (slots.length === 0) return [{ suffix: '', wasmType: 'i32' }]
+      return [{ suffix: 'tag', wasmType: 'i32' }, ...slots.map((wt, i) => ({ suffix: String(i), wasmType: wt }))]
+    }
 
     default: {
       const types = typeToWasm(t)
@@ -372,8 +389,135 @@ function literalSliceToWat(ref: DataRef, type: RT.SliceRT): string {
   return `(i32.const ${ref.ptr}) (i32.const ${literalLength(ref, type.element)})`
 }
 
+// === Enums in registers ===
+
+// The enum a value of an enum type is
+function enumOf(type: ResolvedType | undefined): RT.EnumRT {
+  const e = type && unwrap(type)
+  if (e?.kind !== 'enum') throw new Error(`not an enum: ${type ? RT.typeToString(type) : 'no type'}`)
+  return e
+}
+
+// A value of wasm type `from` put into a slot of type `to` (into) or taken
+// out of it (out), bit for bit (reference 2.9). A constant is converted when
+// the program is compiled, to the bits the conversion gives at run time: a
+// global's initializer is a constant instruction.
+function toSlot(wat: string, from: string, to: string, way: 'into' | 'out'): string {
+  const ops = RT.slotConversion(way === 'into' ? from : to, way === 'into' ? to : from)[way]
+  if (ops.length === 0) return wat
+  const folded = foldConversion(wat, ops)
+  if (folded) return folded
+  return ops.reduce((inner, op) => `(${op} ${inner})`, wat)
+}
+
+// A constant instruction with the conversions applied, or null where `wat`
+// is no constant
+function foldConversion(wat: string, ops: string[]): string | null {
+  const m = /^\(([if](?:32|64))\.const ([^\s()]+)\)$/.exec(wat)
+  if (!m) return null
+  const view = new DataView(new ArrayBuffer(8))
+  let type = m[1]
+  let bits: bigint
+  if (type === 'i32' || type === 'i64') bits = BigInt.asUintN(type === 'i32' ? 32 : 64, BigInt(m[2]))
+  else {
+    const text = m[2]
+    const v = text === 'nan' ? Number.NaN : text === 'inf' ? Infinity : text === '-inf' ? -Infinity : Number(text)
+    if (type === 'f32') {
+      view.setFloat32(0, v, true)
+      bits = BigInt(view.getUint32(0, true))
+    } else {
+      view.setFloat64(0, v, true)
+      bits = view.getBigUint64(0, true)
+    }
+  }
+  for (const op of ops) {
+    switch (op) {
+      case 'i64.extend_i32_u':
+        type = 'i64'
+        break
+      case 'i32.wrap_i64':
+        bits = BigInt.asUintN(32, bits)
+        type = 'i32'
+        break
+      case 'i64.reinterpret_f64':
+      case 'i32.reinterpret_f32':
+        type = op.slice(0, 3)
+        break
+      case 'f64.reinterpret_i64':
+      case 'f32.reinterpret_i32':
+        type = op.slice(0, 3)
+        break
+      default:
+        return null
+    }
+  }
+  if (type === 'i32') return `(i32.const ${BigInt.asIntN(32, bits)})`
+  if (type === 'i64') return `(i64.const ${BigInt.asIntN(64, bits)})`
+  if (type === 'f32') {
+    view.setUint32(0, Number(bits), true)
+    return `(f32.const ${floatText(view.getFloat32(0, true))})`
+  }
+  view.setBigUint64(0, bits, true)
+  return `(f64.const ${floatText(view.getFloat64(0, true))})`
+}
+
+const floatText = (v: number) => (Number.isNaN(v) ? 'nan' : !Number.isFinite(v) ? (v > 0 ? 'inf' : '-inf') : Object.is(v, -0) ? '-0' : `${v}`)
+
+// Values on the stack in wasm types `from`, put each into its slot `to`
+// (3.4 of the reference): where the value is written so that its parts are
+// separate expressions, each part with its conversion; where it is one whole
+// (a call, an if, a load), as it is if no part needs converting, and else
+// through scratch locals, one per value, last value first.
+function intoSlots(wat: string, from: string[], to: string[], ctx: CodegenContext): string {
+  if (from.length === 1) return toSlot(wat, from[0], to[0], 'into')
+  const parts = trySplitMultiValue(wat, from.length)
+  if (parts) return parts.map((part, i) => toSlot(part, from[i], to[i], 'into')).join(' ')
+  if (from.every((w, i) => w === to[i])) return wat
+  const temps = from.map((w) => scratchLocal(ctx, w))
+  return [
+    wat,
+    ...[...temps].reverse().map((t) => `(local.set ${t})`),
+    temps.map((t, i) => toSlot(`(local.get ${t})`, from[i], to[i], 'into')).join(' '),
+  ].join('\n')
+}
+
+// A variant as a value in registers: its tag constant, then its payload's
+// values, in the order written, each put in its slot, then a zero for each
+// slot its payload does not reach.
+function variantToWat(expr: AST.Expr, k: number, payload: AST.TupleExpr | null, ctx: CodegenContext): string {
+  const e = enumOf(lookupExprType(expr, ctx))
+  const slots = RT.enumSlots(e)
+  const out = [`(i32.const ${k})`]
+  let at = 0
+  const fields = e.variants[k].fields ?? []
+  if (payload && fields.length > 0) {
+    if (ctx.fieldOrder.has(payload)) {
+      // Given by name in another order: computed as written, each value then
+      // going to its field (the tuple of the payload), as one whole.
+      const from = fields.flatMap((f) => typeToWasm(f.type))
+      out.push(intoSlots(tupleToWat(payload, ctx), from, slots.slice(0, from.length), ctx))
+      at = from.length
+    } else {
+      fields.forEach((f, j) => {
+        const value = argValue(payload.elements[j])
+        if (!value) throw new Error(`Missing value for field ${j} of ${e.variants[k].name}`)
+        const from = typeToWasm(f.type)
+        if (from.length === 0) return
+        out.push(intoSlots(exprToWat(value, ctx), from, slots.slice(at, at + from.length), ctx))
+        at += from.length
+      })
+    }
+  }
+  for (const slot of slots.slice(at)) out.push(zeroOf(slot))
+  return out.join(' ')
+}
+
 function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
   const name = expr.name
+
+  // A unit variant: its tag, and a zero for each slot
+  const variant = ctx.variants?.get(expr)
+  if (variant !== undefined) return variantToWat(expr, variant, null, ctx)
 
   // Check locals first (includes params)
   const localNames = ctx.locals.get(name) ?? ctx.params.get(name)
@@ -1049,6 +1193,10 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
 }
 
 function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
+  // A variant's constructor: its tag, then its payload in its slots
+  const variant = ctx.variants?.get(expr)
+  if (variant !== undefined) return variantToWat(expr, variant, ctx.payloads?.get(expr) ?? null, ctx)
+
   // A call of a generic compiles as the plain call of its instance that the
   // checker recorded: nothing of the comptime arguments is left. This comes
   // before the builtins, so a generic named max is reachable. A type that is

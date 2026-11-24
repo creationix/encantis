@@ -4,6 +4,7 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: this is a test, it's fine */
 import { describe, expect, test } from 'bun:test'
 import { typecheck, type TypeCheckResult } from './checker'
+import { moduleToWat } from './codegen'
 import { parse } from './parser'
 import { canonicalKey, byteSize, enumLayout, enumSlots, type EnumRT, type ResolvedType, typeEquals, typeParts, typeRegisters, typeToString, unwrap, wasmTypes } from './types'
 
@@ -570,5 +571,140 @@ func f(c: Color, x: u32, p: P) -> u32 {
 }
 `
     expect(errors(source)).toEqual(["11:23 runtime index on []Color requires 'if let' or '??' (no optional type for Color)"])
+  })
+})
+
+// === The wasm an enum compiles to ===
+
+function wat(source: string): string {
+  const parsed = parse(source)
+  if (parsed.errors.length > 0) throw new Error(`Parse error: ${parsed.errors[0].message}`)
+  const result = typecheck(parsed.module!, { source })
+  if (result.errors.length > 0) throw new Error(`Check error: ${result.errors.map((e) => e.message).join('; ')}`)
+  return moduleToWat(parsed.module!, result)
+}
+
+// One function or global of a module's WAT, as the compiler writes it, its
+// lines trimmed
+function watOf(source: string, start: string): string {
+  const text = wat(source)
+  const at = text.indexOf(start)
+  if (at < 0) throw new Error(`no ${start} in\n${text}`)
+  let depth = 0
+  for (let i = at; i < text.length; i++) {
+    if (text[i] === '(') depth++
+    else if (text[i] === ')' && --depth === 0) return text.slice(at, i + 1).split('\n').map((l) => l.trim()).join('\n')
+  }
+  throw new Error('unbalanced')
+}
+
+async function binary(source: string): Promise<Uint8Array> {
+  const { default: wabt } = await import('wabt')
+  const module = (await wabt()).parseWat('test.wat', wat(source), { multi_value: true, bulk_memory: true })
+  module.validate()
+  const { buffer } = module.toBinary({})
+  module.destroy()
+  return buffer
+}
+
+async function instance(source: string, imports: WebAssembly.Imports = {}): Promise<Record<string, unknown>> {
+  const { instance } = await WebAssembly.instantiate(await binary(source), imports)
+  return instance.exports as Record<string, unknown>
+}
+
+const lines = (...ls: string[]) => ls.join('\n')
+
+describe('an enum in registers (3.1 to 3.4)', () => {
+  const SOURCE = `${COLOR}${JSON_ENUM}type Point = (x: f32, y: f32)
+enum Shape { Dot(Point), Circle(at: Point, r: f32), Path([]Point) }
+enum Paint { None, Solid(Color), Mix(Color, Color) }
+enum Dir { North, East, South, West }
+export func grey(level: u8) -> Color => Grey(level)
+export func red() -> Color => Red
+export func number(x: f64) -> Json => Number(x)
+export func flag(b: bool) -> Json => Boolean(b)
+export func text(s: []u8) -> Json => String(s)
+export func disk(p: Point, r: f32) -> Shape => Circle(p, r)
+func make-color() -> Color => Grey(3)
+func make-point() -> Point => (1.0, 2.0)
+export func solid() -> Paint => Solid(make-color())
+export func dot() -> Shape => Dot(make-point())
+export func is-north(d: Dir) -> bool => d == North
+global last: Json = Number(1.5)
+global start: Shape = Dot((1.0, 2.0))
+global none: Json
+enum M { A(i32), B(f64) }
+global minus: M = A(-1)
+`
+
+  test('building a variant: its tag, its payload in its slots, zeros', () => {
+    expect(watOf(SOURCE, '(func $grey')).toBe(lines('(func $grey (param $level i32) (result i32 i32 i32 i32)', '(i32.const 5) (local.get $level) (i32.const 0) (i32.const 0)', ')'))
+    expect(watOf(SOURCE, '(func $red')).toBe(lines('(func $red  (result i32 i32 i32 i32)', '(i32.const 0) (i32.const 0) (i32.const 0) (i32.const 0)', ')'))
+    expect(watOf(SOURCE, '(func $number')).toBe(lines('(func $number (param $x f64) (result i32 i64 i32)', '(i32.const 2) (i64.reinterpret_f64 (local.get $x)) (i32.const 0)', ')'))
+    expect(watOf(SOURCE, '(func $flag')).toBe(lines('(func $flag (param $b i32) (result i32 i64 i32)', '(i32.const 1) (i64.extend_i32_u (local.get $b)) (i32.const 0)', ')'))
+    expect(watOf(SOURCE, '(func $text')).toBe(lines('(func $text (param $s_ptr i32) (param $s_len i32) (result i32 i64 i32)', '(i32.const 3) (i64.extend_i32_u (local.get $s_ptr)) (local.get $s_len)', ')'))
+    expect(watOf(SOURCE, '(func $disk')).toBe(lines('(func $disk (param $p_x f32) (param $p_y f32) (param $r f32) (result i32 i32 i32 f32)', '(i32.const 1) (i32.reinterpret_f32 (local.get $p_x)) (i32.reinterpret_f32 (local.get $p_y)) (local.get $r)', ')'))
+    expect(watOf(SOURCE, '(func $is-north')).toBe(lines('(func $is-north (param $d i32) (result i32)', '(i32.eq (local.get $d) (i32.const 0))', ')'))
+  })
+
+  test('a payload computed whole goes through scratch locals only where a value is converted', () => {
+    expect(watOf(SOURCE, '(func $solid')).toBe(lines('(func $solid  (result i32 i32 i32 i32 i32 i32 i32 i32 i32)', '(i32.const 1) (call $make-color) (i32.const 0) (i32.const 0) (i32.const 0) (i32.const 0)', ')'))
+    expect(watOf(SOURCE, '(func $dot')).toBe(lines(
+      '(func $dot  (result i32 i32 i32 f32)',
+      '(local $__tmp_0 f32)',
+      '(local $__tmp_1 f32)',
+      '(i32.const 0) (call $make-point)',
+      '(local.set $__tmp_1)',
+      '(local.set $__tmp_0)',
+      '(i32.reinterpret_f32 (local.get $__tmp_0)) (i32.reinterpret_f32 (local.get $__tmp_1)) (f32.const 0)',
+      ')',
+    ))
+  })
+
+  test('a global holds the exact bits a value has at run time', () => {
+    const text = wat(SOURCE)
+    const globals = text.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('(global'))
+    expect(globals).toEqual([
+      '(global $last_tag (mut i32) (i32.const 2))',
+      '(global $last_0 (mut i64) (i64.const 4609434218613702656))',
+      '(global $last_1 (mut i32) (i32.const 0))',
+      '(global $start_tag (mut i32) (i32.const 0))',
+      '(global $start_0 (mut i32) (i32.const 1065353216))',
+      '(global $start_1 (mut i32) (i32.const 1073741824))',
+      '(global $start_2 (mut f32) (f32.const 0))',
+      '(global $none_tag (mut i32) (i32.const 0))',
+      '(global $none_0 (mut i64) (i64.const 0))',
+      '(global $none_1 (mut i32) (i32.const 0))',
+      '(global $minus_tag (mut i32) (i32.const 0))',
+      '(global $minus_0 (mut i64) (i64.const 4294967295))',
+    ])
+  })
+
+  test('an enum costs nothing: the same module as its registers written out', async () => {
+    const same = async (a: string, b: string) => expect(Buffer.from(await binary(a)).equals(Buffer.from(await binary(b)))).toBe(true)
+    await same(`${COLOR}export func grey(level: u8) -> Color => Grey(level)\n`, 'export func grey(level: u8) -> (u32, u32, u32, u32) => (5, level, 0, 0)\n')
+    await same('enum M { A(i32), B(f64) }\nexport global g: M = A(-1)\n', 'export global g_tag: u32 = 0\nexport global g_0: u64 = 4294967295\n')
+  })
+
+  test('a host reads one value one way: the global and the result of A(-1) hold the same bits', async () => {
+    const exports = await instance('enum M { A(i32), B(f64) }\nexport global g: M = A(-1)\nexport func h(x: i32) -> M => A(x)\n')
+    const g0 = (exports.g_0 as WebAssembly.Global).value
+    const [tag, slot] = (exports.h as (x: number) => [number, bigint])(-1)
+    expect([tag, slot, g0]).toEqual([0, 4294967295n, 4294967295n])
+  })
+
+  test('enums in structs, arrays, instances and branches are their registers', () => {
+    const source = `${COLOR}type Px = (c: Color, a: u8)
+export func col(p: Px) -> Color => p.c
+func id(comptime T: type, x: T) -> T => x
+export func viaid(c: Color) -> Color => id(c)
+`
+    expect(watOf(source, '(func $col')).toBe(lines(
+      '(func $col (param $p_c_tag i32) (param $p_c_0 i32) (param $p_c_1 i32) (param $p_c_2 i32) (param $p_a i32) (result i32 i32 i32 i32)',
+      '(local.get $p_c_tag) (local.get $p_c_0) (local.get $p_c_1) (local.get $p_c_2)',
+      ')',
+    ))
+    // An instance's name spells its enum argument's structure.
+    expect(wat(source)).toContain('(func $id<enum<Red|Blue|Green|Rgb<r:u8|g:u8|b:u8>|')
   })
 })
