@@ -1337,7 +1337,10 @@ class CheckContext {
       for (const leaf of this.literalLeaves(expr)) {
         if (this.constants.has(leaf)) continue
         const value = this.evalComptimeExpr(leaf, true)
-        if (value && value.kind !== 'type' && value.kind !== 'func') this.constants.set(leaf, value)
+        // An f32 is rounded to one before an f64 element widens it, as it
+        // is in code: (-k) for a `def k: f32 = 0.1` is the f32 nearest -0.1.
+        const own = this.exprTypes.get(leaf)
+        if (value && value.kind !== 'type' && value.kind !== 'func') this.constants.set(leaf, isF32(own) ? constantIn(value, own as ResolvedType) : value)
       }
     }
     this.literalsSettled = this.pendingLiterals.length
@@ -1365,7 +1368,15 @@ class CheckContext {
   // or of a struct written as a constructor, the two parts of a slice pair.
   private literalLeaves(expr: AST.Expr, leaves: AST.Expr[] = []): AST.Expr[] {
     let e = ungrouped(expr)
+    const annotated = e
     while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+    // A number written as an f32 (0.1:f32, a typed def's value where its
+    // name is written) is that f32, which an f64 element widens: it is worked
+    // out as a computed value is, not laid out as the number written.
+    if (annotated !== e && e.kind === 'LiteralExpr' && (e.value.kind === 'float' || e.value.kind === 'int') && isF32(this.exprTypes.get(annotated))) {
+      leaves.push(annotated)
+      return leaves
+    }
     switch (e.kind) {
       case 'LiteralExpr':
         break
@@ -9778,9 +9789,12 @@ class CheckContext {
       const unknown = unknownNames(arg.value).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name))
       if (unknown) return fail(this.unknownIdentifier(unknown.name, true))
       if (this.dividesByZero(arg.value)) return fail(`${place} divides by zero`)
-      // A refused value (a refused operator) has its one error.
-      this.inferExpr(arg.value)
-      if (this.refusedValue(arg.value)) return null
+      // A refused value (a refused operator) has its one error. (A name of
+      // the signature's, a parameter, is no value here.)
+      if (unknownNames(arg.value).every((name) => this.lookup(name.name))) {
+        this.inferExpr(arg.value)
+        if (this.refusedValue(arg.value)) return null
+      }
       return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
     }
     const wanted = owner.resolveType(param.type)
@@ -11655,6 +11669,12 @@ function unresolved(type: ResolvedType): boolean {
   if (type.kind === 'named') return unresolved(type.type)
   if (type.kind === 'pointer') return unresolved(type.pointee)
   return (type.kind === 'slice' || type.kind === 'array') && unresolved(type.element)
+}
+
+// Whether a type is f32, a name for it too
+function isF32(type: ResolvedType | undefined): boolean {
+  const t = type && unwrap(type)
+  return t?.kind === 'primitive' && t.name === 'f32'
 }
 
 // Whether a type is a pointer to a type that did not resolve, itself: what

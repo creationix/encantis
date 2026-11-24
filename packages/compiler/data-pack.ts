@@ -847,8 +847,12 @@ function buildElementBytes(
   framings: ArraySize[],
   builder: DataSectionBuilder,
 ): Bytes {
-  // Unwrap AnnotationExpr (e.g., 0:u32 in [0:u32;12])
+  // Unwrap AnnotationExpr (e.g., 0:u32 in [0:u32;12]), unless the checker
+  // worked out its value: 0.1:f32 is the f32 nearest 0.1, also in an f64.
   if (expr.kind === 'AnnotationExpr') {
+    const constant = builder.constants?.get(expr)
+    const bytes = constant && constantBytes(constant, elementType, builder)
+    if (bytes) return applyFramings(bytesOf(bytes), framings, getElementSize(unwrap(elementType)))
     return buildElementBytes(expr.expr, elementType, framings, builder)
   }
   // A name, or a reference to a type declared further down (also where a

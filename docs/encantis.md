@@ -4207,6 +4207,27 @@ test "a def is its value at each use" {
 
 <!-- spec:end -->
 
+A typed `def` laid out in memory is its value in its type, then widened: `def tenth: f32 = 0.1` in an `f64` of `data` is the `f32` nearest 0.1, widened, as it is in code, not the `f64` nearest 0.1. So is `-tenth`, and so is a literal typed `f32` (`0.1:f32`).
+
+<!-- spec:begin compile -->
+
+```ents
+def tenth: f32 = 0.1
+
+data wide: *[3]f64 = [tenth, -tenth, 0.1:f32]
+
+func widened() -> f64 => tenth
+
+test "an f32 def widens from its own type, in data as in code" {
+  assert wide[0] == widened()
+  assert wide[1] == -widened()
+  assert wide[2] == widened()
+  assert wide[0] != 0.1
+}
+```
+
+<!-- spec:end -->
+
 A `def` names a number, never something laid out in memory: an array, a string or a tuple is not a `def`'s value. A table of values is `data` ([3.2](#32-data-declarations-data)), and a pair is two defs.
 
 <!-- spec:begin compile -->

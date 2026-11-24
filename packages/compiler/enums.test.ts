@@ -972,6 +972,9 @@ data xs: *[?]Dir = [North, East]
     expect(text).toMatch(/\(data \(i32\.const (\d+)\) "hi"\)\n\s*\(data \(i32\.const \d+\) "\\03\\(..)\\00\\00\\00\\02\\00\\00\\00\\02\\00\\00\\00\\00\\00\\00\\f8\?"\)  ;; doc: \*\[2\]Json/)
     expect(text).toContain('"\\02\\00\\01")  ;; xs: *[?]Dir')
     expect(text).toContain('spot: *mut [1]Color')
+    // An f32 given for an f64 field is the f32 widened, as in a register
+    expect(wat('enum V { Z, D(f64) }\ndef t: f32 = 0.1\ndata d: *[3]V = [D(t), D((t)), D(-t)]\n'))
+      .toContain('"\\01\\00\\00\\00\\a0\\99\\99\\b9?\\01\\00\\00\\00\\a0\\99\\99\\b9?\\01\\00\\00\\00\\a0\\99\\99\\b9\\bf")  ;; d: *[3]V')
   })
 })
 
