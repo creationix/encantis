@@ -8005,7 +8005,32 @@ A `match` whose subject is an enum value ([2.9](#29-enum-types-algebraic-data-ty
 | `Rgb(r, g, b)`, `Rgb(r, _, _)` | that variant, its fields by position: one part for each field, each a name, bound to that field, or `_` |
 | `Rgb(r:, b: blue)`, `Hsl(l:)`, `Hsl(l: _)` | that variant, its fields by name: `f:` binds the field `f` to a variable `f`, `f: name` binds it to `name`, `f: _` binds nothing; any of the fields, each once, in any order |
 
-A name in a variant pattern is a variable of its arm, seen in the arm's body only, of the type of the field it binds: a `u8` for `Rgb(r, g, b)`, a `*Color` for `Darker(c)`. It is a copy, set from the subject's slots at the start of its arm ([Stack Representation](#stack-representation)): assigning it changes nothing else. It is checked as a match binding is ([Binding Patterns](#binding-patterns)): it cannot have the name of a variable seen where the `match` is, nor of a global, `def` or `data` block, and where it has one that is the one error: the name is still the part's in its arm, of its field's type, so its uses there add none. A name bound twice in one pattern is refused the same way (`'r' is already declared: a match binding cannot reuse the name of another in its pattern (first declared at 3:7)`).
+A name in a variant pattern is a variable of its arm, seen in the arm's body only, of the type of the field it binds: a `u8` for `Rgb(r, g, b)`, a `*Color` for `Darker(c)`. It is a copy, set from the subject's slots at the start of its arm ([Stack Representation](#stack-representation)): assigning it changes nothing else. It is checked as a match binding is ([Binding Patterns](#binding-patterns)): it cannot have the name of a variable seen where the `match` is, nor of a global, `def` or `data` block, and where it has one that is the one error: the name of a variable, a global or a `data` block is still the part's in its arm, of its field's type, so its uses there add none. A `def`'s name is the `def` everywhere, its arm too, as the parser puts the `def`'s value in for each use of it ([3.1](#31-definitions-def)): with `def b = true`, `Grey(b) => b + 1` is also `'+' cannot be applied to bool`. A name bound twice in one pattern is refused the same way (`'r' is already declared: a match binding cannot reuse the name of another in its pattern (first declared at 3:7)`).
+
+<!-- spec:begin compile -->
+
+```ents
+enum Color { Red, Grey(b: u8) }
+def b = true
+global g: u32 = 0
+
+func f(c: Color) -> u8 => match c {
+  Grey(b) => b + 1
+  _ => 0
+}
+func h(c: Color) -> u8 => match c {
+  Grey(b: g) => g + 1
+  _ => 0
+}
+```
+
+```errors
+'b' is already declared: a match binding cannot reuse the name of a def (first declared at 2:5)
+'+' cannot be applied to bool: cast it to an integer first
+'g' is already declared: a match binding cannot reuse the name of a global (first declared at 3:8)
+```
+
+<!-- spec:end -->
 
 <!-- spec:begin compile -->
 

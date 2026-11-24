@@ -5,7 +5,7 @@ import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
 import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, refusedBindingAt, isRefusedType, foreignVariantAt } from './checker'
 import { parse } from './parser'
-import { typeToString, type ResolvedType, type ResolvedField, byteSize, unwrap, isValueArray, enumText, variantSignature } from './types'
+import { typeToString, type ResolvedType, type ResolvedField, byteSize, unwrap, isValueArray, enumText, variantSignature, typeEquals, type EnumRT } from './types'
 import { typeToWasm } from './codegen'
 import { LineMap, type Position } from './position'
 import {
@@ -60,7 +60,8 @@ export interface HoverResult {
 export function payloadFieldNamed(module: AST.Module, checkResult: TypeCheckResult, start: number): { field: ResolvedField; declared: number; uses: number[] } | null {
   const declaredAt = (at: number): ResolvedField | null => {
     for (const decl of module.decls) {
-      if (decl.kind !== 'EnumDecl') continue
+      // An enum left out declares no fields: its name is the first one's
+      if (decl.kind !== 'EnumDecl' || checkResult.leftOut.has(decl)) continue
       for (const [k, v] of decl.variants.entries()) {
         const j = (v.fields ?? []).findIndex((f) => f.ident !== null && (f.identSpan?.start ?? f.span.start) === at)
         if (j < 0) continue
@@ -77,6 +78,52 @@ export function payloadFieldNamed(module: AST.Module, checkResult: TypeCheckResu
   if (declared === undefined || !field) return null
   const uses = fieldUses(checkResult, declared)
   return { field, declared, uses: uses.includes(declared) ? uses : [declared, ...uses].sort((a, b) => a - b) }
+}
+
+// Whether the name written at `start` is a shorthand, `r:` in Rgb(r:, ...):
+// the field of its name given the variable of its name, which is what it
+// reads.
+function shorthandAt(source: string, start: number, name: string): boolean {
+  return /^:\s*[,)]/.test(source.slice(start + name.length))
+}
+
+// Whether `start` is where a variant or a payload field of an enum left out
+// is named: one declared second to a declaration of its name, which declares
+// nothing (2.9). The editor answers nothing there, whatever else of the
+// module is spelled like it.
+export function leftOutNameAt(module: AST.Module, checkResult: TypeCheckResult, start: number): boolean {
+  for (const item of module.decls) {
+    const decl = item.kind === 'ExportDecl' ? item.item : item
+    if (decl.kind !== 'EnumDecl' || !checkResult.leftOut.has(decl) || start < decl.span.start || start >= decl.span.end) continue
+    return decl.variants.some((v) => v.span.start === start || (v.fields ?? []).some((f) => f.ident !== null && (f.identSpan?.start ?? f.span.start) === start))
+  }
+  return false
+}
+
+// A variant of an enum the module declares, whose name an earlier
+// declaration has (B's Red, where A's Red is declared first): the enum keeps
+// it, and a pattern on a value of the enum finds it (2.9), while the name as
+// a value is the earlier declaration's. Where it is declared, the patterns
+// that name it, the enum and its place there; null where `start` is neither.
+export function clashingVariantAt(module: AST.Module, checkResult: TypeCheckResult, start: number): { declared: number; uses: number[]; enumType: ResolvedType; index: number } | null {
+  for (const item of module.decls) {
+    const decl = item.kind === 'ExportDecl' ? item.item : item
+    if (decl.kind !== 'EnumDecl' || checkResult.leftOut.has(decl)) continue
+    const sym = checkResult.symbols.get(decl.ident)
+    if (sym?.kind !== 'type' || unwrap(sym.type).kind !== 'enum') continue
+    for (const [index, v] of decl.variants.entries()) {
+      if (!checkResult.leftOut.has(v)) continue
+      const uses: number[] = []
+      for (const [p, k] of checkResult.patternVariants) {
+        if (k !== index || (p.kind !== 'variant' && p.kind !== 'constructor')) continue
+        const of = checkResult.patternEnums.get(p.span.start)
+        if (of && foreignVariantAt(checkResult, p.span.start) && typeEquals(unwrap(of), unwrap(sym.type))) uses.push(p.span.start)
+      }
+      uses.sort((a, b) => a - b)
+      if (v.span.start === start || uses.includes(start)) return { declared: v.span.start, uses, enumType: sym.type, index }
+    }
+  }
+  return null
 }
 
 // A hover as one line of text, as the CLI prints it:
@@ -230,11 +277,20 @@ function definitionOf(
   name: string,
 ): number | undefined {
   const start = wordStart(source, offset)
+  // A variant whose name an earlier declaration has is declared where its
+  // enum declares it, and a pattern on the enum names it.
+  const clash = clashingVariantAt(module, checkResult, start)
+  if (clash) return clash.declared
   // A variant pattern's name that is a variant of an enum the module does
-  // not declare is not declared here, whatever of the module is spelled like it.
-  if (foreignVariantAt(checkResult, start)) return undefined
+  // not declare is not declared here, whatever of the module is spelled like
+  // it; nor is a variant of an enum left out.
+  if (foreignVariantAt(checkResult, start) || leftOutNameAt(module, checkResult, start)) return undefined
   const declared = declaredAt(module, checkResult, start, name)
   if (declared !== undefined) return checkResult.symbolDefOffsets.get(declared)
+  // A field of an enum's payload named before its value, `b: v` (a named
+  // argument, a part of a pattern by name), is the field, whatever of the
+  // module is spelled like it; a shorthand `b:` reads the variable b.
+  if (!shorthandAt(source, start, name) && payloadFieldNamed(module, checkResult, start)) return undefined
   const value = valueDeclaredAt(module, start, name)
   if (value !== undefined && checkResult.references.has(value)) return value
   // A call in a generic's body means, of functions that share a name, one
@@ -332,6 +388,11 @@ export function hover(
   // in terms of the type parameters, and with what it is in each instance (in
   // each application, for a generic type's).
   const start = wordStart(source, offset)
+  // A name of an enum left out declares nothing
+  if (leftOutNameAt(module, checkResult, start)) return null
+  // A variant whose name an earlier declaration has, as its enum has it
+  const clash = clashingVariantAt(module, checkResult, start)
+  if (clash) return { name, type: variantSignature((unwrap(clash.enumType) as EnumRT).variants[clash.index], typeToString(clash.enumType)), kind: 'variant', value: String(clash.index) }
   // A variant of an enum the module does not declare, as that enum has it
   const foreign = foreignVariantAt(checkResult, start)
   if (foreign) return { name, type: variantSignature(foreign.variant, typeToString(foreign.enumType)), kind: 'variant', value: String(foreign.index) }
@@ -364,7 +425,9 @@ export function hover(
 
   // A field of an enum's payload, where it is declared or named (a named
   // argument of a constructor, a part of a pattern by name)
-  const payloadField = payloadFieldNamed(module, checkResult, start)?.field
+  // A shorthand `r:` of an argument reads the variable r, which it is shown
+  // as where there is one (a def, a global)
+  const payloadField = shorthandAt(source, start, name) && checkResult.symbols.has(name) ? undefined : payloadFieldNamed(module, checkResult, start)?.field
   if (payloadField) return { name, type: typeToString(payloadField.type), kind: 'field' }
 
   // A field is not the module's name spelled like it: it is shown after a
@@ -376,7 +439,14 @@ export function hover(
 
   // Check module-scope symbols first. A function that shares its name is, at
   // its own declaration, the one declared there.
-  const sym = checkResult.symbols.get(declaredAt(module, checkResult, start, name) ?? name)
+  const known = declaredAt(module, checkResult, start, name) ?? name
+  const sym = checkResult.symbols.get(known)
+  // A function with a parameter or result of a type that did not resolve
+  // has no type to show for it: its signature is shown as it is written.
+  if (sym?.kind === 'func' && [...sym.type.params, ...sym.type.returns].some((f) => isRefusedType(f.type))) {
+    const decl = module.decls.map((d) => (d.kind === 'ExportDecl' ? d.item : d)).find((d): d is AST.FuncDecl => d.kind === 'FuncDecl' && (checkResult.funcNames.get(d) ?? d.ident) === known)
+    if (decl) return { name, type: source.slice(decl.signature.span.start, decl.signature.span.end).replace(/\s+/g, ' '), kind: 'func' }
+  }
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded
     // the one that call uses, as the type of the callee. It did the same for
@@ -387,6 +457,8 @@ export function hover(
       const called = calledType(module, checkResult, start)
       if (called) return { name, type: typeToString(called), kind: sym.kind, ...callOf(source, module, checkResult, start, name) }
     }
+    // A def or a global of a refused value has no type or value to show
+    if ((sym.kind === 'def' || sym.kind === 'global') && isRefusedType(sym.type)) return { name, type: '', kind: sym.kind }
     const result: HoverResult = {
       name,
       type: symbolTypeString(sym, source, name),
@@ -444,6 +516,10 @@ export function findReferences(
 ): ReferenceResult | null {
   const name = identAtOffset(source, offset)
   if (!name) return null
+
+  // A variant whose name an earlier declaration has: the patterns that name it
+  const clash = clashingVariantAt(module, checkResult, wordStart(source, offset))
+  if (clash) return { definition: { offset: clash.declared, length: name.length }, references: clash.uses.map((r) => ({ offset: r, length: name.length })) }
 
   const defOffset = definitionOf(source, module, checkResult, offset, name)
   if (defOffset === undefined) {
@@ -504,6 +580,11 @@ export function rename(
   const name = identAtOffset(source, offset)
   if (!name) return null
 
+  // A variant whose name an earlier declaration has is renamed where its
+  // enum declares it and in the patterns that name it: its name as a value
+  // is the earlier one's, which keeps it.
+  const clash = clashingVariantAt(module, checkResult, wordStart(source, offset))
+  if (clash) return { oldName: name, locations: [clash.declared, ...clash.uses].map((at) => ({ offset: at, length: name.length })) }
   const foreign = foreignVariantAt(checkResult, wordStart(source, offset))
   if (foreign) {
     return { oldName: name, locations: [], refused: `'${name}' here is a variant of ${typeToString(foreign.enumType)} that this module does not declare: rename it where it is declared` }
@@ -563,7 +644,9 @@ function renameField(source: string, module: AST.Module, checkResult: TypeCheckR
   }
   const [field] = fields
   if (field.file !== null) {
-    return { oldName: name, locations: [], refused: `'${name}' is a field of a struct that ${field.file.replace(/^.*[\\/]/, '')} declares: rename it there` }
+    // A part of a variant pattern names a field of an enum's payload
+    const ofEnum = [...checkResult.patternVariants.keys()].some((p) => p.kind === 'constructor' && p.elements.some((part) => part.kind !== 'positional' && part.span.start === start))
+    return { oldName: name, locations: [], refused: `'${name}' is a field of ${ofEnum ? 'an enum' : 'a struct'} that ${field.file.replace(/^.*[\\/]/, '')} declares: rename it there` }
   }
   // A named result's field is declared where the result is, a name of its
   // function's

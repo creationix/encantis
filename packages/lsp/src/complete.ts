@@ -156,6 +156,8 @@ function moduleNames(sources: (Source | null)[]): Map<string, { symbol: MetaSymb
 }
 
 function typeOf(source: Source, symbol: MetaSymbol): string {
+  // A refused value has no type to show
+  if (symbol.refused) return '';
   const type = source.meta.types[symbol.type]?.type;
   return type ? formatLine(type) : '';
 }

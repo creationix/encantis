@@ -229,10 +229,22 @@ export const refusedBindingAt = (check: TypeCheckResult, offset: number): boolea
 // an enum declared first): the enum it takes apart and the variant's place
 // in it. The module has no declaration of it to go to.
 export function foreignVariantAt(check: TypeCheckResult, offset: number): { enumType: ResolvedType; variant: EnumVariantRT; index: number } | null {
-  const enumType = check.patternEnums.get(offset)
+  // In a generic's body the pattern is checked in each instance, at its
+  // offset there: the first instance's answers (each takes the same enum
+  // apart, the one a function of the other module returns).
+  let at = offset
+  let enumType = check.patternEnums.get(offset)
+  if (!enumType && offset < INSTANCE_STRIDE) {
+    for (const [k, t] of check.patternEnums) {
+      if (k % INSTANCE_STRIDE === offset && (!enumType || k < at)) {
+        at = k
+        enumType = t
+      }
+    }
+  }
   const e = enumType && unwrap(enumType)
-  if (!enumType || e?.kind !== 'enum' || check.symbolRefs.has(offset)) return null
-  const pattern = [...check.patternVariants].find(([p]) => (p.kind === 'variant' || p.kind === 'constructor') && p.span.start === offset)
+  if (!enumType || e?.kind !== 'enum' || check.symbolRefs.has(offset) || check.symbolRefs.has(at)) return null
+  const pattern = [...check.patternVariants].find(([p]) => (p.kind === 'variant' || p.kind === 'constructor') && p.span.start === at)
   if (!pattern) return null
   return { enumType, variant: e.variants[pattern[1]], index: pattern[1] }
 }
@@ -385,6 +397,10 @@ export interface TypeCheckResult {
   // pattern's name is written: the editor's answer there where the enum is
   // not the module's own (another module's, which a function of it returns)
   patternEnums: Map<number, ResolvedType>
+  // The declarations of capitalised names declared second to one of their
+  // name (a type, an enum, a variant, a generic type): left out, as 2.9 says,
+  // so the editor answers for none of their names
+  leftOut: WeakSet<object>
   // Functions of other source modules that this module's code calls by a
   // name of its own (see CheckContext.externs): by that name, the path of
   // the module that has the function and the name it is known by there.
@@ -608,6 +624,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     payloads: ctx.payloads,
     patternVariants: ctx.patternVariants,
     patternEnums: ctx.patternEnums,
+    leftOut: ctx.declaredSecond,
     externs: ctx.externs,
     calledFromInstances: ctx.calledFromInstances,
     tag: ctx.moduleTag(),
@@ -987,7 +1004,7 @@ class CheckContext {
   // The declarations of capitalised names (types, enums, variants, generic
   // types, declared or imported) that come second to a declaration of their
   // name in the module: refused, and left out (see checkCapitalisedNames)
-  private declaredSecond = new WeakSet<object>()
+  declaredSecond = new WeakSet<object>()
   // The variants of the module's enums by name, whatever order they are
   // declared in: a type that names one is told it is a variant
   private variantNames = new Map<string, string>()
@@ -2464,6 +2481,19 @@ class CheckContext {
 
     // (x) is x: the literal laid out is the one inside the parentheses.
     const value = ungrouped(decl.value)
+
+    // A declared type that did not resolve (an unknown type, a length that
+    // is a refused value) has its error: the data is declared all the same,
+    // of that type, so its uses say nothing more.
+    if (declaredType && unresolved(declaredType)) {
+      const sym = { kind: 'def' as const, type: declaredType, value: { kind: 'data_ptr' as const, id: value.span.start } }
+      this.moduleScope.symbols.set(dataKey, sym)
+      this.currentScope.symbols.set(decl.ident, sym)
+      const at = this.findIdentOffset(decl.span.start, 'data')
+      if (at !== null) this.types.set(typeKey(at, 'IdentPattern'), declaredType)
+      this.recordDeclared(decl.ident, decl.span.start, sym)
+      return
+    }
 
     // A (ptr, len) pair is a slice already: there is no literal to lay out,
     // and so nothing for the name to point at. Single quotes are codepoints,
@@ -12328,6 +12358,10 @@ function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number; c
       case 'TypeRef':
       case 'TypeApply':
         if (n.span) names.push({ name: n.name as string, offset: n.span.start, called: callees.has(n) })
+        break
+      case 'Arg':
+        // A shorthand `n:` reads the variable n
+        if (n.span && typeof n.name === 'string' && n.value === null) names.push({ name: n.name, offset: n.span.start, called: false })
         break
       case 'CallExpr': {
         // x.f(a) may be a call of the function f.

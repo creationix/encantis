@@ -1224,6 +1224,27 @@ func g() -> Color => Red
     expect(refs(at('l'))).toEqual([at('l', 1), at('l', 3)])
   })
 
+  test('an enum left out declares nothing: no answer at its variants or payload fields', () => {
+    const source = 'enum Q { A(m: u8) }\nenum Q { B, C(n: u16) }\nenum R { B }\nfunc f() -> R => B\n'
+    const p = parse(source)
+    const checked = typecheck(p.module!, { source })
+    for (const offset of [source.indexOf('n: u16'), source.indexOf('B, C'), source.indexOf('C(n')]) {
+      expect([hover(source, p.module!, checked, offset), gotoDefinition(source, p.module!, checked, offset), findReferences(source, p.module!, checked, offset), rename(source, p.module!, checked, offset)]).toEqual([null, null, null, null])
+    }
+  })
+
+  test("a payload field named before its value is the field, whatever is spelled like it; a shorthand reads the variable", () => {
+    const source = 'enum Color { Red, Grey(b: u8), Rgb(r: u8, g: u8) }\ndef b = 7\ndef r = 5\nfunc f(c: Color) -> u8 => match c {\n  Grey(b: v) => v + b\n  _ => 0\n}\nfunc g() -> Color => Rgb(r:, g: 1)\n'
+    const p = parse(source)
+    const checked = typecheck(p.module!, { source })
+    const label = source.indexOf('b: v')
+    expect(gotoDefinition(source, p.module!, checked, label)?.location.offset).toBe(source.indexOf('b: u8'))
+    expect(rename(source, p.module!, checked, label)?.locations.map((l) => l.offset)).toEqual([source.indexOf('b: u8'), label])
+    const shorthand = source.indexOf('r:,')
+    expect(hoverText(hover(source, p.module!, checked, shorthand)!)).toBe('def r: i32 = 5')
+    expect(gotoDefinition(source, p.module!, checked, shorthand)?.location.offset).toBe(source.indexOf('def r'))
+  })
+
   test('rename finds an enum, a variant and a payload field everywhere the module names it', () => {
     const places = (offset: number) => rename(SOURCE, parsed.module!, result, offset)?.locations.map((l) => l.offset)
     expect(places(at('Color'))).toEqual([at('Color'), at('Color', 1), at('Color', 2)])
