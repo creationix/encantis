@@ -246,7 +246,8 @@ export func f(p: Point) -> i32 {
     const lib = 'file:///ws/lib.ents'
     const main = 'file:///ws/main.ents'
     const libText = 'export func pair(n: u32) -> (count: u32, clipped: bool) => (count: n, clipped: n > 9)\n'
-    const mainText = 'import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)\nexport func f() -> u32 => pair(3).count\n'
+    // A comment may stand between import and the module's path
+    const mainText = 'import /* shared */ "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)\nexport func f() -> u32 => pair(3).count\n'
     const files = new Map([[pathOf(lib) as string, libText], [pathOf(main) as string, mainText]])
     const s = server({ findFiles: async () => [lib, main], readFile: async (path) => files.get(path) ?? null })
     await s.open(lib, libText)
@@ -326,7 +327,7 @@ export func f() -> u32 => take(pair(3))
     const s = server({ findFiles: () => found(), readFile: async (path) => files.get(path) ?? null })
     await s.open(lib, libText)
     const rename = () => s.at<Promise<WorkspaceEdit>>('onRenameRequest', lib, libText, libText.indexOf('count:'), { newName: 'total' })
-    await expect(rename()).rejects.toThrow("the workspace's files could not be listed")
+    await expect(rename()).rejects.toThrow("the workspace's files could not all be listed, so the modules that use this one could not be checked: no workspace")
     // A search keeps its listing a while; a rename lists the files again, and
     // finds the module that came since
     found = async () => [lib]
@@ -334,6 +335,23 @@ export func f() -> u32 => take(pair(3))
     files.set(pathOf(main) as string, 'import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)\nexport func f() -> u32 => pair(3).count\n')
     found = async () => [lib, main]
     await expect(rename()).rejects.toThrow('main.ents, which uses this module, would not check')
+  })
+
+  test('a field is not renamed where the workspace is listed in part, and a search shows the part', async () => {
+    const lib = 'file:///ws/lib.ents'
+    const libText = 'export func pair(n: u32) -> (count: u32, clipped: bool) => (count: n, clipped: n > 9)\n'
+    const s = server({
+      findFiles: async () => ({ uris: [lib, 'file:///ws/other.ents'], incomplete: '/ws/locked could not be read (EACCES)' }),
+      readFile: async (path) => (path === pathOf('file:///ws/other.ents') ? 'export func other() -> u32 => 1\n' : null),
+    })
+    await s.open(lib, libText)
+    await expect(s.at<Promise<WorkspaceEdit>>('onRenameRequest', lib, libText, libText.indexOf('count:'), { newName: 'total' })).rejects.toThrow(
+      "the workspace's files could not all be listed, so the modules that use this one could not be checked: /ws/locked could not be read (EACCES)",
+    )
+    // A name that is no field needs no other module checked
+    expect(applied(libText, await s.at<Promise<WorkspaceEdit>>('onRenameRequest', lib, libText, libText.indexOf('n: u32'), { newName: 'k' }), lib)).toContain('pair(k: u32)')
+    const found = await s.ask<Promise<{ name: string }[]>>('onWorkspaceSymbol', { query: '' })
+    expect(found.map((f) => f.name)).toContain('other')
   })
 })
 

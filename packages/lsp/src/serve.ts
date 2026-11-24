@@ -281,11 +281,19 @@ export interface ServerOptions {
   // Reads a file of another file system by its URI (a web editor's,
   // vscode-vfs:), where readFile reads none: the web server asks the editor.
   readUri?: (uri: string) => Promise<string | null>;
-  // The URIs of the workspace's .ents files, for Go to Symbol in Workspace,
-  // in the folders the client named when it started (their URIs): VS Code
-  // finds them (the extensions answer encantis/findFiles), `encantis lsp`
-  // reads the folders.
-  findFiles?: (folders: string[]) => Promise<string[]>;
+  // The URIs of the workspace's .ents files, for Go to Symbol in Workspace
+  // and for what a rename has to check, in the folders the client named when
+  // it started (their URIs): VS Code finds them (the extensions answer
+  // encantis/findFiles), `encantis lsp` reads the folders. A listing that is
+  // not all of them says why (FoundFiles).
+  findFiles?: (folders: string[]) => Promise<string[] | FoundFiles>;
+}
+
+// The files a listing found, and where it is not all of them, why: a folder
+// it could not read, a limit it stopped at
+export interface FoundFiles {
+  uris: string[];
+  incomplete?: string;
 }
 
 // The path the loader names a document's file by: a file's path (pathOf),
@@ -993,7 +1001,11 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       const path = pathFor(other);
       if (!path || path === own || !sameFileSystem(other, uri)) continue;
       const text = await textOf(other);
-      if (text === null || !/\bimport\s+"\.\.?\//.test(text)) continue;
+      if (text === null) continue;
+      // Only a module that imports another source file, a test's import
+      // included, can hold this one. One that does not parse holds nothing yet.
+      const parsed = parse(text).module;
+      if (!parsed || getSourceImports(parsed, true).length === 0) continue;
       const now = await programOf(other, text);
       if (!now?.sources?.has(own)) continue;
       const then = await programOf(other, text, new Map([[own, renamed]]));
@@ -1036,7 +1048,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     // A field is named by other modules, which rename does not edit
     if (plan.field !== null) {
       const elsewhere = await dependentProblem(uri, renamed.text, params.newName).catch((e: unknown) => {
-        throw refuse(`the workspace's files could not be listed, to check the modules that use this one: try again (${(e as Error)?.message ?? e})`);
+        throw refuse(`the workspace's files could not all be listed, so the modules that use this one could not be checked: ${(e as Error)?.message ?? e}`);
       });
       if (elsewhere) throw refuse(elsewhere);
     }
@@ -1082,14 +1094,21 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // each letter of a query is written.
   let listed: { at: number; uris: string[] } | null = null;
 
-  // `fresh`: listed now, and a failure to is thrown (rename depends on what
-  // is there, a search does not)
+  // `fresh`: listed now, and a listing that failed or is not all of the
+  // files is thrown, with why (rename depends on what is there; a search
+  // shows what it finds)
   async function workspaceFiles(fresh = false): Promise<string[]> {
     if (!options.findFiles) return [];
+    const list = async (): Promise<FoundFiles> => {
+      const found = await options.findFiles!(folders);
+      return Array.isArray(found) ? { uris: found } : found;
+    };
     if (fresh) {
-      listed = { at: Date.now(), uris: await options.findFiles(folders) };
+      const found = await list();
+      listed = { at: Date.now(), uris: found.uris };
+      if (found.incomplete) throw new Error(found.incomplete);
     } else if (!listed || Date.now() - listed.at > 5000) {
-      listed = { at: Date.now(), uris: await options.findFiles(folders).catch(() => []) };
+      listed = { at: Date.now(), uris: (await list().catch(() => ({ uris: [] }))).uris };
     }
     return listed.uris;
   }

@@ -4,10 +4,11 @@
 // and the workspace's .ents files, which it finds in the folders the client
 // names when it starts.
 
+import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createConnection, ProposedFeatures } from 'vscode-languageserver/node';
-import { pathFor, startServer, uriOf } from './serve';
+import { type FoundFiles, pathFor, startServer, uriOf } from './serve';
 
 // More files than a workspace of source has: past this many, the rest are
 // not looked for.
@@ -30,22 +31,41 @@ export function serveStdio(): void {
 
 // The URIs of the .ents files in the folders (file: URIs) and the folders in
 // them, except hidden folders (.git) and node_modules. Links are not
-// followed, so a link to a folder that holds it ends no walk.
-export async function sourceFiles(folders: string[]): Promise<string[]> {
-  const found: string[] = [];
+// followed, so a link to a folder that holds it ends no walk. Where the
+// listing is not all of them, it says why: a folder it could not read, or
+// more files than `most`, after which it stops.
+export async function sourceFiles(folders: string[], most = MOST_FILES): Promise<FoundFiles> {
+  const uris: string[] = [];
+  let incomplete: string | undefined;
+  let stopped = false;
   const walk = async (dir: string): Promise<void> => {
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    let entries: Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (e) {
+      incomplete ??= `${dir} could not be read (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`;
+      return;
+    }
     for (const entry of entries) {
-      if (found.length >= MOST_FILES) return;
+      if (stopped) return;
       if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
       const path = join(dir, entry.name);
       if (entry.isDirectory()) await walk(path);
-      else if (entry.isFile() && entry.name.endsWith('.ents')) found.push(uriOf(path));
+      else if (entry.isFile() && entry.name.endsWith('.ents')) {
+        if (uris.length === most) {
+          incomplete ??= `there are more than ${most} .ents files, and the rest were not looked for`;
+          stopped = true;
+          return;
+        }
+        uris.push(uriOf(path));
+      }
     }
   };
   for (const folder of folders) {
+    if (stopped) break;
     const dir = folder.startsWith('file:') ? pathFor(folder) : null;
     if (dir) await walk(dir);
+    else incomplete ??= `${folder} is not a folder of this computer's`;
   }
-  return found;
+  return incomplete ? { uris, incomplete } : { uris };
 }
