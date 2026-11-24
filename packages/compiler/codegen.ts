@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { argValue, ungroupedType } from './ast'
-import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, testIds, testsToRun, type CapturedVar, type ComptimeValue, type InstanceInfo, type NestedCall, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, testIds, testsToRun, modulesWithoutTests, isCallableName, type CapturedVar, type ComptimeValue, type InstanceInfo, type NestedCall, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -93,6 +93,13 @@ export interface CodegenContext {
   // What each exit of the function being emitted gives back after its own
   // results: the registers of the variables it writes (N25)
   writesBack?: string
+  // What each function declaration or import is (TypeCheckResult.funcSyms),
+  // and the function a call outside an instance calls, by where the checker
+  // recorded the callee's definition: by name, the last function a test
+  // declares or imports under a name has it (#74)
+  funcSyms?: TypeCheckResult['funcSyms']
+  funcAt?: Map<number, CheckSymbol>
+  symbolRefs?: TypeCheckResult['symbolRefs']
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -116,7 +123,22 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     addressed: checkResult.addressed,
     fills: checkResult.fills,
     nestedCalls: checkResult.nestedCalls,
+    funcSyms: checkResult.funcSyms,
+    funcAt: funcsByPlace(checkResult),
+    symbolRefs: checkResult.symbolRefs,
   }
+}
+
+// Each function the module or a test declares or imports, by where the
+// checker recorded its definition (see CodegenContext.funcAt)
+const funcsByPlaceCache = new WeakMap<TypeCheckResult, Map<number, CheckSymbol>>()
+function funcsByPlace(checkResult: TypeCheckResult): Map<number, CheckSymbol> {
+  let found = funcsByPlaceCache.get(checkResult)
+  if (!found) {
+    found = new Map([...(checkResult.funcSyms ?? [])].map(([decl, sym]) => [decl.span.start, sym]))
+    funcsByPlaceCache.set(checkResult, found)
+  }
+  return found
 }
 
 // A scratch local or label is named after the place in the source that needs
@@ -1200,7 +1222,10 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   const watName = ctx.nameMap.get(funcName) ?? funcName
   const call = `(call $${watName}${args ? ' ' + args : ''})`
   // A plain host reference the host gives back is checked as it comes in.
-  const sym = ctx.symbols.get(funcName)
+  // The function called is the one the checker found for the call, which
+  // by name could be a test's of the name (#74).
+  const def = expr.callee.span.start < INSTANCE_STRIDE ? ctx.symbolRefs?.get(expr.callee.span.start) : undefined
+  const sym = (def !== undefined ? ctx.funcAt?.get(def) : undefined) ?? ctx.symbols.get(funcName)
   if (sym?.kind !== 'func' || !sym.host) return call
   const checked = sym.type.returns.flatMap((r) => nonNullSlots(r.type))
   if (!checked.includes(true)) return call
@@ -3977,8 +4002,10 @@ function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult, le
 // instance given a function a test declares, or imports, or a nested
 // function of one, is asked for by that test alone, and one given a nested
 // function of an instance by that instance; an imported module's tests are
-// checked with the program's and not built (12.4, 12.5).
-function untestedInstances(checkResults: ReadonlyMap<string, TypeCheckResult>, tested: ReadonlySet<string>): Map<string, Set<string>> {
+// checked with the program's and not built (12.4, 12.5). `withoutTests`: the
+// build without tests, which has no module only tests import, and so none
+// of the instances only those modules' code asks for (askedBy.program).
+function untestedInstances(checkResults: ReadonlyMap<string, TypeCheckResult>, tested: ReadonlySet<string>, withoutTests = false): Map<string, Set<string>> {
   const kept = new Set<InstanceInfo>()
   const queue: InstanceInfo[] = []
   const keep = (inst: InstanceInfo) => {
@@ -3988,7 +4015,7 @@ function untestedInstances(checkResults: ReadonlyMap<string, TypeCheckResult>, t
   }
   for (const result of checkResults.values()) {
     for (const inst of result.instances) {
-      if (inst.askedBy.module || [...inst.askedBy.tests].some((path) => tested.has(path))) keep(inst)
+      if ((withoutTests ? inst.askedBy.program : inst.askedBy.module) || [...inst.askedBy.tests].some((path) => tested.has(path))) keep(inst)
     }
   }
   for (let inst = queue.pop(); inst; inst = queue.pop()) for (const next of inst.requests) keep(next)
@@ -4027,36 +4054,16 @@ function literalFates(
 }
 
 // The instances of a module that a build without tests leaves out: those
-// only tests ask for
+// only tests, and modules only tests import, ask for
 const withoutTestsCache = new WeakMap<ReadonlyMap<string, TypeCheckResult>, Map<TypeCheckResult, Set<string>>>()
 function untestedInstanceSet(checkResults: ReadonlyMap<string, TypeCheckResult>, result: TypeCheckResult): Set<string> {
   let found = withoutTestsCache.get(checkResults)
   if (!found) {
-    const left = untestedInstances(checkResults, new Set())
+    const left = untestedInstances(checkResults, new Set(), true)
     found = new Map([...checkResults].map(([path, r]) => [r, left.get(path) ?? new Set<string>()]))
     withoutTestsCache.set(checkResults, found)
   }
   return found.get(result) ?? new Set()
-}
-
-// The modules of a build without tests, each after those it imports, in the
-// order the checker visits them (typecheckProgram): only the imports outside
-// test blocks are followed (7.1).
-function modulesWithoutTests(modules: ReadonlyMap<string, LoadedModule>, entryPath: string): string[] {
-  const order: string[] = []
-  const seen = new Set<string>()
-  const visit = (path: string) => {
-    if (seen.has(path)) return
-    seen.add(path)
-    const loaded = modules.get(path)
-    if (!loaded) return
-    for (const decl of loaded.module.decls) {
-      if (decl.kind === 'ImportDecl' && isSourceImport(decl.module)) visit(resolveModulePath(decl.module, path))
-    }
-    order.push(path)
-  }
-  visit(entryPath)
-  return order
 }
 
 // A generic is never exported to the host: there is no one function to
@@ -4316,8 +4323,9 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const results: string[] = []
     // The types are the checker's, part by part: a type that is a name (a
     // `type`, an applied generic type) is known only there, and read off the
-    // syntax it would be no value at all.
-    const sym = ctx.symbols.get(name)
+    // syntax it would be no value at all. The import's own: by name, it can
+    // be a test's function or import of the name (#74).
+    const sym = ctx.funcSyms?.get(imp) ?? ctx.symbols.get(name)
     const checked = (from: 'params' | 'returns', index: number, count: number, ast: AST.Type): ResolvedType => {
       const fields = sym?.kind === 'func' ? sym.type[from] : []
       return fields.length === count ? fields[index].type : resolveAstType(ast)
@@ -4539,7 +4547,7 @@ function modulePrefix(filePath: string): string {
 // is named with a % first, which no other WAT name has, and with each
 // character a WAT name does not hold, and each %, written as %XX.
 function unnamedImportWat(known: string): string {
-  if (/^[a-z][\p{L}0-9_-]*$/u.test(known)) return known
+  if (isCallableName(known)) return known
   const bytes = (c: string) => [...new TextEncoder().encode(c)].map((b) => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join('')
   return `%${known.replace(/[^A-Za-z0-9!#&'*+\-./:<=>?@^_`|~]/gu, bytes)}`
 }
@@ -4551,7 +4559,9 @@ function unnamedImportWat(known: string): string {
 // nested function's path, console.log).
 function unnamedImportName(item: AST.ImportItem, funcNames: ReadonlyMap<AST.FuncDecl | AST.ImportFunc, string> | undefined, prefix: string): string | undefined {
   if (item.item.kind !== 'ImportFunc' || item.item.ident) return undefined
-  const known = funcNames?.get(item.item) ?? item.name
+  // The checker knows one that cannot be called with a % first (callableName)
+  const name = funcNames?.get(item.item) ?? item.name
+  const known = name.startsWith('%') ? name.slice(1) : name
   const wat = unnamedImportWat(known)
   if (wat === known) return undefined
   return prefix ? `${prefix}$${wat}` : wat

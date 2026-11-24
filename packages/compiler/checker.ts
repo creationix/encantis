@@ -176,8 +176,16 @@ export interface Instance {
   // Who asked for it outside an instance's body: code of a module that is
   // no test's (`module`), or the tests of these modules, by path. A build
   // leaves out an instance that only tests it does not build asked for,
-  // with the instances that one asks for (see untestedInstances).
-  askedBy: { module: boolean; tests: Set<string> }
+  // with the instances that one asks for (see untestedInstances). `program`:
+  // the code of a module the build without tests has, which is not one that
+  // only tests import (see modulesWithoutTests), asked for it.
+  askedBy: { module: boolean; program: boolean; tests: Set<string> }
+  // Those modules, whose code asked for it (askedBy.program)
+  askers: Set<CheckContext>
+  // The first of them, or of those whose code asked for an instance that
+  // asks for this one, in the order the build without tests checks them:
+  // where an instance that depends on its site is laid out (placeShared)
+  placedAt?: CheckContext
 }
 
 // Everything one call in ordinary code brought into being: the instance it
@@ -509,7 +517,7 @@ export interface InstanceInfo {
   args: ComptimeValue[]
   // Who asked for it outside an instance's body, and the instances its body
   // asks for, of this module or another (see Instance)
-  askedBy: { readonly module: boolean; readonly tests: ReadonlySet<string> }
+  askedBy: { readonly module: boolean; readonly program: boolean; readonly tests: ReadonlySet<string> }
   readonly requests: readonly InstanceInfo[]
 }
 
@@ -834,6 +842,23 @@ export function typecheckProgram(
     fileNames.set(path, twins > 1 ? pathFrom(entryDir, path) : fileName(path))
   }
 
+  // The modules of the build without tests, in the order it checks them. A
+  // test build numbers the files of one name, and lays out the instances
+  // that several modules share, as that build does: a test's import, which
+  // checks a module earlier, or a module only tests import, changes neither
+  // (9.0). A module only tests import is numbered after them all.
+  const programOrder = modulesWithoutTests(modules, entryPath)
+  const programRank = new Map(programOrder.map((path, i) => [path, i]))
+  const tags = new Map<string, string>()
+  const tagsGiven = new Map<string, number>()
+  const giveTag = (path: string) => {
+    const tag = fileTag(path)
+    const n = (tagsGiven.get(tag) ?? 0) + 1
+    tagsGiven.set(tag, n)
+    tags.set(path, n === 1 ? tag : `${tag}~${n}`)
+  }
+  for (const path of programOrder) giveTag(path)
+
   function visit(path: string) {
     if (visited.has(path)) return
     visited.add(path)
@@ -856,8 +881,9 @@ export function typecheckProgram(
     const ctx = contextFor({ ...options, filePath: path, moduleExports, source: loaded.source })
     ctx.program = program
     ctx.fileNames = fileNames
-    const alike = [...program.values()].filter((other) => fileTag(other.filePath) === fileTag(path)).length
-    ctx.tag = alike === 0 ? fileTag(path) : `${fileTag(path)}~${alike + 1}`
+    if (!tags.has(path)) giveTag(path)
+    ctx.tag = tags.get(path) as string
+    ctx.inProgram = programRank.has(path)
     program.set(path, ctx)
     ctx.checkModule(loaded.module)
     // A program has one memory, declared in one module at most: the
@@ -879,11 +905,60 @@ export function typecheckProgram(
   }
 
   visit(entryPath)
+  placeShared(checked, programRank)
+  for (const { path, ctx } of checked) {
+    const result = results.get(path)
+    if (result) result.literals = ctx.pendingLiterals
+  }
   checkModuleSize(checked.map(({ path, ctx, module }) => ({ ctx, module, entry: path === entryPath })))
   return { results, errors: [...results.values()].flatMap((result) => result.errors) }
 }
 
 const MEMORY_TWICE = 'memory is already declared: a program has one memory declaration at most'
+
+// The modules of a build without tests, each after those it imports, in the
+// order the checker visits them (typecheckProgram): only the imports outside
+// test blocks are followed (7.1).
+export function modulesWithoutTests(modules: ReadonlyMap<string, { module: AST.Module }>, entryPath: string): string[] {
+  const order: string[] = []
+  const seen = new Set<string>()
+  const visit = (path: string) => {
+    if (seen.has(path)) return
+    seen.add(path)
+    const loaded = modules.get(path)
+    if (!loaded) return
+    for (const decl of loaded.module.decls) {
+      if (decl.kind === 'ImportDecl' && isSourceImport(decl.module)) visit(resolveModulePath(decl.module, path))
+    }
+    order.push(path)
+  }
+  visit(entryPath)
+  return order
+}
+
+// Where each instance that depends on its site is laid out (see
+// placeInstanceLiterals): by the first module of the build without tests
+// whose own code asks for it, directly or through the instances that ask for
+// it. Which module asked first in a test build, a test or a module checked
+// earlier for a test's import, changes nothing (9.0). The instances' data is
+// then placed again in each module that has any.
+function placeShared(checked: readonly { ctx: CheckContext }[], rank: ReadonlyMap<string, number>): void {
+  const all = checked.flatMap(({ ctx }) => ctx.instances)
+  if (!all.some((inst) => inst.usedSite)) return
+  const placedAt = new Map<Instance, CheckContext>()
+  const rankOf = (ctx: CheckContext) => rank.get(ctx.filePath ?? '') ?? Number.MAX_SAFE_INTEGER
+  for (const { ctx } of [...checked].sort((a, b) => rankOf(a.ctx) - rankOf(b.ctx))) {
+    if (!ctx.inProgram) continue
+    const queue = all.filter((inst) => inst.askers.has(ctx))
+    for (let inst = queue.pop(); inst; inst = queue.pop()) {
+      if (placedAt.has(inst)) continue
+      placedAt.set(inst, ctx)
+      queue.push(...inst.requests)
+    }
+  }
+  for (const inst of all) inst.placedAt = placedAt.get(inst)
+  for (const { ctx } of checked) if (ctx.instances.some((inst) => inst.usedSite)) ctx.placeAgain()
+}
 
 // A message of another module, told in this one: the place it says the
 // first declaration of a name is (see firstDeclared) is that module's,
@@ -1740,7 +1815,13 @@ class CheckContext {
     for (const item of decl.items) {
       switch (item.item.kind) {
         case 'ImportFunc': {
-          const name = item.item.ident ?? item.name
+          // One without a local name that is no identifier cannot be called
+          // (7.1), and its name can be another's: a nested function's path
+          // (console.log), an instance's (apply<inc>), the name a test's
+          // function has in the output (__test1). It is known by its name
+          // with a % first, which no other name has (see callableName).
+          const name = callableName(item)
+          if (name !== item.name && !item.item.ident) this.funcNames.set(item.item, name)
           if (this.takenByGeneric(name, item.span.start)) break
           if (this.takenByAnother(name, item.span.start, 'func', inTest, true)) break
           // A test takes no name of an import of the module (12.4). A
@@ -1753,7 +1834,7 @@ class CheckContext {
           const imported = `${from}\n${item.name}`
           const known = inTest && !this.shared(name) ? this.importedFuncs.get(name) : undefined
           if (known && (!isSource || known.key !== imported)) {
-            this.error(item.span.start, `'${name}' is already declared: an import in a test cannot reuse the name of an import of the module${this.firstDeclared(known.at)}`)
+            this.error(item.span.start, `'${declaredName(name)}' is already declared: an import in a test cannot reuse the name of an import of the module${this.firstDeclared(known.at)}`)
             break
           }
           if (!inTest && !this.importedFuncs.has(name)) this.importedFuncs.set(name, { key: imported, at: item.item.span.start })
@@ -2119,7 +2200,7 @@ class CheckContext {
       const key = paramsKey(sym.type)
       const same = members.flatMap((m) => this.funcType(m) ?? []).find((type) => paramsKey(type) === key)
       if (same) {
-        this.error(decl.span.start, `'${name}' is already declared with parameters (${paramsText(same)})`)
+        this.error(decl.span.start, `'${declaredName(name)}' is already declared with parameters (${paramsText(same)})`)
         this.repeated.add(decl)
         return
       }
@@ -10419,7 +10500,8 @@ class CheckContext {
       lookedUp: new Map(),
       requests: [],
       hidden: hiddenCaptures(held),
-      askedBy: { module: false, tests: new Set() },
+      askedBy: { module: false, program: false, tests: new Set() },
+      askers: new Set(),
     }
     requester?.requests.push(inst)
     if (!requester) {
@@ -10447,7 +10529,13 @@ class CheckContext {
   // body: by a test of it, or by the module's own code
   private askedFor(inst: Instance): void {
     if (this.openTests.length > 0) inst.askedBy.tests.add(this.filePath ?? '')
-    else inst.askedBy.module = true
+    else {
+      inst.askedBy.module = true
+      if (this.inProgram) {
+        inst.askedBy.program = true
+        inst.askers.add(this)
+      }
+    }
   }
 
   // The name this module's code calls a function of `from` by, where the
@@ -10498,6 +10586,9 @@ class CheckContext {
   // name of its file, numbered from the second file of the program that has
   // the same name (see typecheckProgram).
   tag = ''
+  // Whether the build without tests has the module: not one that only tests
+  // import (see typecheckProgram)
+  inProgram = true
   moduleTag(): string {
     return this.tag || fileTag(this.filePath)
   }
@@ -10667,10 +10758,12 @@ class CheckContext {
   // instances of one generic follow each other in the order of their names,
   // as their code does. Without this a generic with a string in its body and
   // its hand-written twin would differ in every address. An instance that
-  // depends on its site is placed by its arguments and its site's tag,
-  // whichever site asked first and so has the name without the tag: a test
-  // build, whose tests can ask before the program does, then lays out the
-  // program's instances as the build without tests does (9.0).
+  // depends on its site is placed by its arguments and the tag of the first
+  // module of the program whose code asks for it (placedAt), which is the
+  // site that asked first in the build without tests: a test build, whose
+  // tests and the modules they import can ask before the program does, then
+  // lays out the program's instances as that build does (9.0). Until the
+  // program is checked, its site's.
   private placeInstanceLiterals(): void {
     const own = this.pendingLiterals.filter((lit) => lit.id < INSTANCE_STRIDE)
     if (own.length === this.pendingLiterals.length) return
@@ -10678,7 +10771,13 @@ class CheckContext {
       const base = inst.index * INSTANCE_STRIDE
       return this.pendingLiterals.filter((lit) => lit.id >= base && lit.id < base + INSTANCE_STRIDE)
     }
-    const placedBy = (inst: Instance) => (inst.usedSite && inst.name.endsWith('>') ? `${inst.name}@${inst.site.moduleTag()}` : inst.name)
+    const placedBy = (inst: Instance) => {
+      if (!inst.usedSite) return inst.name
+      // The name without its site's tag (instanceName), then the module's
+      const tag = `@${inst.site.moduleTag()}`
+      const plain = inst.name.endsWith(`>${tag}`) ? inst.name.slice(0, -tag.length) : inst.name
+      return `${plain}@${(inst.placedAt ?? inst.site).moduleTag()}`
+    }
     const placed: { at: number; literals: PendingLiteral[] }[] = []
     for (const [generic, at] of this.literalSlots) {
       const instances = this.instances.filter((inst) => inst.of === generic).sort((a, b) => (placedBy(a) < placedBy(b) ? -1 : 1))
@@ -10688,6 +10787,11 @@ class CheckContext {
     // positions of the earlier ones as they were noted.
     for (const { at, literals } of placed.reverse()) own.splice(at, 0, ...literals)
     this.pendingLiterals = own
+  }
+
+  // The literals placed again once the program is checked (placeShared)
+  placeAgain(): void {
+    this.placeInstanceLiterals()
   }
 
   // An offset inside an instance, as the place in the generic's source it was
@@ -12321,8 +12425,25 @@ function paramsText(type: FuncRT): string {
 // The name a function was declared with, from the name it is known by: a
 // function that shares its name is known by the name and its parameter types.
 export function declaredName(name: string): string {
-  const cut = name.indexOf(':')
-  return cut < 0 ? name : name.slice(0, cut)
+  // An import that cannot be called is known with a % first (callableName)
+  const written = name.startsWith('%') ? name.slice(1) : name
+  const cut = written.indexOf(':')
+  return cut < 0 ? written : written.slice(0, cut)
+}
+
+// Whether a function an import brings in without a local name can be called
+// by the import's name: whether that is an identifier (7.1)
+export function isCallableName(name: string): boolean {
+  return /^[a-z][\p{L}0-9_-]*$/u.test(name)
+}
+
+// The name the checker knows a function import by: its local name, or the
+// import's where that can be called, and otherwise the import's with a %
+// first, which no declaration, nested function's path, instance or test's
+// function has (see isCallableName)
+export function callableName(item: AST.ImportItem): string {
+  if (item.item.kind === 'ImportFunc' && item.item.ident) return item.item.ident
+  return isCallableName(item.name) ? item.name : `%${item.name}`
 }
 
 // A number literal as it would be written, for a message

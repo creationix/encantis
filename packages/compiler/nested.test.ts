@@ -2,9 +2,9 @@
 // Nested functions (reference 3.4, Nested Functions): what the checker says
 // of them, what they capture and write, and how they compile.
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { typecheck, typecheckProgram, type TypeCheckResult } from './checker'
 import { programToWat, programToWatWithTests } from './codegen'
 import { loadModule } from './loader'
@@ -1529,7 +1529,10 @@ test "left to right" {
 async function runProgram(files: Record<string, string>): Promise<{ ran: string[]; failed: string[]; wat: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'encantis-nested-'))
   try {
-    for (const [name, source] of Object.entries(files)) await writeFile(join(dir, name), source)
+    for (const [name, source] of Object.entries(files)) {
+      await mkdir(dirname(join(dir, name)), { recursive: true })
+      await writeFile(join(dir, name), source)
+    }
     const path = join(dir, 'main.ents')
     const load = await loadModule(path, { includeTests: true })
     if (load.errors.length > 0) throw new Error(load.errors.map((e) => e.message).join('\n'))
@@ -2924,10 +2927,14 @@ test "with a statement" {
 // Builds the program of `main.ents` among `files` without its tests, as
 // `encantis wasm` does, and gives its WAT and, where it imports nothing from
 // the host, the exports of an instance of it
-async function buildPlain(files: Record<string, string>): Promise<{ wat: string; exports?: Record<string, () => number> }> {
+// (`env`: the host's functions, where it imports some)
+async function buildPlain(files: Record<string, string>, env?: Record<string, unknown>): Promise<{ wat: string; exports?: Record<string, () => number> }> {
   const dir = await mkdtemp(join(tmpdir(), 'encantis-nested-'))
   try {
-    for (const [name, source] of Object.entries(files)) await writeFile(join(dir, name), source)
+    for (const [name, source] of Object.entries(files)) {
+      await mkdir(dirname(join(dir, name)), { recursive: true })
+      await writeFile(join(dir, name), source)
+    }
     const path = join(dir, 'main.ents')
     const load = await loadModule(path, { includeTests: false })
     if (load.errors.length > 0) throw new Error(load.errors.map((e) => e.message).join('\n'))
@@ -2935,8 +2942,8 @@ async function buildPlain(files: Record<string, string>): Promise<{ wat: string;
     if (checked.errors.length > 0) throw new Error(checked.errors.map((e) => e.message).join('\n'))
     const wat = programToWat(load.modules, checked.results, path)
     const bytes = await wasmOfWat(wat)
-    if (wat.includes('(import "env"')) return { wat }
-    const instance = await WebAssembly.instantiate(await WebAssembly.compile(bytes), {})
+    if (wat.includes('(import "env"') && !env) return { wat }
+    const instance = await WebAssembly.instantiate(await WebAssembly.compile(bytes), env ? { env } : {})
     return { wat, exports: instance.exports as Record<string, () => number> }
   } finally {
     await rm(dir, { recursive: true })
@@ -3330,5 +3337,181 @@ export func m() -> u32 => gapply(mg, 1)
     } finally {
       await rm(dir, { recursive: true })
     }
+  })
+})
+
+describe('nested functions: test builds, names and the editor (sixth review)', () => {
+  // An instance that looks a function up at its site, shared by several
+  // modules, is laid out by the first module of the program that asks for
+  // it, whoever asks first in the test build: an imported module's test, or
+  // a module a test above the imports checks first (8.8, 9.0)
+  test('an instance several modules share keeps its place, whoever asks for it first', async () => {
+    const gen = `export func site(comptime T: type, x: T) -> *mut u32 {
+  let c = &mut 0:u32
+  c.* = tick(x)
+  return c
+}`
+    const shares = `import "./gen" "site" func site(comptime T: type, x: T) -> *mut u32
+import "./t" "tick" func tick(x: u32) -> u32`
+    const files = {
+      'gen.ents': gen,
+      't.ents': 'export func tick(x: u32) -> u32 => x + 1',
+      'x.ents': `${shares}
+export func one() -> u32 => 1
+test "x's test asks for site(u32) first, with t's tick, as a does" {
+  assert site(1:u32).* == 2
+}`,
+      'a.ents': `${shares}\nexport func pa() -> u32 => site(1:u32) as u32`,
+      'c.ents': `import "./gen" "site" func site(comptime T: type, x: T) -> *mut u32
+func tick(x: u32) -> u32 => x + 100
+export func pc() -> u32 => site(1:u32) as u32`,
+      'main.ents': `import "./x" "one" func one() -> u32
+import "./a" "pa" func pa() -> u32
+import "./c" "pc" func pc() -> u32
+export func addr_a() -> u32 => pa()
+export func addr_c() -> u32 => pc()
+test "the program's cells keep their addresses" {
+  assert one() == 1 && addr_a() == 8 && addr_c() == 12
+}`,
+    }
+    const plain = (await buildPlain(files)).exports
+    expect([plain?.addr_a(), plain?.addr_c()]).toEqual([8, 12])
+    expect(await runProgram(files)).toMatchObject({ failed: [] })
+    // A test above the imports imports zz, which shares m's instance
+    const above = {
+      'gen.ents': gen,
+      't.ents': 'export func tick(x: u32) -> u32 => x + 1',
+      'm.ents': `${shares}\nexport func p() -> u32 => site(1:u32) as u32`,
+      'zz.ents': `${shares}\nexport func p() -> u32 => site(1:u32) as u32`,
+      'n.ents': `import "./gen" "site" func site(comptime T: type, x: T) -> *mut u32
+func tick(x: u32) -> u32 => x + 100
+export func p() -> u32 => site(1:u32) as u32`,
+      'main.ents': `test "a test above the imports imports zz" {
+  import "./zz" "p" func pzz() -> u32
+  assert pzz() > 0
+}
+import "./m" "p" func pm() -> u32
+import "./n" "p" func pn() -> u32
+import "./zz" "p" func pzz() -> u32
+export func addr_m() -> u32 => pm()
+export func addr_n() -> u32 => pn()
+test "the program's cells keep their addresses" {
+  assert addr_m() == 8 && addr_n() == 12 && pzz() == 8
+}`,
+    }
+    const plainAbove = (await buildPlain(above)).exports
+    expect([plainAbove?.addr_m(), plainAbove?.addr_n()]).toEqual([8, 12])
+    expect(await runProgram(above)).toMatchObject({ failed: [] })
+  })
+
+  // An instance of the program's generic that only a module only tests
+  // import asks for is laid out after the program's data, as that module's
+  // own data is (9.0)
+  test('an instance only a module that tests import asks for comes after the program\'s data', async () => {
+    const files = {
+      'gen.ents': 'export func cell(comptime T: type) -> *mut u32 => &mut 0:u32',
+      'only.ents': `import "./gen" "cell" func cell(comptime T: type) -> *mut u32
+export func ocell() -> u32 => cell(u64) as u32`,
+      'main.ents': `import "./gen" "cell" func cell(comptime T: type) -> *mut u32
+data mine = "main's data"
+export func addr_mine() -> u32 => mine as u32
+export func addr_cell() -> u32 => cell(u8) as u32
+test "the program's data keeps its addresses" {
+  import "./only" "ocell" func ocell() -> u32
+  assert ocell() == 23 && addr_cell() == 8 && addr_mine() == 12
+}`,
+    }
+    const plain = (await buildPlain(files)).exports
+    expect([plain?.addr_cell(), plain?.addr_mine()]).toEqual([8, 12])
+    expect(await runProgram(files)).toMatchObject({ failed: [] })
+  })
+
+  // Files of one name are numbered in the order the program has them, a
+  // test's import of the second changing nothing: the instances named after
+  // them keep their places (9.0)
+  test('two files of one name keep their tags when a test imports the second first', async () => {
+    const files = {
+      'gen.ents': `export func apply(comptime f: () -> u32) -> *mut u32 {
+  let c = &mut 0:u32
+  c.* = f()
+  return c
+}`,
+      'x/s.ents': 'export func inc() -> u32 => 100',
+      'y/s.ents': 'export func inc() -> u32 => 200',
+      'main.ents': `test "a test above the imports imports y/s" {
+  import "./y/s" "inc" func yinc() -> u32
+  assert yinc() == 200
+}
+import "./gen" "apply" func apply(comptime f: () -> u32) -> *mut u32
+import "./x/s" "inc" func xinc() -> u32
+import "./y/s" "inc" func yinc() -> u32
+export func addr_x() -> u32 => apply(xinc) as u32
+export func addr_y() -> u32 => apply(yinc) as u32
+test "the program's cells keep their addresses" {
+  assert addr_x() == 8 && addr_y() == 12
+}`,
+    }
+    const built = await buildPlain(files)
+    expect([built.exports?.addr_x(), built.exports?.addr_y()]).toEqual([8, 12])
+    expect(built.wat).toContain('$gen$apply<inc@s>')
+    expect(built.wat).toContain('$gen$apply<inc@s~2>')
+    expect(await runProgram(files)).toMatchObject({ failed: [] })
+  })
+
+  // An import that cannot be called (7.1) is no name a call or an instance
+  // meets: one named like an instance, or like a nested function's path or
+  // a test's nested function (console.log, __test1.f), from the host or
+  // from another source module
+  test('an import that cannot be called takes no instance\'s or function\'s name', async () => {
+    const instance = await buildPlain({
+      'main.ents': `import "env" "apply<inc>" func(x: u64) -> u32
+func apply(comptime f: () -> u32, x: u32) -> u32 => f() + x
+func inc() -> u32 => 1
+export func m() -> u32 => apply(inc, 5)`,
+    }, { 'apply<inc>': () => 999 })
+    expect(instance.wat).toContain('(import "env" "apply<inc>" (func $%apply<inc> ')
+    expect(instance.exports?.m()).toBe(6)
+    const files = {
+      'lib.ents': 'export "console.log" func shout(x: u32) -> u32 => x * 1000\nexport "__test1.f" func tf(x: u32) -> u32 => x * 2000',
+      'main.ents': `import "./lib" ("console.log" func(x: u32) -> u32
+  "__test1.f" func(x: u32) -> u32)
+export func console(x: u32) -> u32 {
+  func log(y: u32) -> u32 => y + 1
+  return log(x)
+}
+test "t" {
+  let k: u32 = 1
+  func f(x: u32) -> u32 => x + k
+  assert f(5) == 6 && console(5) == 6
+}`,
+    }
+    expect((await buildPlain(files)).exports?.console(5)).toBe(6)
+    expect(await runProgram(files)).toMatchObject({ ran: ['t'], failed: [] })
+  })
+
+  // A function a test imports keeps its own signature, and a call is
+  // checked as the function it calls gives back: neither is the last of its
+  // name (12.4)
+  test('a test\'s import keeps its own signature, and module code\'s call its own function', async () => {
+    expect(await runProgram({
+      'main.ents': `global no: bool = false
+test "t1 imports f" {
+  import "env" "f" func f(x: u64) -> u64
+  if no { assert f(1:u64) == 2:u64 }
+}
+test "t2 declares f" {
+  func f(x: i32) -> i32 => x - 1
+  assert f(5:i32) == 4:i32
+}`,
+    })).toMatchObject({ ran: ['t1 imports f', 't2 declares f'], failed: [] })
+    expect(await runProgram({
+      'main.ents': `type Canvas = host
+export func f() -> u32 => 1
+export func callf() -> u32 => f()
+test "t" {
+  import "env" "f" func f() -> Canvas
+  assert callf() == 1
+}`,
+    })).toMatchObject({ ran: ['t'], failed: [] })
   })
 })
