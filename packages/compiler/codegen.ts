@@ -643,18 +643,49 @@ function scratchLocal(ctx: CodegenContext, wasmType: string): string {
 // Tests tried in turn, as a load of an enum, a store of one and a match try
 // them, are ifs each in the else of the one before, up to this many. Text
 // tools read nested code to a depth of only about 150 (wabt, which the
-// command line assembles with), so a longer chain is written flat: in one
-// block, each if leaving it with its value.
+// command line assembles with, reads about 150 ifs or blocks one inside
+// another), so a longer chain is written flat: in one block, each if leaving
+// it with its value.
 const MAX_NESTED_TESTS = 64
+// So is a chain that, nested, would put what it holds deeper than this: a
+// match in the `_` arm of a match in the `_` arm of another adds the depth
+// of each, and one in an arm adds the arms before it.
+const MAX_NESTED_DEPTH = 100
+
+// How many ifs, blocks and loops of some WAT are inside one another, at most.
+function controlDepth(wat: string): number {
+  if (!/\((?:if|block|loop)\b/.test(wat)) return 0
+  const open: boolean[] = []
+  let depth = 0
+  let max = 0
+  for (let i = 0; i < wat.length; i++) {
+    const c = wat[i]
+    if (c === '"') {
+      // A string's bytes are no code
+      for (i++; i < wat.length && wat[i] !== '"'; i++) if (wat[i] === '\\') i++
+    } else if (c === ';' && wat[i + 1] === ';') {
+      while (i < wat.length && wat[i] !== '\n') i++
+    } else if (c === '(') {
+      const control = /^(?:if|block|loop)\b/.test(wat.slice(i + 1, i + 7))
+      open.push(control)
+      if (control && ++depth > max) max = depth
+    } else if (c === ')') {
+      if (open.pop()) depth--
+    }
+  }
+  return max
+}
 
 // Tests tried in turn, each `[test, then]` in order, the first that holds
 // giving its `then`, and `otherwise` where none does; `nested` writes the
 // chain as ifs each in the else of the one before. More than
-// MAX_NESTED_TESTS are flat: a block of ifs, each `then` followed by a br out
+// MAX_NESTED_TESTS, or a chain that nested would hold code deeper than
+// MAX_NESTED_DEPTH, are flat: a block of ifs, each `then` followed by a br out
 // of it with its value, then `otherwise`. A label inside a `then` is its own
 // block's (a label shadows the one outside it).
 function testChain(tests: [string, string][], otherwise: string, resultStr: string, nested: (test: string, then: string, rest: string) => string): string {
-  if (tests.length <= MAX_NESTED_TESTS) return tests.reduceRight((rest, [test, then]) => nested(test, then, rest), otherwise)
+  const deepest = () => Math.max(tests.length + controlDepth(otherwise), ...tests.map(([test, then], k) => k + 1 + Math.max(controlDepth(test), controlDepth(then))))
+  if (tests.length <= MAX_NESTED_TESTS && deepest() <= MAX_NESTED_DEPTH) return tests.reduceRight((rest, [test, then]) => nested(test, then, rest), otherwise)
   const ifs = tests.map(([test, then]) => `(if ${test} (then ${then} (br $__tests)))`)
   return `(block $__tests ${resultStr}\n${[...ifs, otherwise].filter((x) => x !== '').join('\n')})`
 }

@@ -1156,6 +1156,23 @@ export memory 1
     expect(() => call('code', 200, 0)).toThrow()
     expect([call('triple', 0), call('triple', 150), call('triple', 199), call('triple', 200)]).toEqual([0, 450, 597, 7])
   })
+
+  test('chains in one another are flat where, nested, they would be too deep together', async () => {
+    // A match in the _ arm of a match in the _ arm of another: three chains
+    // of 56 tests, 168 ifs one inside another if all were nested.
+    const match = (subject: string, base: number, rest: string) =>
+      `match ${subject} {\n${Array.from({ length: 56 }, (_, k) => `  V${k} => ${base + k}`).join('\n')}\n  _ => ${rest}\n}`
+    const variants = Array.from({ length: 60 }, (_, k) => `V${k}`).join(', ')
+    const source = `enum A { ${variants} }\nenum B { ${variants.replace(/V/g, 'W')} }\nenum C { ${variants.replace(/V/g, 'X')} }\n`
+      + `export func pick(a: A, b: B, c: C) -> u32 => ${match('a', 0, match('b', 100, match('c', 200, '999').replace(/V(\d+) =>/g, 'X$1 =>')).replace(/V(\d+) =>/g, 'W$1 =>'))}\n`
+    const text = watOf(source, '(func $pick')
+    // The innermost is nested; each around it would put it more than 100
+    // deep, and is flat
+    expect(text.split('(block $__tests').length - 1).toBe(2)
+    const exports = await instance(source)
+    const pick = exports.pick as (a: number, b: number, c: number) => number
+    expect([pick(3, 0, 0), pick(57, 5, 0), pick(57, 58, 55), pick(59, 59, 59)]).toEqual([3, 105, 255, 999])
+  })
 })
 
 describe('the editor (6.7)', () => {
