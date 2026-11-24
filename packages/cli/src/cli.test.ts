@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
-import { mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -209,7 +209,11 @@ export func f(p: Pt, xs: []u32, o: ?*u32) -> u32 {
 
   test('a field named like a global is not the global', async () => {
     expect((await query('hover', 2, 12)).stdout).toBe('No info\n')
-    expect((await query('rename', 2, 12)).stdout).toBe('No symbol found\n')
+    // Renamed, the field is renamed where Pt declares it and where it is read
+    for (const [line, col] of [[2, 12], [4, 13]]) {
+      const field = await query('rename', line, col)
+      expect(field.stdout).toBe(`x: 2 locations\n  ${field.file}:2:12\n  ${field.file}:4:13\n`)
+    }
     expect((await query('hover', 4, 13)).stdout).toBe('field x: i32\n')
     const global = await query('rename', 1, 8)
     expect(global.stdout).toBe(`x: 2 locations\n  ${global.file}:1:8\n  ${global.file}:14:14\n`)
@@ -463,4 +467,149 @@ describe('encantis test and imported globals', () => {
     expect(stdout).toContain('0 passed, 1 failed')
     expect(exitCode).toBe(1)
   })
+})
+
+// `encantis lsp`: the language server on stdin and stdout, as an editor or an
+// agent starts it. What the server answers is tested in the lsp package; here,
+// that the command serves it: it starts with no file, writes the protocol and
+// nothing else on stdout, finds the workspace's files itself, and ends when
+// the client says exit.
+describe('the language server on the command line', () => {
+  interface Message {
+    id?: number
+    method?: string
+    params?: unknown
+    result?: unknown
+    error?: { message: string }
+  }
+
+  // A client of the server: messages framed as the protocol frames them, and
+  // what the server writes, in which anything but a frame is kept as stray.
+  function client(server: Bun.Subprocess<'pipe', 'pipe', 'pipe'>) {
+    let id = 0
+    const answers = new Map<number, (message: Message) => void>()
+    const notifications: Message[] = []
+    let heard = () => {}
+    let stray = ''
+    const send = (message: Message) => {
+      const body = JSON.stringify({ jsonrpc: '2.0', ...message })
+      server.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
+      server.stdin.flush()
+    }
+    const read = async () => {
+      let buffer = Buffer.alloc(0)
+      for await (const chunk of server.stdout) {
+        buffer = Buffer.concat([buffer, chunk])
+        for (;;) {
+          const end = buffer.indexOf('\r\n\r\n')
+          if (end < 0) break
+          const length = /^Content-Length: (\d+)$/.exec(buffer.subarray(0, end).toString())
+          if (!length) {
+            stray += buffer.toString()
+            buffer = Buffer.alloc(0)
+            break
+          }
+          const start = end + 4
+          if (buffer.length < start + Number(length[1])) break
+          const message: Message = JSON.parse(buffer.subarray(start, start + Number(length[1])).toString())
+          buffer = buffer.subarray(start + Number(length[1]))
+          // A request of the server's (to register a capability) gets an
+          // empty answer.
+          if (message.method !== undefined && message.id !== undefined) send({ id: message.id, result: null })
+          else if (message.method !== undefined) {
+            notifications.push(message)
+            heard()
+          } else if (message.id !== undefined) answers.get(message.id)?.(message)
+        }
+      }
+    }
+    read()
+    return {
+      stray: () => stray,
+      notify: (method: string, params: unknown) => send({ method, params }),
+      request: <T>(method: string, params: unknown) =>
+        new Promise<T>((resolve, reject) => {
+          answers.set(++id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result as T)))
+          send({ id, method, params })
+        }),
+      // The first notification of a method that holds
+      notification: async <T>(method: string, holds: (params: T) => boolean) => {
+        for (;;) {
+          const found = notifications.find((m) => m.method === method && holds(m.params as T))
+          if (found) return found.params as T
+          await new Promise<void>((resolve) => {
+            heard = resolve
+          })
+        }
+      },
+    }
+  }
+
+  test('serves a workspace over stdin and stdout, and exits when told to', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-lsp-'))
+    try {
+      await writeFile(join(dir, 'util.ents'), 'export func add(a: i32, b: i32) -> i32 => a + b\n')
+      // Not a file of the workspace's own
+      await mkdir(join(dir, 'node_modules'))
+      await writeFile(join(dir, 'node_modules', 'dep.ents'), 'export func dep() -> i32 => 1\n')
+      const server = Bun.spawn([process.execPath, CLI, 'lsp'], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' })
+      const lsp = client(server)
+      const root = pathToFileURL(dir).href
+      const started = await lsp.request<{ capabilities: { hoverProvider?: boolean; workspaceSymbolProvider?: boolean } }>('initialize', {
+        processId: null,
+        rootUri: root,
+        workspaceFolders: [{ uri: root, name: 'workspace' }],
+        capabilities: {},
+      })
+      expect(started.capabilities.hoverProvider).toBe(true)
+      expect(started.capabilities.workspaceSymbolProvider).toBe(true)
+      lsp.notify('initialized', {})
+
+      // A document is checked as it is opened
+      const main = pathToFileURL(join(dir, 'main.ents')).href
+      lsp.notify('textDocument/didOpen', { textDocument: { uri: main, languageId: 'encantis', version: 1, text: 'export func f() -> u32 {\n  return true\n}\n' } })
+      const published = await lsp.notification<{ uri: string; diagnostics: { message: string; range: { start: { line: number } } }[] }>(
+        'textDocument/publishDiagnostics',
+        (params) => params.uri === main,
+      )
+      expect(published.diagnostics.map((d) => [d.range.start.line, d.message])).toEqual([[1, 'cannot assign bool to u32']])
+
+      // The open document's declarations and those of the files found on
+      // disk (by file name: on Windows the server writes the drive as VS
+      // Code does, file:///c:/)
+      const symbols = await lsp.request<{ name: string; location: { uri: string } }[]>('workspace/symbol', { query: '' })
+      expect(symbols.map((s) => [s.name, s.location.uri.split('/').pop()]).sort()).toEqual([
+        ['add', 'util.ents'],
+        ['f', 'main.ents'],
+      ])
+
+      await lsp.request('shutdown', null)
+      lsp.notify('exit', null)
+      expect(await server.exited).toBe(0)
+      expect(lsp.stray()).toBe('')
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  }, 30000)
+})
+
+// The Claude Code plugin (plugins/encantis) starts the server as `encantis
+// lsp`, for the files the VS Code extension takes as Encantis, under the
+// same language id.
+test('the Claude Code plugin runs `encantis lsp` for .ents files', () => {
+  const root = join(import.meta.dir, '..', '..', '..')
+  const read = (path: string) => JSON.parse(readFileSync(join(root, path), 'utf8'))
+  const plugin = read('plugins/encantis/.claude-plugin/plugin.json')
+  const servers = Object.values(plugin.lspServers) as { command: string; args: string[]; extensionToLanguage: Record<string, string> }[]
+  expect(servers).toHaveLength(1)
+  const [server] = servers
+  expect(server.command).toBe(Object.keys(read('packages/cli/package.json').bin)[0])
+  expect(server.args).toEqual(['lsp'])
+  const languages = read('packages/extension/package.json').contributes.languages as { id: string; extensions?: string[] }[]
+  const encantis = languages.find((l) => l.extensions?.includes('.ents'))
+  expect(encantis).toBeDefined()
+  expect(server.extensionToLanguage).toEqual({ '.ents': encantis?.id ?? '' })
+  // The marketplace lists it where it is
+  const listed = read('.claude-plugin/marketplace.json').plugins.find((p: { name: string }) => p.name === plugin.name)
+  expect(listed?.source).toBe('./plugins/encantis')
 })

@@ -1,0 +1,22 @@
+{
+  "name": "encantis",
+  "displayName": "Encantis",
+  "description": "The Encantis language server for .ents files: errors after each edit, definitions, references, types and symbols. Runs `encantis lsp`, so the encantis binary must be on PATH.",
+  "author": {
+    "name": "Tim Caswell",
+    "url": "https://github.com/creationix"
+  },
+  "homepage": "https://github.com/creationix/encantis",
+  "repository": "https://github.com/creationix/encantis",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["encantis", "webassembly", "lsp", "language-server"],
+  "lspServers": {
+    "encantis": {
+      "command": "encantis",
+      "args": ["lsp"],
+      "extensionToLanguage": {
+        ".ents": "encantis"
+      }
+    }
+  }
+}

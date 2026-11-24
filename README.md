@@ -44,6 +44,14 @@ The macOS binaries aren't notarized yet. If macOS refuses to open the binary, cl
 
 Install [Encantis Language](https://marketplace.visualstudio.com/items?itemName=creationix.encantis-vscode-ext) from the Marketplace (`code --install-extension creationix.encantis-vscode-ext`). It adds syntax highlighting, diagnostics, hover, go to definition, formatting, and a live WAT preview. Each release also has the extension as `encantis-vscode-<version>.vsix`, to install with **Extensions: Install from VSIX…** in the command palette.
 
+### Claude Code plugin
+
+The [`encantis` plugin](plugins/encantis/README.md) gives Claude Code the language server (`encantis lsp`). Claude then sees the errors in a `.ents` file after each edit it makes, and can go to definitions, find references and look up types. With `encantis` on your `PATH`, run this in Claude Code:
+
+```
+/plugin install encantis --marketplace creationix/encantis
+```
+
 ## Usage
 
 ```
@@ -54,6 +62,7 @@ encantis wasm <file> --release     Compile to the smallest wasm binary, or fail
 encantis test <file>               Run inline tests
 encantis run <file> [args...]      Compile and run with WASI
 encantis fmt <file...>             Format source files in place
+encantis lsp                       Language server on stdin and stdout, for editors and agents
 encantis --help                    All commands, including editor queries
 encantis --version
 ```
@@ -80,7 +89,7 @@ gzip         1074
 brotli       986
 ```
 
-Fourteen examples, the browser games among them, have size budgets in [`scripts/size-budgets.json`](scripts/size-budgets.json): the most bytes each one's release build may take. `bun test` (and so CI) fails when one is over. `bun run size` prints each example's sizes next to its budget. When an example grows on purpose, `bun run size --update` sets every budget to the current size plus 2%.
+Thirteen examples, the browser games among them, and `lib/text.ents` have size budgets in [`scripts/size-budgets.json`](scripts/size-budgets.json): the most bytes each one's release build may take. `bun test` (and so CI) fails when one is over. `bun run size` prints each one's sizes next to its budget. When one grows on purpose, `bun run size --update` sets every budget to the current size plus 2%.
 
 ## Documentation
 
@@ -88,7 +97,7 @@ Fourteen examples, the browser games among them, have size budgets in [`scripts/
 - [Grammar](docs/grammar.md): the formal syntax.
 - [Spec tests](spec/): how the language parses and checks, as markdown examples that run as tests.
 - [lib](lib/): helpers for reading input, parsing text and printing, and generic containers (a growable array, a hash set, a hash map, a stable sort) on a bump stack, written in Encantis.
-- [Examples](examples/): allocators, data structures, generic functions and types, crypto (BLAKE2b, SHA-2, Ed25519, Gimli), SIMD and WASI programs, each with inline tests.
+- [Examples](examples/): allocators, data structures, generic functions and types, crypto (BLAKE2b, SHA-2, Ed25519, Gimli), wide integers (u128) and WASI programs, each with inline tests.
 - [Browser games](examples/browser/): Lantern, a small complete game (about 5 KB compressed with its host and page; keyboard, gamepad and touch), a starter template, and the host contract they share. [Play it here](https://creationix.github.io/encantis/lantern/).
 
 ## Development

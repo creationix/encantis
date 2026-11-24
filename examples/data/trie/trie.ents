@@ -1,39 +1,51 @@
-// 64-bit wide bitfields and tagged pointers
-// This means the payload has 63 bits of information.
+// A trie packed into 64-bit words, walked 6 bits of the key at a time.
+//
+// A node is a bitfield, a word with bit s set for each 6-bit symbol s that has
+// a child, followed by one entry for each set bit, in the order of the bits:
+// popcnt of the bits below s counts the entries before s's. An entry is a
+// tagged word. With its low bit 1 it points to another node, at the word
+// index entry >> 1; with its low bit 0 it is a leaf, the value found, whose
+// 63 bits above the tag are its payload.
+//
+// The symbol at depth d is the 6 bits of the key from bit (6 * d) % 64 up
+// (fewer where they pass the top bit).
 
-// Given a trie data structure and a key, find the target.
-// Returns -1 on not found, -2 on out of bounds.
-export func walk-trie(trie:[]u64, key:u64) -> i64 {
-  let trie_offset:u32 = 0
-  let bit_offset:u8 = 0
-
+// The leaf the key leads to, its word with the tag bit; -1 when the key is
+// not in the trie, and -2 when a node or an entry would lie past its end. A
+// leaf whose payload is all ones is the word -2 too, so no trie holds that
+// payload.
+export func walk-trie(trie: []u64, key: u64) -> i64 {
+  let at: u32 = 0               // the node's word index
+  let shift: u8 = 0             // where the symbol starts in the key
   loop {
-    return -2 when trie_offset >= trie.len
+    let bits = if let w = trie[at] { w } else { return -2 }
+    let bit = 1:u64 << ((key >> shift) & 0x3f)
+    shift = (shift + 6) % 64
+    return -1 when bits & bit == 0
+    let entry = if let w = trie[at + 1 + popcnt(bits & (bit - 1))] { w } else { return -2 }
+    return entry as i64 when entry & 1 == 0
+    at = (entry >> 1) as u32
+  }
+}
 
-    // Consume 6 bits from the key bitstream
-    let index:u64 = 1 << ((key >> bit_offset) & 0x3f)
-    bit_offset = (bit_offset + 6) % 64
+test "walk-trie" {
+  // A root with symbols 1 and 5: 1 is the leaf 10, 5 the node at word 3,
+  // whose symbol 2 is the leaf 84.
+  data sample = [0x22:u64, 10, (3 << 1) | 1, 0x4, 84]
 
-    // Read the bitfield from the trie
-    let bitfield = trie.ptr[trie_offset]
-    trie_offset += 1
+  test "a key is walked to its leaf" {
+    assert walk-trie(sample, 1) == 10
+    assert walk-trie(sample, 5 | 2 << 6) == 84
+  }
 
-    // If the index isn't in the bitfield, it's missing.
-    return -1 when (bitfield & index) == 0
+  test "a symbol with no child is not found" {
+    assert walk-trie(sample, 3) == -1
+    assert walk-trie(sample, 5) == -1        // symbol 0 below node 3
+  }
 
-    // Otherwise use popcnt to jump the pointer.
-    trie_offset += popcnt(bitfield & (index - 1)) as u32
-
-    // If we go out of bounds, return -2
-    return -2 when trie_offset >= trie.len
-
-    // Read the tagged pointer
-    let pointer = trie.ptr[trie_offset]
-
-    // If low bit is zero, we're done!
-    return pointer as i64 when (pointer & 1) == 0
-
-    // Follow the pointer, but ignore the bottom bit.
-    trie_offset = (pointer >> 1) as u32
+  test "an entry past the end of the trie" {
+    assert walk-trie([], 1) == -2
+    assert walk-trie([0x22:u64], 1) == -2
+    assert walk-trie([0x22:u64, 10, 101], 5 | 2 << 6) == -2
   }
 }

@@ -96,6 +96,15 @@ jobs:
           "$BIN" wasm --release examples/alloc/stack.ents -o again.wasm
           cmp release.wasm again.wasm
           test "$(wc -c < release.wasm)" -le "$(wc -c < stack.wasm)"
+          # The language server answers on stdout and ends when told to. stdin
+          # is held open after exit is sent, as a client holds it: the server
+          # exits when it closes, whatever it has not yet handled.
+          msg() { printf 'Content-Length: %d\r\n\r\n%s' "${#1}" "$1"; }
+          { msg '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}'
+            msg '{"jsonrpc":"2.0","id":2,"method":"shutdown"}'
+            msg '{"jsonrpc":"2.0","method":"exit"}'
+            sleep 5; } | "$BIN" lsp > lsp.out
+          grep -F '"hoverProvider":true' lsp.out
 
   publish:
     name: Publish
@@ -122,6 +131,21 @@ jobs:
             --title "Encantis ${TAG#v}" \
             --generate-notes \
             $target $prerelease
+
+  # The extension's upload is a job of its own: once the GitHub release
+  # exists (it cannot be made again), a failed upload is retried by
+  # re-running this job alone. A version already there is skipped.
+  marketplace:
+    name: Marketplace
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
       - name: Publish the VS Code extension to the Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}

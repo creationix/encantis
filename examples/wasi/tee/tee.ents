@@ -1,11 +1,13 @@
 #!/usr/bin/env encantis run
-// Poor man's tee — outputs to stderr and stdout whatever comes in stdin
+// A tee to standard error: copies standard input to standard output and to
+// standard error. A WASI error is reported on standard error and ends the
+// program, with the error's code as its exit status.
 // Usage: echo "hello" | ./tee.ents
 
 import "wasi_snapshot_preview1" (
-  "fd_read" func wasi_fd_read(fd:i32, iovs:[][]mut u8, nread:*mut u32) -> i32
-  "fd_write" func wasi_fd_write(fd:i32, iovs:[][]u8, nwritten:*mut u32) -> i32
-  "proc_exit" func wasi_proc_exit(code:i32)
+  "fd_read" func fd_read(fd: i32, iovs: [][]mut u8, nread: *mut u32) -> i32
+  "fd_write" func fd_write(fd: i32, iovs: [][]u8, nwritten: *mut u32) -> i32
+  "proc_exit" func proc_exit(code: i32)
 )
 
 export memory
@@ -14,6 +16,7 @@ def stdin = 0:i32
 def stdout = 1:i32
 def stderr = 2:i32
 
+// The names of WASI's error codes, by code.
 data errnos = [
   "ESUCCESS", "E2BIG", "EACCES", "EADDRINUSE", "EADDRNOTAVAIL",
   "EAFNOSUPPORT", "EAGAIN", "EALREADY", "EBADF", "EBADMSG",
@@ -33,45 +36,62 @@ data errnos = [
   "ENOTCAPABLE"
 ]
 
+// What write_all gives when a write takes none of the bytes
+def eio = 29:i32
+
+data buffer = mut [0:u8; 0x4000]
+
+func errno_name(code: i32) -> []u8 => errnos[code] ?? "UNKNOWN"
+
+// Reports a WASI error on standard error and exits with its code; nothing
+// for 0, which is no error.
 func try(msg: []u8, code: i32) {
   return when code == 0
-  wasi_fd_write(stderr, `Error ${msg}: ${errnos[code] ?? "UNKNOWN"}\n`, &0)
-  wasi_proc_exit(code)
+  fd_write(stderr, `Error ${msg}: ${errno_name(code)}\n`, &0)
+  proc_exit(code)
+}
+
+// Writes all of bytes to fd, in as many calls as that takes: 0, or the error
+// code of the call that failed. A call that succeeds but writes none of what
+// is left fails as EIO: the next call would ask for the same bytes again.
+func write_all(fd: i32, bytes: []u8) -> i32 {
+  let left = bytes
+  let written = &0:u32
+  let iov: *mut [1][]u8 = mut [bytes]
+  while left.len > 0 {
+    iov[0] = left
+    let err = fd_write(fd, iov, written)
+    return err when err != 0
+    return eio when written.* == 0
+    left = left[written.*..] ?? ""
+  }
+  return 0
 }
 
 export "_start" func main() {
   let nread = &0:u32
-  let nwritten = &0:u32
-  let iovecs:*mut [1][]mut u8 = mut [[0:u8; 0x4000]]
-  // Remember the original offset so we can restore it later
-  let buf_ptr = iovecs[0].ptr
+  let iov: *mut [1][]mut u8 = mut [buffer]
   loop {
-    try("reading from stdin", wasi_fd_read(stdin, iovecs, nread))
+    try("reading from stdin", fd_read(stdin, iov, nread))
     break when nread.* == 0
-
-    // Write all bytes to stdout
-    iovecs[0].ptr = buf_ptr
-    iovecs[0].len = nread.*
-    loop {
-      try("writing to stdout", wasi_fd_write(stdout, iovecs, nwritten))
-      break when nwritten.* == iovecs[0].len
-      iovecs[0].ptr += nwritten.*
-      iovecs[0].len -= nwritten.*
-    }
-
-    // Write all bytes to stderr
-    iovecs[0].ptr = buf_ptr
-    iovecs[0].len = nread.*
-    loop {
-      let res = wasi_fd_write(stderr, iovecs, nwritten)
-      if res != 0 { wasi_proc_exit(res) }
-      break when nwritten.* == iovecs[0].len
-      iovecs[0].ptr += nwritten.*
-      iovecs[0].len -= nwritten.*
-    }
-
-    // Reset to original
-    iovecs[0].ptr = buf_ptr
-    iovecs[0].len = 1024
+    let chunk = buffer[..nread.*] ?? buffer
+    try("writing to stdout", write_all(stdout, chunk))
+    // A write to standard error that fails cannot be reported there.
+    let err = write_all(stderr, chunk)
+    if err != 0 { proc_exit(err) }
   }
+}
+
+test "the names of error codes" {
+  import "../../../lib/text" "eq" func eq(a: []u8, b: []u8) -> bool
+  assert eq(errno_name(8), "EBADF")
+  assert eq(errno_name(eio), "EIO")
+  assert eq(errno_name(76), "ENOTCAPABLE")
+  assert eq(errno_name(77), "UNKNOWN")
+  assert eq(errno_name(-1), "UNKNOWN")
+}
+
+test "write_all gives the code of a write that fails" {
+  assert write_all(stdout, "") == 0
+  assert write_all(9, "x") == 8                // the test host's EBADF
 }

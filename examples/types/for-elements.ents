@@ -8,35 +8,53 @@ data wide = [1:u64, 0xFFFFFFFFFFFFFFFF]
 func sum(s: []u8) -> u32 {
   let t: u32 = 0
   for c in s {
-    t += c as u32
+    t += c
   }
   return t
 }
+
 func weighted(s: []u8) -> u32 {
   let t: u32 = 0
   for i, c in s {
-    t += (c as u32) * i
+    t += c * i
   }
   return t
 }
+
 func skip_and_stop(s: []u8) -> u32 {
   let t: u32 = 0
   for c in s {
-    continue when c == 98
-    break when c == 100
-    t += c as u32
+    continue when c == 'b'
+    break when c == 'd'
+    t += c
   }
   return t
 }
-test "bytes of a slice" { assert sum("abc") == 294 }
-test "index comes first" { assert weighted("abc") == 98 + 99 * 2 }
-test "continue and break" { assert skip_and_stop("abcdef") == 97 + 99 }
-test "empty slice" { assert sum("") == 0 }
+
+test "bytes of a slice" {
+  assert sum("abc") == 'a' + 'b' + 'c'
+}
+
+test "index comes first" {
+  assert weighted("abc") == 'b' + 'c' * 2
+}
+
+test "continue and break" {
+  assert skip_and_stop("abcdef") == 'a' + 'c'
+}
+
+test "empty slice" {
+  assert sum("") == 0
+}
+
 test "pointer to a fixed array" {
   let t: u32 = 0
-  for n in nums { t += n }
+  for n in nums {
+    t += n
+  }
   assert t == 14
 }
+
 test "slices of slices" {
   let total: u32 = 0
   let count: u32 = 0
@@ -47,9 +65,12 @@ test "slices of slices" {
   assert total == 5
   assert count == 3
 }
+
 test "64-bit elements" {
   let hi: u64 = 0
-  for x in wide { hi = x }
+  for x in wide {
+    hi = x
+  }
   assert hi == 0xFFFFFFFFFFFFFFFF
 }
 
@@ -59,46 +80,54 @@ type Pair = (a: i32, b: i32)
 
 data lists: [][]i32 = [[1, 2], [3]]
 
-func sum-of(s: []i32) -> i32 {
+func sum_i32(s: []i32) -> i32 {
   let t = 0
-  for x in s { t += x }
+  for x in s {
+    t += x
+  }
   return t
 }
+
 func pairs(s: []Pair) -> i32 {
   let t = 0
-  for p in s { t += p.a * p.b }
+  for p in s {
+    t += p.a * p.b
+  }
   return t
 }
 
 test "a slice literal of wider elements" {
   let s: []i32 = [1, 2, 3]
   assert s.len == 3
-  assert sum-of(s) == 6
-  assert sum-of([4, 5, 6, 7]) == 22
+  assert sum_i32(s) == 6
+  assert sum_i32([4, 5, 6, 7]) == 22
   let wides: []u64 = [1, 2]
   assert wides.len == 2
-  let zeros: []i32 = [0:i32; 5]
+  let zeros: []i32 = [0; 5]
   assert zeros.len == 5
 }
+
 test "a slice literal with a runtime element" {
   let n = 10
   let s: []i32 = [1, n, 3]
   assert s.len == 3
-  assert sum-of(s) == 14
+  assert sum_i32(s) == 14
 }
+
 test "a slice literal of structs" {
   let n = 3
   let s: []Pair = [(1, 2), Pair(n, 4), (5, 6)]
   assert s.len == 3
   assert pairs(s) == 44
 }
+
 test "slices of slices of wider elements" {
   assert lists.len == 2
   let t = 0
   let n: u32 = 0
-  for l in lists {
-    n += l.len
-    t += sum-of(l)
+  for list in lists {
+    n += list.len
+    t += sum_i32(list)
   }
   assert n == 3
   assert t == 6

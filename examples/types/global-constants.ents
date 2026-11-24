@@ -32,82 +32,57 @@ global pairs: i32 = 7 / 2
 global wrapped: i32 = 200:u8 + 100:u8
 global shifted: u32 = 1:u32 << 33
 
-func limit_now() -> u32 => limit
-func ratio_now() -> f64 => ratio
-func third_now() -> f32 => third
-func count_now() -> i64 => count
-func whole_now() -> f64 => whole
-func low_now() -> i8 => low
-func mask_now() -> u8 => mask
-func ones_now() -> u64 => ones
-func first_byte() -> u8 => first[0]
-
-func bits_now() -> u32 => bits
-func byte_now() -> u8 => byte
-func small_now() -> i8 => small
-func truncated_now() -> i32 => truncated
-func wide_now() -> i64 => wide
-func single_now() -> f64 => single
-func start_now() -> u32 => start
-func second_now() -> u16 => second[0]
-
-func halves_now() -> f64 => halves
-func pairs_now() -> i32 => pairs
-func wrapped_now() -> i32 => wrapped
-func shifted_now() -> u32 => shifted
-
-func sum(a: u8, b: u8) -> i32 => a + b
-func shift(n: u32, by: u32) -> u32 => n << by
-
-// The same casts, done at run time.
+// The same casts and operations, done at run time.
 func cut(n: i32) -> u8 => n as u8
 func signed(n: i32) -> i8 => n as i8
 func truncate(x: f64) -> i32 => x as i32
 func rounded(x: f64) -> f64 => (x as f32) as f64
+func sum(a: u8, b: u8) -> i32 => a + b
+func shift(n: u32, by: u32) -> u32 => n << by
 
 test "a constant expression starts a global with its value" {
-  assert limit_now() == 262144
-  assert ratio_now() == 1.5
-  assert third_now() == 1.0:f32 / 3.0:f32
-  assert low_now() == -128
+  assert limit == 262144
+  assert ratio == 1.5
+  assert third == 1.0:f32 / 3.0:f32
+  assert low == -128
 }
 
 test "a constant widens to the global's type" {
-  assert count_now() == 3
-  assert whole_now() == 7.0
+  assert count == 3
+  assert whole == 7.0
 }
 
 test "a complement is the global's bits" {
-  assert mask_now() == 0xf0
-  assert ones_now() == 18446744073709551615
+  assert mask == 0xf0
+  assert ones == 18446744073709551615
 }
 
 test "the address of data starts a pointer" {
-  assert first_byte() == 3
+  assert first[0] == 3
 }
 
 test "a cast of a constant is the value the cast gives at run time" {
-  assert bits_now() == 4294967295
-  assert byte_now() == 44
-  assert byte_now() == cut(300)
-  assert small_now() == -56
-  assert small_now() == signed(200)
-  assert truncated_now() == 2
-  assert truncated_now() == truncate(2.9)
-  assert wide_now() == 65536
-  assert single_now() == rounded(0.1)
+  assert bits == 4294967295
+  assert byte == 44
+  assert byte == cut(300)
+  assert small == -56
+  assert small == signed(200)
+  assert truncated == 2
+  assert truncated == truncate(2.9)
+  assert wide == 65536
+  assert single == rounded(0.1)
 }
 
 test "an address cast to an integer or another pointer is the same address" {
-  assert start_now() == first as u32
-  assert second_now() == 0x0503
+  assert start == first as u32
+  assert second[0] == 0x0503         // the bytes 3 and 5, read as one u16
 }
 
 test "a constant is worked out in the type it has" {
-  assert halves_now() == 3.5
-  assert pairs_now() == 3
-  assert wrapped_now() == 44
-  assert wrapped_now() == sum(200, 100)
-  assert shifted_now() == 2
-  assert shifted_now() == shift(1, 33)
+  assert halves == 3.5
+  assert pairs == 3
+  assert wrapped == 44
+  assert wrapped == sum(200, 100)
+  assert shifted == 2
+  assert shifted == shift(1, 33)
 }

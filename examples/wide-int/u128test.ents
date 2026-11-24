@@ -1,0 +1,53 @@
+// The u128 operations of u128ops.ents, with their operands and result in
+// memory instead of parameters: the host writes A at address 0 and B at 16,
+// each 16 bytes with the low half first, calls an export, and reads the
+// result at 32. The module lays out no data, so these bytes are the host's.
+export "mem" memory 1
+
+def a_at = 0
+def b_at = 16
+def result_at = 32
+
+// The u128 at an address.
+func load(at: u32) -> u128 {
+  let p = at as *u128
+  return p.*
+}
+
+// Writes a u128 at an address.
+func store(at: u32, v: u128) {
+  let p = at as *mut u128
+  p.* = v
+}
+
+export func test_xor() { store(result_at, load(a_at) ^ load(b_at)) }
+export func test_add() { store(result_at, load(a_at) + load(b_at)) }
+export func test_and() { store(result_at, load(a_at) & load(b_at)) }
+export func test_or() { store(result_at, load(a_at) | load(b_at)) }
+export func test_not() { store(result_at, ~load(a_at)) }
+export func test_eq() -> bool => load(a_at) == load(b_at)
+
+export func test_widen(val: u64) { store(result_at, val) }
+export func test_narrow() -> u64 => load(a_at) as u64
+
+export func test_mul_hi(a: u64, b: u64) -> u64 => mul_hi(a, b)
+
+test "operands and results go through memory" {
+  store(a_at, 0xFFFFFFFFFFFFFFFF)
+  store(b_at, 1)
+  test_add()
+  assert load(result_at) == 18446744073709551616
+  test_xor()
+  assert load(result_at) == 0xFFFFFFFFFFFFFFFE
+  test_and()
+  assert load(result_at) == 1
+  test_or()
+  assert load(result_at) == 0xFFFFFFFFFFFFFFFF
+  test_not()
+  assert load(result_at) == ~0xFFFFFFFFFFFFFFFF
+  assert !test_eq()
+  test_widen(7)
+  assert load(result_at) == 7
+  assert test_narrow() == 0xFFFFFFFFFFFFFFFF
+  assert test_mul_hi(0xFFFFFFFFFFFFFFFF, 2) == 1
+}

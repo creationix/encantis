@@ -1,6 +1,6 @@
 // Encantis language server, web (worker) entry point.
 import { BrowserMessageReader, BrowserMessageWriter, createConnection } from 'vscode-languageserver/browser';
-import { startServer } from '../server/serve';
+import { startServer } from '@encantis/lsp/src/serve';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -9,4 +9,5 @@ declare const self: DedicatedWorkerGlobalScope;
 const connection = createConnection(new BrowserMessageReader(self), new BrowserMessageWriter(self));
 startServer(connection, {
   readUri: (uri) => connection.sendRequest<string | null>('encantis/readFile', uri),
+  findFiles: () => connection.sendRequest<string[]>('encantis/findFiles'),
 });

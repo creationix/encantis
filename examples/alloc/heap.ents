@@ -1,82 +1,120 @@
-// Simple tagged-block heap allocator
-// Each block has an 8-byte header: [size:u32, free:u32]
-// Blocks are contiguous in a static buffer.
+// A first-fit heap over a static buffer. Each block starts with a header, its
+// size and whether it is free, and the blocks follow one another: the next
+// header lies right after a block's bytes. malloc rounds a size up to 8, so
+// every header starts at a multiple of 8 into the buffer, and splits a free
+// block where what is left holds a header and 8 bytes. free does not join a
+// block with free neighbours: it is reused at the size it has.
+// malloc and free take and give offsets into heap, not addresses.
 
 export "mem" memory
 
+type Header = (size: u32, free: u32)    // free is 1 for a free block, 0 in use
+
 data heap = mut [0:u8; 65536]
-def heap_size = 65536:u32
-def header_size = 8:u32
 
-global heap_init: u32 = 0
+// What malloc gives when no free block is large enough.
+def no_room = 0xFFFFFFFF:u32
 
-// Initialize heap with one big free block
+global ready = false
+
+// The header at an offset into heap.
+func header(at: u32) -> *mut Header => ((heap as [*]mut u8) + at) as *mut Header
+
+// Makes the whole heap one free block, the first time it is used.
 func init() {
-  return when heap_init != 0
-  heap.u32[0] = heap_size - header_size
-  heap.u32[1] = 1
-  heap_init = 1
+  return when ready
+  let first = header(0)
+  first.* = Header(heap.len - sizeof(Header), 1)
+  ready = true
 }
 
-// Allocate `size` bytes. Returns offset or 0xFFFFFFFF on failure.
-export func malloc(size: u32) -> (result: u32) {
+// Allocates size bytes: the offset of the first of them, or no_room.
+export func malloc(size: u32) -> u32 {
   init()
-  let offset: u32 = 0
-  loop {
-    break when offset >= heap_size
-    let block_size = heap.u32[offset / 4]
-    let block_free = heap.u32[offset / 4 + 1]
-    if block_free != 0 {
-      if block_size >= size {
-        // Split block if remainder is large enough for another block
-        if block_size >= size + header_size + 8 {
-          let next = offset + header_size + size
-          heap.u32[next / 4] = block_size - size - header_size
-          heap.u32[next / 4 + 1] = 1
-          heap.u32[offset / 4] = size
-        }
-        heap.u32[offset / 4 + 1] = 0
-        result = offset + header_size
-        return
+  let at: u32 = 0
+  while at < heap.len {
+    let block = header(at)
+    if block.free != 0 && block.size >= size {
+      // Block sizes are multiples of 8, so this one holds size rounded up,
+      // and size is small enough here that rounding it does not wrap.
+      let need = (size + 7) & ~7
+      if block.size >= need + sizeof(Header) + 8 {
+        let rest = header(at + sizeof(Header) + need)
+        rest.* = Header(block.size - need - sizeof(Header), 1)
+        block.size = need
       }
+      block.free = 0
+      return at + sizeof(Header)
     }
-    offset += header_size + block_size
+    at += sizeof(Header) + block.size
   }
-  result = 0xFFFFFFFF
+  return no_room
 }
 
-// Free a previously allocated block
+// Frees the block at an offset malloc gave. An offset malloc cannot have given
+// is ignored: one below the first block, or one past heap.len - sizeof(Header),
+// since the last block holds 8 bytes at least. So free(no_room) does nothing,
+// like C's free(NULL).
 export func free(ptr: u32) {
-  return when ptr < header_size
-  let offset = ptr - header_size
-  heap.u32[offset / 4 + 1] = 1
+  return when ptr < sizeof(Header) || ptr > heap.len - sizeof(Header)
+  let block = header(ptr - sizeof(Header))
+  block.free = 1
 }
 
-// Report bytes currently allocated (for testing)
+// How many bytes the blocks in use hold.
 export func heap_used() -> (total: u32) {
   init()
-  total = 0
-  let offset: u32 = 0
-  loop {
-    break when offset >= heap_size
-    let block_size = heap.u32[offset / 4]
-    let block_free = heap.u32[offset / 4 + 1]
-    if block_free == 0 { total += block_size }
-    offset += header_size + block_size
+  let at: u32 = 0
+  while at < heap.len {
+    let block = header(at)
+    if block.free == 0 { total += block.size }
+    at += sizeof(Header) + block.size
   }
 }
 
 test "malloc returns valid offsets" {
   let p1 = malloc(16)
-  assert p1 != 0xFFFFFFFF
+  assert p1 != no_room
   let p2 = malloc(32)
-  assert p2 != 0xFFFFFFFF
+  assert p2 != no_room
   assert p2 > p1
 }
 
 test "malloc and free cycle" {
   let p = malloc(100)
-  assert p != 0xFFFFFFFF
-  assert heap_used() >= 100
+  assert p != no_room
+  let used = heap_used()
+  assert used >= 100
+  free(p)
+  assert heap_used() == used - 104       // 100 rounded up to 8
+  assert malloc(100) == p                // the first block that fits
+}
+
+test "a byte written into a block of 1 stays in that block" {
+  let p = malloc(1)
+  let q = malloc(8)
+  let used = heap_used()
+  if let b = &heap[p] { b.* = 0xFF } else { assert false }
+  assert heap_used() == used
+  assert q == p + 16
+}
+
+test "what does not fit" {
+  assert malloc(heap.len) == no_room
+  assert malloc(0xFFFFFFFF) == no_room
+}
+
+test "free ignores an offset malloc cannot have given" {
+  let p = malloc(16)
+  let used = heap_used()
+  heap[heap.len - 8] = 0           // bytes of the last block, which a free
+  heap[heap.len - 4] = 0           // of an offset near the end would write
+  free(malloc(heap.len))           // no_room: nothing is that large
+  free(heap.len + 8)               // past the heap
+  free(heap.len)                   // at its end
+  free(heap.len - 4)               // inside the last block
+  free(4)                          // inside the first header
+  assert heap_used() == used
+  assert heap[heap.len - 8] == 0 && heap[heap.len - 4] == 0
   free(p)
 }

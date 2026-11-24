@@ -2,32 +2,43 @@
 // and named results set by a trailing value.
 
 global g: i32 = 0
+
 func cleanup() { g += 1 }
+
+// The deferred if holds statements, a let among them; it runs after the
+// return has read g.
 export func locals() -> i32 {
   g = 0
-  defer if true { let x: i32 = 5
-    g = x }
+  defer if true {
+    let x: i32 = 5
+    g = x
+  }
   return g
 }
+
 export func arrow_loop() -> i32 {
   g = 0
   defer cleanup()
   loop => if true { break }
   return g
 }
+
 export func named() -> (r: i32) {
   g = 0
   defer cleanup()
-  42:i32
+  42
 }
+
 test "locals in a deferred expression" {
   assert locals() == 0
   assert g == 5
 }
+
 test "break in an arrow loop body leaves only the loop" {
   assert arrow_loop() == 0
   assert g == 1
 }
+
 test "a trailing value sets named results before defers run" {
   assert named() == 42
   assert g == 1

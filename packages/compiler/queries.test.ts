@@ -281,8 +281,13 @@ func open(comptime T: type, b: Box(T)) -> T => b.v
     for (const field of [program.indexOf('len: u32)'), program.indexOf('b: ?*Two')]) {
       expect(gotoDefinition(source, module, check, field)).toBeNull()
       expect(findReferences(source, module, check, field)).toBeNull()
-      expect(rename(source, module, check, field)).toBeNull()
     }
+    // Renamed, a field is renamed where its generic type declares it and where
+    // an application's is named: the global len and the parameters b stay.
+    const places = (offset: number) => rename(source, module, check, offset)?.locations.map((l) => l.offset)
+    expect(places(program.indexOf('len: u32)'))).toEqual([program.indexOf('len: u32)'), program.indexOf('b.len') + 2])
+    expect(places(program.indexOf('b.len') + 2)).toEqual([program.indexOf('len: u32)'), program.indexOf('b.len') + 2])
+    expect(places(program.indexOf('b: ?*Two'))).toEqual([program.indexOf('b: ?*Two')])
     // The type parameter is what each application gives it.
     const t = { name: 'T', type: 'type', kind: 'type parameter', instances: [{ in: ['Box(u8)'], type: 'u8' }, { in: ['Box(i64)'], type: 'i64' }] }
     expect(hover(source, module, check, program.indexOf('T: type'))).toEqual(t)
@@ -1123,6 +1128,70 @@ export func f(b: *Box(u32)) -> u32 => b.open()
   })
 })
 
+// A field is renamed where its struct declares it and where the module names
+// it: after a point, in a pattern, in a constructor or a literal given for the
+// struct. Which struct is the one the value has where it is named: two types
+// with the same fields are two structs.
+describe('renaming a field', () => {
+  const places = (r: { locations: { offset: number; field?: true }[] } | null) => r?.locations.map(l => (l.field ? `${l.offset}f` : `${l.offset}`))
+
+  test('a named result is renamed with the reads of its field, which keep their variables', () => {
+    const code = `func pair(n: u32) -> (count: u32, clipped: bool) {
+  count = n
+  clipped = false
+}
+export func f() -> u32 {
+  let (count:, clipped:) = pair(1)
+  return if clipped { pair(2).count } else { count }
+}
+`
+    const { source, module, check } = setup(code)
+    const declared = code.indexOf('count: u32')
+    const expected = [`${declared}`, `${code.indexOf('count = n')}`, `${code.indexOf('count:,')}f`, `${code.indexOf('.count') + 1}f`]
+    for (const at of [declared, code.indexOf('.count') + 1]) {
+      const found = rename(source, module, check, at)
+      expect(places(found)).toEqual(expected)
+      expect(found?.field).toBe(declared)
+    }
+    // At the shorthand the name is the variable it binds
+    expect(places(rename(source, module, check, code.indexOf('count:,')))).toEqual([`${code.indexOf('count:,')}`, `${code.lastIndexOf('count')}`])
+  })
+
+  test('in a generic, a field of the struct each instance has, or of a different one each', () => {
+    const code = `type A = (count: u32, at: u32)
+type B = (count: u32)
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32)
+func size(comptime T: type, v: *Vec(T)) -> u32 => v.len
+func total(comptime T: type, x: T) -> u32 => x.count
+export func f(v: *Vec(u8), w: *Vec(u32), a: A, b: B) -> u32 => size(v) + size(w) + total(a) + total(b) + a.at
+`
+    const { source, module, check } = setup(code)
+    expect(check.errors).toEqual([])
+    // Each application of Vec has the field its body declares
+    const len = [`${code.indexOf('len: u32')}f`, `${code.indexOf('v.len') + 2}f`]
+    expect(places(rename(source, module, check, code.indexOf('v.len') + 2))).toEqual(len)
+    expect(places(rename(source, module, check, code.indexOf('len: u32')))).toEqual(len)
+    // total's x.count is A's in one instance and B's in the other
+    expect(rename(source, module, check, code.indexOf('x.count') + 2)?.refused).toContain('a different struct in each instance')
+    expect(places(rename(source, module, check, code.indexOf('count: u32, at')))).toEqual([`${code.indexOf('count: u32, at')}f`, `${code.indexOf('x.count') + 2}f`])
+    expect(places(rename(source, module, check, code.indexOf('a.at') + 2))).toEqual([`${code.indexOf('at: u32')}f`, `${code.indexOf('a.at') + 2}f`])
+  })
+
+  test("a field of another module's struct is renamed there", async () => {
+    const lib = 'export func pair(n: u32) -> (count: u32, clipped: bool) => (count: n, clipped: n > 9)\n'
+    const main = 'import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)\nexport func f() -> u32 => pair(3).count\n'
+    const files = new Map([[resolve('/q/lib.ents'), lib], [resolve('/q/main.ents'), main]])
+    const load = await loadModule('/q/main.ents', { readFile: async path => files.get(path) ?? null })
+    const results = typecheckProgram(load.modules, load.entry.path).results
+    const check = results.get(load.entry.path)!
+    expect(rename(main, load.entry.module, check, main.indexOf('.count') + 1)?.refused).toBe("'count' is a field of a struct that lib.ents declares: rename it there")
+    // lib.ents names it where it declares it and where its literal gives it
+    const own = load.modules.get(resolve('/q/lib.ents'))!
+    const there = rename(lib, own.module, results.get(resolve('/q/lib.ents'))!, lib.indexOf('count:'))
+    expect(places(there)).toEqual([`${lib.indexOf('count:')}`, `${lib.indexOf('count: n')}f`])
+  })
+})
+
 // Names a function declares for itself were recorded by name, one place per
 // name for the whole module: from where one is defined the editor found the
 // last of its name (another loop's, another function's parameter), a
@@ -1257,7 +1326,7 @@ export func f(acc: u64) -> u64 => step(acc, 1)
   })
 
   // Each test may declare a data or a def of a name another test declares
-  // (examples/crypto/ed25519/point.ents: eleven tests, each with its `data b`).
+  // (examples/crypto/ed25519/ed25519.ents: two tests, each with its `data tv1-privkey`).
   // From its name, by name, each one was the last of them in the module.
   test('a data a test declares is its own, also from its name', () => {
     const program = `export func f() -> u32 => 1
@@ -1287,13 +1356,24 @@ test "two" {
       expect(hover(source, module, check, field)).toBeNull()
       expect(gotoDefinition(source, module, check, field)).toBeNull()
       expect(findReferences(source, module, check, field)).toBeNull()
-      expect(rename(source, module, check, field)).toBeNull()
     }
     // After a point: the member's type, and nothing to go to
     expect(hover(source, module, check, at(5, 'p.x', 'x'))).toEqual({ name: 'x', type: 'i32', kind: 'field' })
     expect(hover(source, module, check, at(5, ').y', 'y'))).toEqual({ name: 'y', type: 'i32', kind: 'field' })
     expect(gotoDefinition(source, module, check, at(5, 'p.x', 'x'))).toBeNull()
-    expect(rename(source, module, check, at(5, ').y', 'y'))).toBeNull()
+    // Renamed, a field is renamed where Pt declares it and where it is named,
+    // and the global x and the parameter y are not. (The shorthand y: in the
+    // pattern names the field too: renamed from there, it is the variable.)
+    const x = [at(2, 'x: i32'), at(5, 'p.x', 'x'), at(5, 'x: 1'), at(18, 'x: a')]
+    const y = [at(2, 'y: i32'), at(5, 'y: 2'), at(5, ').y', 'y'), at(18, 'y:)', 'y')]
+    for (const [places, from] of [[x, x], [y, y.slice(0, 3)]]) {
+      for (const offset of from) {
+        const found = rename(source, module, check, offset)
+        expect(offsets(found)).toEqual(places)
+        expect(found?.field).toBe(places[0])
+        expect(found?.locations.every((l) => l.field)).toBe(true)
+      }
+    }
   })
 })
 

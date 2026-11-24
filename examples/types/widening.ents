@@ -24,8 +24,10 @@ test "an integer operand widens to the float beside it" {
   assert small(1.5, -2) == -3.0
 }
 
-test "integer operands widen to the widest, keeping their sign" {
+test "each operator widens its narrower operand, keeping its sign" {
   assert total(200, -300, -70000, 5000000000) == 4999929900
+  // a + b is an i16 sum: it wraps before it meets c.
+  assert total(255, 32767, 0, 0) == -32514
 }
 
 test "comparisons widen their operands the same way" {
@@ -132,15 +134,16 @@ func big() -> i64 {
   return x
 }
 
-func plus_half(n: i64) -> i64 => n + (3 - 1) * 2
+func plus_four(n: i64) -> i64 => n + (3 - 1) * 2
 
 test "a constant expression is computed in the type it's used as" {
   assert third() == 1.0:f32 / 3.0:f32
   assert big() == 5000000001
-  assert plus_half(10) == 14
+  assert plus_four(10) == 14
 }
 
-// A shift's count is any integer type; the result is the value's.
+// A shift's count is any integer type. The result has the value's type, or the
+// count's when the count is wider: then the value widens to it first.
 func shifted(x: i64, n: u8) -> i64 => x << n
 func arithmetic(x: i32, n: u32) -> i32 => x >> n
 func counted(x: u32, n: u64) -> u64 => x << n
@@ -154,7 +157,7 @@ test "a shift takes a count of any integer type" {
 // The elements of an array literal widen to the element type, in registers
 // and in the data section.
 data weights = [1:f64, 2, 3.5]
-data wide: []i64 = [1, -2, 5000000000]
+data wide: *[3]i64 = [1, -2, 5000000000]
 
 func in_registers(n: i32) -> f64 {
   let a: [3]f64 = [n, 2, 0.5]
@@ -167,7 +170,7 @@ func repeated() -> i64 {
 }
 
 func in_data() -> f64 => weights[0] + weights[1] + weights[2]
-func wide_sum() -> i64 => wide.ptr[0] + wide.ptr[1] + wide.ptr[2]
+func wide_sum() -> i64 => wide[0] + wide[1] + wide[2]
 
 test "array literal elements widen to the element type" {
   assert in_registers(4) == 6.5

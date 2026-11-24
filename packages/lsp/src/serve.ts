@@ -21,6 +21,15 @@ import {
   type DocumentLinkParams,
   type DocumentSymbol,
   type DocumentSymbolParams,
+  type SymbolInformation,
+  type WorkspaceSymbolParams,
+  type Position,
+  SymbolKind,
+  type DocumentHighlight,
+  type InlayHint,
+  type InlayHintParams,
+  type DocumentHighlightParams,
+  DocumentHighlightKind,
   type PrepareRenameParams,
   type CompletionItem,
   type CompletionParams,
@@ -40,8 +49,8 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
 import type { ExportDecl, ImportDecl, ImportItem, Module, Span } from '@encantis/compiler/ast';
-import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, type TypeCheckResult, typecheck, typecheckProgram } from '@encantis/compiler/checker';
-import { getSourceImports, loadModule, resolveModulePath } from '@encantis/compiler/loader';
+import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, type ProgramCheckResult, type TypeCheckResult, typecheck, typecheckProgram } from '@encantis/compiler/checker';
+import { getSourceImports, isSourceImport, loadModule, resolveModulePath } from '@encantis/compiler/loader';
 import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 import * as nodePath from 'path';
@@ -49,9 +58,10 @@ import { namesIn, recoverParse, untrusted } from './recover';
 import { leftOutSymbols, outline } from './outline';
 import { BUILTIN_DOCS, BUILTIN_SIGNATURES, TYPE_DOCS } from './words';
 import { complete, signatureHelp } from './complete';
+import { inlayHints } from './hints';
 import { applyRename, planRename, type RenamePlan, refusedName } from './rename';
 import { rename } from '@encantis/compiler/queries';
-import { literalAt, nameAfter } from './scan';
+import { literalAt, nameAfter, pieces } from './scan';
 
 
 // Convert symbol kind to display prefix
@@ -271,6 +281,42 @@ export interface ServerOptions {
   // Reads a file of another file system by its URI (a web editor's,
   // vscode-vfs:), where readFile reads none: the web server asks the editor.
   readUri?: (uri: string) => Promise<string | null>;
+  // The URIs of the workspace's .ents files, for Go to Symbol in Workspace
+  // and for what a rename has to check, in the folders the client named when
+  // it started (their URIs): VS Code finds them (the extensions answer
+  // encantis/findFiles), `encantis lsp` reads the folders. A listing that is
+  // not all of them says why (FoundFiles).
+  findFiles?: (folders: string[]) => Promise<string[] | FoundFiles>;
+}
+
+// The files a listing found, and where it is not all of them, why: a folder
+// it could not read, a limit it stopped at
+export interface FoundFiles {
+  uris: string[];
+  incomplete?: string;
+}
+
+// The source files a text that does not parse imports, as far as an import
+// of one can be read in it: a module's path in double quotes after `import`,
+// with nothing but space and comments between. An import in a comment is
+// none. (Part of a module that recovery left out, where nothing else says
+// what it imports.)
+function importedIn(text: string): string[] {
+  const found: string[] = [];
+  // The code before the next piece, its comments left out
+  let code = '';
+  let at = 0;
+  for (const piece of pieces(text, text.length)) {
+    code += text.slice(at, piece.start);
+    at = piece.end;
+    if (piece.kind === 'comment') continue;
+    if (piece.kind === 'quoted' && !piece.open && text[piece.start] === '"' && /(?<![A-Za-z0-9_-])import\s*$/.test(code)) {
+      const spec = text.slice(piece.start + 1, piece.end - 1);
+      if (isSourceImport(spec)) found.push(spec);
+    }
+    code = '';
+  }
+  return found;
 }
 
 // The path the loader names a document's file by: a file's path (pathOf),
@@ -406,11 +452,19 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return documents.all().find(document => pathFor(document.uri) === path && sameFileSystem(document.uri, near));
   }
 
-  async function programOf(uri: string, text: string): Promise<(MetaOptions & { module: Module }) | null> {
+  // `instead`: the texts of other files, by path, to check the program with
+  // in place of theirs
+  async function programOf(
+    uri: string,
+    text: string,
+    instead: ReadonlyMap<string, string> = new Map(),
+  ): Promise<(MetaOptions & { module: Module; program: ProgramCheckResult }) | null> {
     const path = pathFor(uri);
     if (!path) return null;
     const readFile = async (file: string): Promise<string | null> => {
       if (file === path) return text;
+      const given = instead.get(file);
+      if (given !== undefined) return given;
       const open = documentAt(file, uri);
       if (open) return open.getText();
       if (uri.startsWith('file:')) return options.readFile ? options.readFile(file) : null;
@@ -424,7 +478,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       if (!checkResult) return null;
       // The checker's tables are keyed by the nodes of the module it checked.
       const sources = new Map([...load.modules].map(([file, loaded]) => [file, loaded.source]));
-      return { module: load.entry.module, checkResult, sources };
+      return { module: load.entry.module, checkResult, sources, program: check };
     } catch {
       return null;
     }
@@ -434,7 +488,17 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // Initialization
   // -----------------------------------------------------------------------------
 
-  connection.onInitialize((_params: InitializeParams): InitializeResult => {
+  // The workspace's folders, as the client names them when it starts
+  let folders: string[] = [];
+  // Whether the client takes an edit of a document at a version of it, which
+  // it does not apply to another (see onRenameRequest)
+  let versionedEdits = false;
+
+  connection.onInitialize((params: InitializeParams): InitializeResult => {
+    versionedEdits = params.capabilities.workspace?.workspaceEdit?.documentChanges === true;
+    if (params.workspaceFolders?.length) folders = params.workspaceFolders.map((folder) => folder.uri);
+    else if (params.rootUri) folders = [params.rootUri];
+    else if (params.rootPath) folders = [uriOf(params.rootPath)];
     return {
       capabilities: {
         textDocumentSync: TextDocumentSyncKind.Incremental,
@@ -442,6 +506,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         definitionProvider: true,
         documentLinkProvider: { resolveProvider: false },
         documentSymbolProvider: true,
+        workspaceSymbolProvider: true,
+        documentHighlightProvider: true,
+        inlayHintProvider: true,
         renameProvider: { prepareProvider: true },
         completionProvider: { triggerCharacters: ['.'] },
         signatureHelpProvider: { triggerCharacters: ['(', ','], retriggerCharacters: [','] },
@@ -942,6 +1009,75 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return null;
   }
 
+  // Why the renamed text of a document would break another module of the
+  // workspace, or null: a program that holds the document, checked with the
+  // renamed text in its place, has an error it does not have now. A field is
+  // named by the modules that import its struct or the function whose results
+  // it is, also where none of them writes its name: a value of the struct given
+  // to another struct of those fields needs them all. A module that may hold
+  // the document and cannot be checked is a reason too: one that cannot be
+  // read, one that does not parse and imports it (as far as it parses), one
+  // that imports it whose program does not load. The files are listed afresh;
+  // where they cannot all be, that is said, as nothing could be checked.
+  async function dependentProblem(uri: string, renamed: string, name: string): Promise<string | null> {
+    const own = pathFor(uri);
+    if (!own) return null;
+    const file = (path: string) => path.replace(/^.*[\\/]/, '');
+    const ownName = file(own).replace(/\.ents$/, '');
+    const others = new Set([...documents.all().map((d) => d.uri), ...(await workspaceFiles(true))]);
+    for (const other of others) {
+      const path = pathFor(other);
+      if (!path || path === own || !sameFileSystem(other, uri)) continue;
+      const text = await textOf(other);
+      if (text === null) return `${path} could not be read, so whether it uses this module could not be checked`;
+      // The module as far as it parses: its source imports, a test's
+      // included, say whether it can hold this one
+      const parsed = parse(text);
+      const recovered = parsed.module ? null : recoverParse(text, parse, parsed);
+      const module = parsed.module ?? recovered?.module;
+      if (!module) {
+        // Nothing of it parses: whether it imports this module is not known
+        if (new RegExp(`"[^"]*\\b${ownName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\.ents)?"`).test(text)) {
+          return `${file(path)} may use this module and does not parse, so it could not be checked`;
+        }
+        continue;
+      }
+      const imports = getSourceImports(module, true);
+      const direct = imports.some((decl) => resolveModulePath(decl.module, path) === own);
+      if (recovered) {
+        // What recovery left out may import it too: a test whose brace is not
+        // closed yet, an import being written. Its imports are read from the
+        // text left out, and a module one of them names holds it where that
+        // module's program does.
+        const omitted = recovered.leftOut.flatMap((span) => importedIn(text.slice(span.start, span.end))).map((spec) => resolveModulePath(spec, path));
+        let holds = direct || omitted.includes(own) || (imports.length > 0 && (await programOf(other, recovered.text))?.sources?.has(own));
+        for (const dep of omitted) {
+          if (holds) break;
+          const depText = await textOf(uriFor(dep, other));
+          holds = depText !== null && (await programOf(uriFor(dep, other), depText))?.sources?.has(own);
+        }
+        if (holds) return `${file(path)}, which uses this module, does not parse yet, so it could not be checked`;
+        continue;
+      }
+      if (imports.length === 0) continue;
+      const now = await programOf(other, text);
+      if (!now) {
+        if (direct) return `${file(path)}, which imports this module, could not be checked: its program does not load`;
+        continue;
+      }
+      if (!now.sources?.has(own)) continue;
+      const then = await programOf(other, text, new Map([[own, renamed]]));
+      const errors = (program: ProgramCheckResult) => [...program.results.values()].flatMap((r) => r.errors.map((e) => e.message));
+      const before = errors(now.program);
+      const after = then ? errors(then.program) : ['the renamed program does not load'];
+      const added = after.filter((message) => !before.includes(message));
+      if (after.length > before.length || added.length > 0) {
+        return `renamed to '${name}', ${file(path)}, which uses this module, would not check: ${added[0] ?? after[0]}`;
+      }
+    }
+    return null;
+  }
+
   connection.onPrepareRename((params: PrepareRenameParams) => {
     const found = renamePlan(params);
     if (!found) return null;
@@ -949,41 +1085,45 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return { range: { start: document.positionAt(start), end: document.positionAt(start + plan.name.length) }, placeholder: plan.name };
   });
 
+  // The edits are made of the text the plan was made of, at its version: the
+  // document can change while the rename is checked, which awaits other
+  // files. An edit of a document that changed meanwhile is refused, and a
+  // client that can be told the version is.
   connection.onRenameRequest(async (params: RenameParams): Promise<WorkspaceEdit | null> => {
     const found = renamePlan(params);
     if (!found) return null;
     const { plan, analysis, document } = found;
+    const { uri } = params.textDocument;
+    const version = document.version;
     const why = refusedName(plan.name, params.newName);
     if (why) throw refuse(why);
     if (params.newName === plan.name) return { changes: {} };
     const renamed = applyRename(analysis.text, plan, params.newName);
-    const problem = await renameProblem(params.textDocument.uri, analysis, renamed, params.newName);
-    if (problem) {
-      // A named result is also a field of what its function returns, which
-      // is read by its name where the result is taken apart.
-      const at = offsetToPosition(analysis.text, found.start);
-      const hint = analysis.meta.hints[`${at.line}:${at.character}`];
-      const result = hint?.symbol !== undefined && analysis.meta.symbols[hint.symbol]?.kind === 'return';
-      throw refuse(result ? `'${plan.name}' is a named result, a field of what its function returns, read by that name: ${problem}` : problem);
+    const at = (offset: number) => offsetToPosition(analysis.text, offset);
+    const edits = renamed.edits.map((e) => ({ range: { start: at(e.start), end: at(e.end) }, newText: e.newText }));
+    const problem = await renameProblem(uri, analysis, renamed, params.newName);
+    if (problem) throw refuse(problem);
+    // A field is named by other modules, which rename does not edit
+    if (plan.field !== null) {
+      const elsewhere = await dependentProblem(uri, renamed.text, params.newName).catch((e: unknown) => {
+        throw refuse(`the workspace's files could not all be listed, so the modules that use this one could not be checked: ${(e as Error)?.message ?? e}`);
+      });
+      if (elsewhere) throw refuse(elsewhere);
     }
-    const edits = renamed.edits.map((e) => ({ range: { start: document.positionAt(e.start), end: document.positionAt(e.end) }, newText: e.newText }));
-    return { changes: { [params.textDocument.uri]: edits } };
+    if (documents.get(uri)?.version !== version) throw refuse('The file changed while the rename was checked: try again');
+    return versionedEdits ? { documentChanges: [{ textDocument: { uri, version }, edits }] } : { changes: { [uri]: edits } };
   });
 
   // The declarations of the document, for the outline, the breadcrumbs and
   // Go to Symbol. While a declaration does not parse, it is listed by its
   // name, which is read from the words it starts with.
-  connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {
-    const document = documents.get(params.textDocument.uri);
-    if (!document) return [];
-    const text = document.getText();
-    const analysis = analysisOf(params.textDocument.uri, text);
+  // The declarations of a text, with the types an analysis of it gives
+  function declarationsOf(text: string, analysis: Analysis | null, positionAt: (offset: number) => Position): DocumentSymbol[] {
     // With no analysis of the text as it is, what of it parses
     const parsed = analysis ? null : parse(text);
     const recovered = parsed && !parsed.module ? recoverParse(text, parse, parsed) : null;
     const module = analysis?.module ?? parsed?.module ?? recovered?.module;
     if (!module) return [];
-    const positionAt = (offset: number) => document.positionAt(offset);
     const detailOf = (offset: number) => {
       if (!analysis || !answersAt(analysis, offset)) return undefined;
       const at = offsetToPosition(text, offset);
@@ -995,6 +1135,123 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     const leftOut = leftOutSymbols(text, analysis?.recovered?.leftOut ?? recovered?.leftOut ?? [], positionAt);
     const line = (s: DocumentSymbol) => s.range.start.line;
     return [...symbols, ...leftOut].sort((a, b) => line(a) - line(b));
+  }
+
+  connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return [];
+    const text = document.getText();
+    return declarationsOf(text, analysisOf(params.textDocument.uri, text), (offset) => document.positionAt(offset));
+  });
+
+  // Go to Symbol in Workspace: the declarations of the workspace's .ents
+  // files (as the editor finds them) and of the open documents, with what
+  // each is declared in. A file's are kept while its text is the same.
+  const declaredIn = new Map<string, { text: string; symbols: SymbolInformation[] }>();
+  // The files found last, kept for a few seconds: the editor asks again as
+  // each letter of a query is written.
+  let listed: { at: number; uris: string[] } | null = null;
+
+  // `fresh`: listed now, and a listing that failed or is not all of the
+  // files is thrown, with why (rename depends on what is there; a search
+  // shows what it finds)
+  async function workspaceFiles(fresh = false): Promise<string[]> {
+    if (!options.findFiles) return [];
+    const list = async (): Promise<FoundFiles> => {
+      const found = await options.findFiles!(folders);
+      return Array.isArray(found) ? { uris: found } : found;
+    };
+    if (fresh) {
+      const found = await list();
+      listed = { at: Date.now(), uris: found.uris };
+      if (found.incomplete) throw new Error(found.incomplete);
+    } else if (!listed || Date.now() - listed.at > 5000) {
+      listed = { at: Date.now(), uris: (await list().catch(() => ({ uris: [] }))).uris };
+    }
+    return listed.uris;
+  }
+
+  async function textOf(uri: string): Promise<string | null> {
+    const open = documents.get(uri);
+    if (open) return open.getText();
+    if (uri.startsWith('file:')) {
+      const path = pathOf(uri);
+      return path && options.readFile ? options.readFile(path) : null;
+    }
+    return options.readUri ? options.readUri(uri).catch(() => null) : null;
+  }
+
+  function symbolsOfFile(uri: string, text: string): SymbolInformation[] {
+    const known = declaredIn.get(uri);
+    if (known && known.text === text) return known.symbols;
+    const document = TextDocument.create(uri, 'encantis', 0, text);
+    const symbols: SymbolInformation[] = [];
+    const flatten = (list: DocumentSymbol[], container?: string) => {
+      for (const symbol of list) {
+        // An import's items are the other file's declarations.
+        if (symbol.kind === SymbolKind.Module) continue;
+        symbols.push({ name: symbol.name, kind: symbol.kind, location: { uri, range: symbol.selectionRange }, ...(container ? { containerName: container } : {}) });
+        if (symbol.children) flatten(symbol.children, symbol.name);
+      }
+    };
+    flatten(declarationsOf(text, analysisOf(uri, text), (offset) => document.positionAt(offset)));
+    declaredIn.set(uri, { text, symbols });
+    return symbols;
+  }
+
+  connection.onWorkspaceSymbol(async (params: WorkspaceSymbolParams): Promise<SymbolInformation[]> => {
+    // An open document is read as it is open, also where the files found
+    // write its URI another way
+    const open = documents.all().map((d) => d.uri);
+    const opened = new Set(open.map((uri) => pathFor(uri) ?? uri));
+    const uris = [...open, ...(await workspaceFiles()).filter((uri) => !opened.has(pathFor(uri) ?? uri))];
+    // The letters of the query, in order, in the name (as the editor matches)
+    const query = params.query.toLowerCase();
+    const matches = (name: string) => {
+      let at = 0;
+      for (const ch of name.toLowerCase()) if (ch === query[at]) at++;
+      return at === query.length;
+    };
+    const results: SymbolInformation[] = [];
+    for (const uri of uris) {
+      const text = await textOf(uri);
+      if (text === null) continue;
+      for (const symbol of symbolsOfFile(uri, text)) if (matches(symbol.name)) results.push(symbol);
+      if (results.length >= 1000) break;
+    }
+    return results;
+  });
+
+  // What the compiler inferred, in the lines asked for: the types of names
+  // bound with none written, the parameters of literal arguments. Only from
+  // an analysis of the text as it is now, where it answers.
+  connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return [];
+    const text = document.getText();
+    const analysis = analysisOf(params.textDocument.uri, text);
+    if (!analysis) return [];
+    const from = document.offsetAt(params.range.start);
+    const to = document.offsetAt(params.range.end);
+    return inlayHints(analysis, from, to, (offset) => document.positionAt(offset), (offset) => answersAt(analysis, offset));
+  });
+
+  // The places of the symbol at a position, for the editor to highlight: where
+  // it is declared and where it is assigned are writes, the other uses reads.
+  // Answered as references are (see onReferences).
+  connection.onDocumentHighlight((params: DocumentHighlightParams): DocumentHighlight[] | null => {
+    const found = symbolAt(params);
+    if (!found) return null;
+    const { symbol, uri, analysis } = found;
+    if (analysis.recovered?.unseenNames.has(symbol.name)) return null;
+    const assigned = /^\s*(?:[-+*/%&|^]\|?|<<<?|>>>?)?=(?!=)/;
+    const lines = analysis.text.split('\n');
+    return [symbol.def, ...symbol.refs].map((key, i) => {
+      const { range } = locationOf(uri, symbol, key);
+      const after = lines[range.end.line]?.slice(range.end.character) ?? '';
+      const write = i === 0 || assigned.test(after);
+      return { range, kind: write ? DocumentHighlightKind.Write : DocumentHighlightKind.Read };
+    });
   });
 
   // The path of each import of another source file opens that file.

@@ -1,36 +1,30 @@
 {
-    "comments": {
-      // symbol used for single line comment. Remove this entry if your language does not support line comments
-      "lineComment": {
-        "comment": "//"
-      },
-      // symbols used for start and end a block comment. Remove this entry if your language does not support block comments
-      "blockComment": ["/*", "*/"]
-    },
-    // Define what constitutes a "word" for double-click, skip-word navigation, etc.
-    // Encantis identifiers can contain hyphens: prime64-1, my-func, etc.
-    "wordPattern": "[a-zA-Z_][a-zA-Z0-9_-]*",
-    // symbols used as brackets
-    "brackets": [
-        ["{", "}"],
-        ["[", "]"],
-        ["(", ")"]
-    ],
-    // symbols that are auto closed when typing
-    "autoClosingPairs": [
-        ["{", "}"],
-        ["[", "]"],
-        ["(", ")"],
-        ["\"", "\""],
-        ["'", "'"]
-    ],
-    // symbols that that can be used to surround a selection
-    "surroundingPairs": [
-        ["{", "}"],
-        ["[", "]"],
-        ["(", ")"],
-        ["<", ">"],
-        ["\"", "\""],
-        ["'", "'"]
-    ]
+  "comments": {
+    "lineComment": "//",
+    "blockComment": ["/*", "*/"]
+  },
+  // A name has hyphens: prime64-1, my-func (double-click and word moves)
+  "wordPattern": "[a-zA-Z_][a-zA-Z0-9_-]*",
+  "brackets": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"]
+  ],
+  // A backtick starts a template string; single quotes hold codepoints ('a')
+  "autoClosingPairs": [
+    { "open": "{", "close": "}" },
+    { "open": "[", "close": "]" },
+    { "open": "(", "close": ")" },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
+    { "open": "'", "close": "'", "notIn": ["string", "comment"] },
+    { "open": "`", "close": "`", "notIn": ["string", "comment"] }
+  ],
+  "surroundingPairs": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+    ["\"", "\""],
+    ["'", "'"],
+    ["`", "`"]
+  ]
 }

@@ -8,7 +8,7 @@ global cursor: u32 = 0
 
 func next() -> u8 {
   calls += 1
-  let d = digits[cursor % 5] ?? 0
+  let d = digits[cursor % digits.len]
   cursor += 1
   return d
 }
@@ -93,8 +93,7 @@ test "a match statement draws its subject once per turn" {
 // can only meet `_`. It is evaluated once all the same.
 func fresh() -> []u8 {
   calls += 1
-  let all: []u8 = digits
-  return all
+  return digits
 }
 
 func two() -> (u8, u8) => (next(), next())
@@ -141,7 +140,7 @@ test "a match statement on a slice" {
 }
 
 // A tuple read from memory is several values too: each field is loaded, once.
-data pairs = mut [(1:u8, 2:u64), (3:u8, 4:u64)]
+data pairs = [(1:u8, 2:u64), (3:u8, 4:u64)]
 
 func stored(at: u32) -> u32 {
   calls += 1

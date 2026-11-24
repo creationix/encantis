@@ -98,3 +98,36 @@ jobs:
           "$BIN" wasm --release examples/alloc/stack.ents -o again.wasm
           cmp release.wasm again.wasm
           test "$(wc -c < release.wasm)" -le "$(wc -c < stack.wasm)"
+
+  # The extension, as the release's .vsix installs it, run in VS Code: on
+  # desktop, at the latest version and the oldest it supports
+  # (engines.vscode), and in VS Code for the Web (test/vscode/runner.js).
+  extension:
+    name: Extension in VS Code (${{ matrix.name }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: desktop, target: desktop, vscode: stable }
+          - { name: desktop 1.82, target: desktop, vscode: 1.82.0 }
+          - { name: web, target: web, vscode: stable }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: release
+      - name: Install Chromium
+        if: matrix.target == 'web'
+        run: npx playwright install --with-deps chromium
+      - name: Run the extension in VS Code
+        run: >-
+          ${{ matrix.target == 'desktop' && 'xvfb-run -a' || '' }}
+          node packages/extension/test/run.mjs ${{ matrix.target }}
+          release/encantis-vscode-${{ needs.package.outputs.version }}.vsix ${{ matrix.vscode }}

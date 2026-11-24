@@ -128,4 +128,8 @@ test "a row can be pointed elsewhere" {
 test "a fixed array in a struct lies in place" {
   assert tagged[1].v[1] == 10
   assert tagged[0].v[0] == 7
+  assert sizeof(Tagged) == 9           // the tag, then both cells: no row pointer
+  let bytes = tagged as [*]u8
+  assert bytes[1] == 7                 // v[0] starts right after the tag
+  assert bytes[9] == 2                 // and the second struct after v
 }
