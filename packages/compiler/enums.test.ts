@@ -508,6 +508,27 @@ ${COLOR}`
     ])
   })
 
+  test('a name as the whole pattern on an enum is that one error: what the arms cover is not known', () => {
+    expect(errors(`${COLOR}func f(c: Color) -> u32 => match c {\n  Red => 1\n  x => 2\n}\n`)).toEqual([
+      '12:3 a name as the whole pattern is not implemented: write _ and use the subject',
+    ])
+  })
+
+  test('a name bound twice in one pattern is refused, and declared once as a refused value', () => {
+    const source = `${COLOR}func f(c: Color) -> u8 => match c {
+  Rgb(r, r, _) => r + 1
+  _ => 0
+}
+func g(c: Color) -> u8 => if let Hsl(h:, s: h) = c { h } else { 0 }
+func h(c: Color) -> u8 => if let Hsl(h, s: h) = c { h } else { 0 }
+`
+    expect(errors(source)).toEqual([
+      "11:3 'r' is already declared: a match binding cannot reuse the name of another in its pattern (first declared at 11:7)",
+      "14:27 'h' is already declared: an if let binding cannot reuse the name of another in its pattern (first declared at 14:38)",
+      '15:27 a variant pattern takes its parts all by position or all by name',
+    ])
+  })
+
   test('a match whose every arm returns returns, with every variant handled', () => {
     const source = `enum Dir { North, East, South, West }
 func code(d: Dir) -> u32 {

@@ -342,7 +342,7 @@ enum Shape {
 }
 ```
 
-**Not implemented:** an enum declaration parses and is ignored, and naming its type is an error (reference 2.9).
+An enum is a type: its name is used where a type is, and each variant is a value, `Empty` or `Circle(1.5)` (reference 2.9). An enum declaration stands at module level only; `export enum` and an enum with type parameters are syntax errors. The commas between variants are optional, and a variant's field list is a struct's, never empty (`Empty()` is a syntax error).
 
 ### Definitions
 
@@ -954,7 +954,7 @@ if let name = names[i] { print(name) } else { print("none") }
 let n = if let p = maybe { p.* } else { 0 }
 ```
 
-A branch is a block or `=>` and one expression: `if c => r = 1` is a syntax error, as an assignment is a statement. An `elif let` branch binds its name in its own body, as an `if let` does.
+A branch is a block or `=>` and one expression: `if c => r = 1` is a syntax error, as an assignment is a statement. An `elif let` branch binds its name in its own body, as an `if let` does. The pattern of an `if let` or `elif let` is a name, or a variant pattern of an enum, `if let Rgb(r, _, b) = c` (reference 6.4); the checker refuses any other.
 
 ### Match
 
@@ -988,7 +988,7 @@ match status {
 }
 ```
 
-The compiler compares numbers, codepoints and bools, and `_` matches anything. **Not implemented:** binding, variant, constructor and tuple patterns parse, and are not matched (reference 6.3). There is no guard: `n if n > 3 => ...` is a syntax error.
+The compiler compares numbers, codepoints and bools, `_` matches anything, and on an enum a variant pattern (`-- variant`, or `-- constructor` with each part a name, `_` or `field:`) matches a variant and binds its fields (reference 6.3). **Not implemented:** binding, tuple and struct constructor patterns parse, and are refused by the checker (reference 6.3). There is no guard: `n if n > 3 => ...` is a syntax error.
 
 ---
 

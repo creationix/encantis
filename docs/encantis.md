@@ -34,8 +34,8 @@ Source code is shown in `ents` code blocks. The examples that the compiler can p
 - A design example whose syntax the parser accepts is run by the suite too, parsed or checked only, so that its syntax stays what the design says; its comment says that it is not implemented. A design example the parser refuses is not run.
 - A `test "name" { ... }` block shows results with `assert` ([Tests](#12-tests)).
 - A code block marked `errors` after an example says that the example is refused. Each of its lines is the gist of one error the compiler reports, in the order reported; the full message can say more. The checker reports in passes, each in source order:
-  1. generic types: what is wrong with their parameters, then any that applies itself to a growing argument ([8.5](#85-generic-types));
-  2. `type` declarations;
+  1. the module's capitalised names, one declared twice (a type, an enum, a variant or a generic type, [2.9](#how-variants-are-named)); then generic types: what is wrong with their parameters, then any that applies itself to a growing argument ([8.5](#85-generic-types));
+  2. `type` and `enum` declarations;
   3. every other declaration, whatever its kind: imports, `def`s, globals (`global initializer must be a compile-time constant`), `data` (`data value must be a literal ...`), functions' parameter and result types and a generic's comptime parameters (a named result with a comptime parameter's name among them), with the limits on these, such as an array's size or the registers a signature takes ([2.12](#212-limits)); a second function with the same parameter types, and a generic that shares its name with a function, are reported at the one declared second;
   4. export names: one used twice, or one that begins with `test:` ([7.2](#72-exports));
   5. the names of tests: a test whose name is empty, and two tests exported under one name ([12.6](#126-the-test-host));
@@ -102,10 +102,10 @@ The compiler implements everything this reference describes except what this tab
 
 | Feature | What the compiler does with it | Described in |
 |---|---|---|
-| Enum types, `enum Color { Red, Rgb(r: u8, g: u8, b: u8) }` | Parses the declaration and ignores it; naming the type is an error (`unknown type 'Color'`) | [2.9](#29-enum-types-algebraic-data-types) |
-| `match` patterns other than numbers, codepoints, bools and `_` | A tuple pattern is refused (`match cannot compare a tuple pattern yet: compare one field at a time`), and a guard (`(x, y) if x == y`) is a syntax error. A lower-case name as a pattern binds nothing (its uses are `unknown identifier`), and a variant or constructor pattern (`Red`, `Point(0, y)`) is accepted and never matches: do not write them | [5.4](#54-match-expressions), [6.3](#63-patterns-in-match-arms) |
+| `match` patterns other than numbers, codepoints, bools, `_` and variant patterns on an enum | A tuple pattern and a struct constructor pattern are refused (`match cannot compare a tuple pattern yet: compare one field at a time`, `match cannot compare a struct pattern yet: ...`), a lower-case name as the whole pattern is refused on every subject (`a name as the whole pattern is not implemented: write _ and use the subject`), a part of a variant pattern is a name or `_` only (no nested patterns, no literals), and a guard (`(x, y) if x == y`) is a syntax error | [5.4](#54-match-expressions), [6.3](#63-patterns-in-match-arms) |
+| Generic enums (`Option(T)`), `let Some(x) = opt else { ... }`, qualified variant names (`Color.Red`) | Not parsed or refused: an enum is declared with no parameters, and a `let` takes no variant pattern | [2.9](#29-enum-types-algebraic-data-types) |
 | Patterns in function signatures, `func to_polar Point(x, y) -> Polar(d, a)` | Reads the pattern as a generic type and refuses it (`'Point' is not a generic type`) | [6.2](#62-patterns-in-function-signatures) |
-| Constructor patterns in `if let` and `let`, `if let Rgb(r, g, b) = c`, `let Point(x, y) = p` | `if let` refuses one (`if let only supports simple bindings`); in a `let` it is a syntax error. `let (x:, y:) = p` destructures a struct | [6.4](#64-if-let-bindings), [6.5](#65-let-destructuring) |
+| Struct constructor patterns in `if let` and `let`, `if let Point(x, y) = p`, `let Point(x, y) = p` | `if let` refuses one (`if let cannot compare a struct pattern yet: take it apart with let (x, y) = p`); in a `let` it is a syntax error. `let (x:, y:) = p` destructures a struct. `if let` takes the variant patterns of an enum | [6.4](#64-if-let-bindings), [6.5](#65-let-destructuring) |
 | Assigning a tuple of variables without `set`, `(q, r) = divmod(17, 5)` | A syntax error: write `set (q, r) = divmod(17, 5)` | [4.5](#45-assignment-and-compound-assignment) |
 | Destructuring a global, `global (a, b) = (1, 2)` | Refused: `global destructuring is not supported yet` | [3.3](#33-variables) |
 | Function values: a function held in a variable, parameter or field, called indirectly | Calling one is refused (`calling a function value is not supported yet: ...`). A program that stores or passes one passes the checker and does not assemble. A function given at compile time, a comptime function parameter, works | [3.4](#function-types-and-pointers), [8.6](#86-comptime-function-parameters) |
@@ -233,7 +233,7 @@ Line 2, col 7
 
 ### 1.3 Type Identifiers
 
-A type name starts with an uppercase ASCII letter `A`–`Z` and goes on as a name does: `Point`, `Vec3`, `My-Type`, `Pair_2`. Every type a program declares is named this way, which keeps it apart from the primitive types (`i32`, `f64`, …) and from names:
+A type name starts with an uppercase ASCII letter `A`–`Z` and goes on as a name does: `Point`, `Vec3`, `My-Type`, `Pair_2`. Every type a program declares is named this way, and so is every variant of an enum (`Red`, [2.9](#29-enum-types-algebraic-data-types)), which keeps them apart from the primitive types (`i32`, `f64`, …) and from names. Each capitalised name is declared once in its module, whatever it names ([How variants are named](#how-variants-are-named)):
 
 <!-- spec:begin compile -->
 
@@ -247,7 +247,7 @@ Line 1, col 6
 
 <!-- spec:end -->
 
-The case alone tells the parser whether a word is a type or a name, without looking for a declaration: in `let point = Point(1.0, 2.0)`, `point` is a variable and `Point(…)` builds a `Point`.
+The case alone tells the parser whether a word is a type or a name, without looking for a declaration: in `let point = Point(1.0, 2.0)`, `point` is a variable and `Point(…)` builds a `Point`. A capitalised name alone in an expression is a unit variant (`let c = Red`) or, where a type is wanted (an argument for a comptime type parameter, a method call's receiver), a type's name; anywhere else a type's name is `'Point' is a type; a type can only be passed for a comptime parameter`.
 
 <!-- spec:begin compile -->
 
@@ -2231,28 +2231,11 @@ A struct type can take type parameters: `func Vec(comptime T: type) -> type => (
 
 ### 2.9 Enum Types (Algebraic Data Types)
 
-> **Not implemented.** Enums are a design. No program can use one: everything below the first example describes the design, not what the compiler does.
-
-What the compiler does with an `enum` declaration: it parses it and then ignores it. The declaration is `enum Name { Variant, Variant(fields), ... }` at module level, where the name and each variant start with a capital letter ([1.3](#13-type-identifiers)), the commas between variants are optional, and a payload is a field list as a struct's is, with or without names (`Rgb(r: u8, g: u8, b: u8)` or `Rgb(u8, u8, u8)`). Nothing in it is checked (an unknown type in a payload, two variants of one name, two enums of one name, an enum and a `type` of one name all pass), nothing of it is compiled, its name is no type, and its variants are no values: a capitalised name in an expression is a constructor call, so `let c = Red` is a syntax error (`Expected "("`). Nor can it be exported.
+An enum is a tagged union: a value of it is one of its variants, and each variant can carry a payload. `enum Name { Variant, Variant(fields), ... }` declares one at module level (in a test or a function body it is a syntax error, and `export enum` is one too: a type is not exported, [7.2](#72-exports)). The enum's name and each variant's start with a capital letter ([1.3](#13-type-identifiers)), and the commas between variants are optional. A variant without parentheses is a **unit variant**; a **payload variant** has a field list in parentheses, exactly a struct's ([2.8](#28-struct-types)): each field `name: Type`, or a type alone for a field by position, and never empty (`Rgb()` is a syntax error). A variant's **tag** is its place in the declaration, from 0.
 
 <!-- spec:begin compile -->
 
 ```ents
-enum Color { Red, Green, Blue }
-
-func f(c: Color) -> u32 => 1
-```
-
-<!-- spec:end -->
-
-#### The Design
-
-*Not implemented (design).* An enum is a tagged union: a value is one of several variants, and each variant can carry a payload:
-
-<!-- spec:begin compile -->
-
-```ents
-// Not implemented (design)
 enum Color {
   Red,
   Blue,
@@ -2271,115 +2254,434 @@ enum Json {
   Array([]Json),
   Object([]([]u8, Json))
 }
+
+enum Dir { North East South West }
+
+func tag(c: Color) -> u32 => match c {
+  Red => 0
+  Blue => 1
+  Green => 2
+  Rgb => 3
+  Hsl => 4
+  Grey => 5
+  Darker => 6
+}
+
+test "a variant's tag is its place" {
+  assert tag(Red) == 0 && tag(Green) == 2 && tag(Grey(9)) == 5
+}
 ```
 
 <!-- spec:end -->
 
-Variants without payloads (like `Red`, `Blue`, `Null`) are unit variants. Variants with payloads can have positional or named fields.
+An enum holds itself only through a pointer or a slice, as a struct does ([Types That Refer to Themselves](#types-that-refer-to-themselves)): `Array([]Json)` and `Darker(c: *Color)` are fine, and `Cons(i32, List)` is `type 'List' contains itself: a type can only refer to itself through a pointer or a slice`.
 
-**Recursive types:** An enum cannot contain itself directly: recursion goes through a pointer (`*T`) or a slice (`[]T`), as it does for a struct ([Types That Refer to Themselves](#types-that-refer-to-themselves)):
+#### Values
+
+A unit variant is its name, written as a value: `Red`. A payload variant is built as a struct is ([Struct Constructors](#struct-constructors)), with the same rules and messages: a value for every field, by position in declaration order or by name in any order, mixed, `name:` for `name: name`; the values are computed in the order written, each then going to its field. A value's type is its enum: nothing about where it is used chooses the variant or the enum.
 
 <!-- spec:begin compile -->
 
 ```ents
-// Not implemented (design)
-enum Tree {
-  Leaf(value: i32),
-  Node(left: *Tree, right: *Tree)   // pointer indirection
+enum Color { Red, Rgb(r: u8, g: u8, b: u8), Grey(b: u8) }
+
+func paint(level: u8, r: u8) -> [3]Color => [Red, Grey(level), Rgb(r, b: 0, g: 0)]
+
+func green(c: Color) -> u8 => match c {
+  Rgb(g:) => g
+  _ => 0
 }
 
-enum List {
-  Nil,
-  Cons(head: i32, tail: *List)      // pointer indirection
+test "values and constructors" {
+  let cs = paint(7, 200)
+  let g: u8 = 9
+  assert green(cs[2]) == 0 && green(Rgb(1, g:, b: 3)) == 9
+}
+```
+
+```ents
+enum Color { Red, Rgb(r: u8, g: u8, b: u8), Grey(b: u8) }
+enum Color2 { Rgb2(r: u8, g: u8, b: u8), Grey2(u8) }
+
+func a() -> Color => Red()
+func b() -> Color => Rgb
+func c() -> Color => Rgb(1)
+func d() -> Color => Rgb(1, 2, x: 3)
+func e(x: i32) -> Color => Rgb(x, 2, 3)
+func f() -> Color2 => Grey2(level: 3)
+func g() -> Color => Color
+func h() -> u32 => Purple(1)
+```
+
+```errors
+Red is a unit variant: write Red, without parentheses
+Rgb carries a payload: write Rgb(r, g, b)
+Rgb expects 3 fields, got 1: no value for g and b
+field 'x' not found in Rgb, whose fields are r, g and b
+field r: cannot assign i32 to u8
+field 'level' not found in Grey2, whose fields have no names: give the values by position
+'Color' is an enum: a value of it is one of its variants (Red, Rgb or Grey)
+unknown identifier 'Purple'
+```
+
+<!-- spec:end -->
+
+A value is read only by `match`, `if let` and `elif let` ([6.3](#pattern-matching-on-enums), [6.4](#64-if-let-bindings)): an enum has no members (`c.r` is `no field 'r' on type Color: take a variant apart with match or if let`), and `let (a, b) = c` is `cannot destructure non-tuple type: Color`. Assigning a variable of an enum sets all of it.
+
+#### How variants are named
+
+A variant's name is a name of its module, in the one namespace of the module's capitalised names: its types (host types among them), its enums, their variants, and its generic types, declared or imported. **Each of these names is declared once in its module.** The declarations are taken in source order, an enum's name before its variants, and one whose name an earlier one has is refused where its name is written, `'Red' is already declared (first declared at 1:14)`, before anything else of the module is checked. The first declaration stands everywhere: a `type`, enum or generic type declared second is left out (nothing in it is checked), and an enum one of whose variants is declared second keeps that variant in its type, so a pattern on a value of it still finds it, while the bare name is the first declaration's. So two enums of one module cannot both have a variant `Red`, and a variant cannot have the name of a type, of an enum (its own too) or of a generic type. A variant never meets a function, a global, a `def` or `data`, whose names start with a lower-case letter, and a type parameter cannot take a variant's name (`type parameter 'Red' has the name of a variant declared in this module`).
+
+<!-- spec:begin compile -->
+
+```ents
+enum Light { Red, Amber, Green }
+enum Color { Red, Blue }
+type Amber = u32
+type P = (x: i32, y: i32)
+type P = (a: u8)
+func Vec(comptime T: type) -> type => (p: *T)
+type Vec = u32
+enum Json { Json }
+
+func x(p: P) -> i32 => p.x
+```
+
+```errors
+'Red' is already declared (first declared at 1:14)
+'Amber' is already declared (first declared at 1:19)
+'P' is already declared (first declared at 4:6)
+'Vec' is already declared (first declared at 6:6)
+'Json' is already declared (first declared at 8:6)
+```
+
+<!-- spec:end -->
+
+In an expression a capitalised name is the module's: a variant, or a type (a struct's constructor). In a pattern the name is looked up among the variants of the value's enum, not in the module ([6.3](#pattern-matching-on-enums)). A type is not imported ([7.1](#71-imports)), so a module that uses another module's enum declares it again with all its variants, and takes all their names: a module cannot declare two enums that share a variant name, nor an enum whose variant is named as one of its types. With `enum Token { None, Word([]u8) }` in one library and `enum Json { None, Number(f64) }` in another, a module that uses both can declare only one of them, and so can name only that one's type and build only its values; it can still take the other's values apart, since a pattern finds its names in the value's enum. A qualified form, `Color.Red`, is a syntax error today and free for a later design that lets variants of two enums share a name.
+
+#### Identity
+
+An enum type is structural, as a struct is ([2.8](#28-struct-types)): two enum types are one type when they have the same variants, with the same names, in the same order, and the same payloads (field names and types). The name is for messages. So `type Hue = Color` is another name for `Color`, and a module that restates another's enum with the same variants has the same type; with the variants in another order, or a field of another type, it is another type (`argument 1: cannot assign Shape to Shape`, said with both written out where they read alike). An enum converts to no other type, and there is no coercion between enums whose payloads would be held alike. In messages and hovers an enum is its name; written out it is `enum { Red, Rgb(r: u8, g: u8, b: u8) }`.
+
+<!-- spec:begin compile -->
+
+```ents
+enum Shape { Dot, Circle(r: f32) }
+type Form = Shape
+
+func area(s: Form) -> f32 => match s {
+  Dot => 0.0
+  Circle(r) => 3.0 * r * r
+}
+
+test "a name for an enum is the enum" {
+  assert area(Circle(2.0)) == 12.0
 }
 ```
 
 <!-- spec:end -->
 
-A slice is already a pointer and a length, so `Array([]Json)` needs no `*`.
+#### Where an enum is allowed
 
-A `match` takes an enum apart by its variants ([Pattern Matching on Enums](#pattern-matching-on-enums), also not implemented).
+An enum goes wherever a value type goes: a parameter, a result, a `let`, a `global` (exported or imported too), a field of a struct or tuple, an element of a fixed array, what a pointer, a many-pointer, a slice or a `*[N]T` points to, `data`, a payload field of another enum, a type argument of a generic function or type ([8](#8-generics)). Not allowed:
+
+| Not allowed | Error |
+|---|---|
+| `?Color` | `cannot make Color optional: only a pointer, a slice or a host reference has a none` |
+| `def c = Red` | `def value must be a number or a bool: Red is a value of the enum Color; use a global` |
+| a null-terminated array whose element holds an enum by value, at any depth: `*[!]Color`, `*[!]Cell` with `type Cell = (e: E, n: u16)` | `a null-terminated array of an enum is not supported yet: Color`, `...: Cell holds E` |
+| a variant's name as a type, `c: Red` | `'Red' is a variant of Color, not a type: write Color` |
+| an enum with no variants, `enum Never {}` | `enum 'Never' has no variants` |
+| a payload field name twice, `Rgb(r: u8, r: u8)` | `Rgb: field 'r' is declared twice` |
+| a host reference in a payload, also inside a struct or array there | `an enum payload cannot hold a host reference yet: Canvas, in Draw` |
+| a function type in a payload | `an enum payload cannot hold a function yet: (u32) -> u32, in Fn` |
+
+A null-terminated array ends at its first element whose bytes are all zero, and a value that holds an enum can be its zero without its bytes being zero (the padding of an enum is never written, [Memory Representation](#memory-representation)), so its length would depend on what was stored before. A length-prefixed one, `*[?]Color`, is allowed, laid out as any `*[?]T` is and, as every `*[?]T`, not read yet.
+
+<!-- spec:begin compile -->
+
+```ents
+enum Color { Red, Grey(b: u8) }
+type Cell = (e: E, n: u16)
+enum E { A, B(u8) }
+enum Never {}
+enum Twice { Rgb(r: u8, r: u8) }
+type Canvas = host
+enum Pen { Draw(Canvas) }
+enum Call { Fn((u32) -> u32) }
+def c = Red
+
+func f(x: Red) -> u32 => 1
+func g(x: ?Color) -> u32 => 1
+func h(p: *[!]Color, q: *[!]Cell) -> u32 => 1
+data list: *[?]E = [A, B(1)]
+```
+
+```errors
+enum 'Never' has no variants
+Rgb: field 'r' is declared twice
+an enum payload cannot hold a host reference yet: Canvas, in Draw
+an enum payload cannot hold a function yet: (u32) -> u32, in Fn
+def value must be a number or a bool: Red is a value of the enum Color; use a global
+'Red' is a variant of Color, not a type: write Color
+cannot make Color optional: only a pointer, a slice or a host reference has a none
+a null-terminated array of an enum is not supported yet: Color
+a null-terminated array of an enum is not supported yet: Cell holds E
+```
+
+<!-- spec:end -->
+
+#### Zero
+
+The zero of an enum is its first variant, every part of its payload zero: in registers tag 0 and every slot 0. A `global` without a value is the zero, so is a named result when its function starts, and a `let` without a value holds it when its function is entered (a `let` sets nothing where it stands, so in a loop it holds what the last pass left, as a `let x: u32` does, [3.3](#33-variables)). Bytes that are all zero load as the zero: `data` the value does not set, `memset(p, 0, n)`. Storing the zero is not zeroing the bytes: it writes tag 0 and the first variant's fields, and the other bytes keep what they held. A program that wants no default variant puts a unit variant first (`enum Slot { Empty, Full(u32) }`).
+
+<!-- spec:begin compile -->
+
+```ents
+enum Color { Red, Blue, Green, Rgb(r: u8, g: u8, b: u8), Grey(b: u8) }
+
+data cell = mut [Rgb(1, 2, 3)]     // a *mut [1]Color
+data cells = mut [Red; 8]          // forty zero bytes
+global none: Color
+
+test "storing the zero leaves the other bytes" {
+  cell[0] = Red
+  let bytes = cell as [*]u8
+  assert bytes[0] == 0 && bytes[1] == 1 && bytes[2] == 2 && bytes[3] == 3
+  assert if let Red = cell[0] { true } else { false }
+}
+
+test "zeroed memory and a global without a value are the zero" {
+  assert if let Red = cells[7] { true } else { false }
+  assert if let Red = none { true } else { false }
+}
+
+test "a let without a value holds the zero when the function is entered" {
+  let seen: u32 = 0
+  for i in 3 {
+    let c: Color
+    if let Red = c { seen += 1 }
+    c = Grey(1)
+  }
+  assert seen == 1                 // passes 1 and 2 see the Grey(1) the pass before left
+}
+```
+
+<!-- spec:end -->
+
+#### Operators, casts and sizeof
+
+`==` and `!=` compare two values of one enum **whose every variant is a unit variant**, by their tags. On an enum with a payload variant, `==` is `'==' cannot be applied to Color and Color: an enum with a payload is compared with match or if let`. No other operator takes an enum, and no builtin does: an enum of unit variants is one `i32` in wasm, and no integer to the checker. Refused as for a struct: arithmetic, bitwise and shift operators (`'+' cannot be applied to Dir and int(1)`), `<` and the other orderings (`'<' cannot be applied to Dir and Dir`), unary operators, compound assignment, builtins (`min requires a numeric type, got Dir`), an index, a loop count (`cannot iterate over Dir: ...`) and a condition (`condition must be bool, not Dir`).
+
+No cast takes or gives an enum value, but a cast to its own type: `c as u32` is `cannot cast Color to u32: an enum is no number; match on it`, and `3 as Dir` is `cannot cast int(3) to Dir: an enum value is made by naming its variant`. A pointer to an enum casts as any pointer does ([Explicit Casts](#explicit-casts)): `p as *u8` reads its tag's byte. Such a cast, `memcpy`, `memset` and a host that writes memory are the ways a tag no variant has gets into memory.
+
+`sizeof(E)` is the tag's bytes plus the largest payload's bytes ([Memory Representation](#memory-representation)): 1 for `Dir`, 5 for `Color`, 9 for `Json`. It is also the stride of `[*]E`, `*[N]E` and `[]E`.
+
+<!-- spec:begin compile -->
+
+```ents
+enum Dir { North, East, South, West }
+enum Color { Red, Blue, Green, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8), Grey(b: u8), Darker(c: *Color) }
+enum Json { Null, Boolean(bool), Number(f64), String([]u8), Array([]Json), Object([]([]u8, Json)) }
+
+data spot = mut [Grey(7)]
+
+func is-north(d: Dir) -> bool => d == North
+func tag-of(p: *Color) -> u8 => (p as *u8).*
+
+test "equality, pointer casts and sizes" {
+  assert is-north(North) && !is-north(West) && East != South
+  assert tag-of(&spot[0]) == 5
+  assert sizeof(Dir) == 1 && sizeof(Color) == 5 && sizeof(Json) == 9
+}
+```
+
+```ents
+enum Dir { North, East, South, West }
+enum Color { Red, Grey(b: u8) }
+
+func a(x: Color, y: Color) -> bool => x == y
+func b(d: Dir) -> u32 { let x = d + 1
+  return 0 }
+func c(d: Dir, e: Dir) -> bool => d < e
+func e(d: Dir) -> bool => !d
+func f(d: Dir) { for i in d { } }
+func g(d: Dir) -> u32 => if d { 1 } else { 0 }
+func h(c: Color) -> u32 => c as u32
+func i() -> Dir => 3 as Dir
+```
+
+```errors
+'==' cannot be applied to Color and Color: an enum with a payload is compared with match or if let
+'+' cannot be applied to Dir and int(1)
+'<' cannot be applied to Dir and Dir
+operand of '!' must be bool, not Dir
+cannot iterate over Dir: use a count, a slice, or a pointer to a fixed-size array
+condition must be bool, not Dir
+cannot cast Color to u32: an enum is no number; match on it
+cannot cast int(3) to Dir: an enum value is made by naming its variant
+```
+
+<!-- spec:end -->
+
+In the limits of [2.12](#212-limits) an enum counts 1, each variant 1, and each payload field what its type counts: `Dir` is 5 parts and `Color` 17. So an enum has at most 65535 unit variants, and its tag in memory is a `u8` or a `u16`. Held by value, an enum is 1 + its slots registers ([Stack Representation](#stack-representation)), counted toward the registers of a function as a struct's fields are; a variant written into memory, `p.* = Small(0)`, counts only its fields' values, as it is stored as the struct of its tag and fields. A match on an enum in memory loads it whole first, so it counts whole.
 
 #### Enum Representations
 
-*Not implemented (design).* An enum has two representations: **stack** (for passing and returning values) and **memory** (for storing it in linear memory).
+An enum has two representations: in **registers** (a parameter, a result, a variable, a global, a field or element of one held by value, the value of an expression) and in **memory**. Both are computed from the declaration alone.
 
 ##### Stack Representation
 
-*Not implemented (design).* On the stack, an enum is flattened to several WebAssembly values, sized for each enum. The compiler computes the slots needed to hold every variant:
+An enum held by value is **an `i32` tag, then its slots**:
 
-1. **Tag**: always `i32`
-2. **Payload slots**: for each position across all variants, the smallest wasm type that holds every type at that position
+1. Each variant's payload is laid out as the struct of its fields would be ([9.3](#93-wasm-type-mapping)): a number, bool or pointer one wasm value, a slice two (`ptr`, then `len`), a `u128` two `i64`s, a struct or tuple its fields in turn, a fixed array its elements in turn, a nested enum its own tag and slots. A unit variant's list is empty. The `j`-th value of a variant's list is its value at position `j`.
+2. The enum has as many slots as the longest list.
+3. Slot `j` holds, for each variant whose list reaches it, that variant's value at position `j`. Its wasm type is the one type those values have, where they have one; otherwise `i64` where one of them is an `i64` or an `f64`; otherwise `i32` (they are `i32`s and `f32`s).
 
-When a slot must hold both an integer and a float (e.g., `i32` and `f64`), it is an `i64`, and the values are moved in and out of it:
-- `f64` ↔ `i64`: `i64.reinterpret_f64` / `f64.reinterpret_i64`
-- `i32` → `i64`: `i64.extend_i32_u`
-- `i64` → `i32`: `i32.wrap_i64`
+So an enum of unit variants is its tag alone. Positions are strict: a value is never moved to an earlier slot another variant leaves free.
 
-**Example — Json:**
+| Enum | Lists by variant | Registers |
+|---|---|---|
+| `Dir` | all empty | `i32` |
+| `Color` | Rgb, Hsl `[i32 i32 i32]`; Grey `[i32]`; Darker `[i32]` | `i32 i32 i32 i32` |
+| `Json` | Boolean `[i32]`; Number `[f64]`; String, Array, Object `[i32 i32]` | `i32 i64 i32` |
+| `enum Shape { Dot(Point), Circle(at: Point, r: f32), Path([]Point) }`, `Point = (x: f32, y: f32)` | `[f32 f32]`, `[f32 f32 f32]`, `[i32 i32]` | `i32 i32 i32 f32` |
+| `enum Num { Int(i64), Float(f64), Small(f32), Pair(u8, f32) }` | `[i64]`, `[f64]`, `[f32]`, `[i32 f32]` | `i32 i64 f32` |
+| `enum Big { Small(u32), Large(u128) }` | `[i32]`, `[i64 i64]` | `i32 i64 i64` |
 
-| Variant | Slot 0 | Slot 1 |
-|---------|--------|--------|
-| `Null` | — | — |
-| `Boolean(bool)` | bool (→i32) | — |
-| `Number(f64)` | f64 | — |
-| `String([]u8)` | ptr (i32) | len (i32) |
-| `Array([]Json)` | ptr (i32) | len (i32) |
-| `Object(...)` | ptr (i32) | len (i32) |
-| **Union** | i32 \| f64 | i32 \| — |
-| **Wasm type** | i64 | i32 |
+A value goes into its slot, and comes back out, bit for bit:
 
-**Stack shape: `(i32, i64, i32)`** = tag + slot0 + slot1
+| Value → slot | In | Out |
+|---|---|---|
+| `i32` → `i64` | `i64.extend_i32_u` | `i32.wrap_i64` |
+| `f64` → `i64` | `i64.reinterpret_f64` | `f64.reinterpret_i64` |
+| `f32` → `i32` | `i32.reinterpret_f32` | `f32.reinterpret_i32` |
+| `f32` → `i64` | `i32.reinterpret_f32`, then `i64.extend_i32_u` | `i32.wrap_i64`, then `f32.reinterpret_i32` |
 
-**Example — Color:**
+A mix of `f32` and `f64` is an `i64`, not an `f64`: `f64.promote_f32` may change a NaN's bits, and a payload comes back as it went in. A slot a variant's list does not reach holds 0 in every value the compiler makes.
 
-| Variant | Slot 0 | Slot 1 | Slot 2 |
-|---------|--------|--------|--------|
-| `Red/Blue/Green` | — | — | — |
-| `Rgb` | r (u8→i32) | g (i32) | b (i32) |
-| `Hsl` | h (i32) | s (i32) | l (i32) |
-| `Grey` | b (i32) | — | — |
-| `Darker` | ptr (i32) | — | — |
-| **Union** | i32 \| — | i32 \| — | i32 \| — |
-| **Wasm type** | i32 | i32 | i32 |
+The registers are named after the variable: `c_tag`, then `c_0`, `c_1`, ...; an enum of unit variants alone is named as the variable is. Within a struct they nest as fields' names do (`px_c_tag`). A function with an enum parameter or result is the function with those wasm parameters and results, at the host boundary too ([7.2](#what-the-host-sees)), and an enum global is one wasm global per register, exported as `g_tag`, `g_0`, ... A global's initializer is a constant: a unit variant, or a constructor of constants; each register's constant is exactly the bits its value has at run time, so `A(-1)` of `enum M { A(i32), B(f64) }` is `4294967295` in its `i64` slot, the `i32`'s bits zero-extended.
 
-**Stack shape: `(i32, i32, i32, i32)`** = tag + 3 slots
+A variant is built as its tag constant, then its payload's values in the order written, each put in its slot, then a 0 for each slot its list does not reach. A value written as separate parts (a variable's read, a tuple or a constructor) is put part by part, each with its conversion; one computed whole (a call, an `if`, a load) stays as it is where no value of it is converted, and else goes through scratch locals. That is all a variant costs: `grey` below is the same module as the registers written out, and so is `g`.
+
+<!-- spec:begin compile -->
+
+```ents
+enum Color { Red, Blue, Green, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8), Grey(b: u8), Darker(c: *Color) }
+
+export func grey(level: u8) -> Color => Grey(level)
+```
+
+```ents same-wasm
+export func grey(level: u8) -> (u32, u32, u32, u32) => (5, level, 0, 0)
+```
+
+```ents
+enum M { A(i32), B(f64) }
+export global g: M = A(-1)
+```
+
+```ents same-wasm
+export global g_tag: u32 = 0
+export global g_0: u64 = 4294967295
+```
+
+```ents
+enum Nan { F(f32), D(f64) }
+
+func through(n: Nan) -> Nan => n
+data bits = mut [0:u32]
+
+test "a slot gives back the bits that went in" {
+  bits[0] = 0x7fa00001                   // a NaN with a payload
+  let x = (bits as *f32).*
+  let back = if let F(y) = through(F(x)) { y } else { 0.0 }
+  let out = bits as *mut f32
+  out.* = back
+  assert bits[0] == 0x7fa00001
+}
+```
+
+<!-- spec:end -->
 
 ##### Memory Representation
 
-*Not implemented (design).* In linear memory, an enum is byte-packed:
+In memory an enum is byte-packed, with no alignment, as everything in memory is ([9.6](#96-structs-and-slices-in-memory)):
 
-1. **Tag**: the smallest unsigned integer that counts the variants
-   - up to 256 variants: `u8`
-   - up to 65536 variants: `u16`
-   - more: `u32`
-
-2. **Payload**: the fields packed at their byte widths, the payload left-aligned and padded at the end to the largest variant's size
-
-**Example — Color (5 bytes):**
+1. **The tag**, the smallest unsigned integer that counts the variants: `u8` for up to 256 variants, `u16` for up to 65536, else `u32` (which the limit of 65535 variants keeps from arising).
+2. **The payload** of the variant the tag names, right after it, its fields packed as a struct's are.
+3. **Padding** up to the largest payload: the size is the tag's bytes plus the largest payload's bytes, whichever variant it holds.
 
 ```
-Red:    [0][__][__][__][__]
-Blue:   [1][__][__][__][__]
-Green:  [2][__][__][__][__]
-Rgb:    [3][r][g][b][__]
-Hsl:    [4][h][s][l][__]
-Grey:   [5][b][__][__][__]
+Color (5 bytes)                 Json (9 bytes)
+Red:    [0][__][__][__][__]     Null:    [0][__ __ __ __ __ __ __ __]
+Blue:   [1][__][__][__][__]     Boolean: [1][b][__ __ __ __ __ __ __]
+Green:  [2][__][__][__][__]     Number:  [2][f64 f64 f64 f64 f64 f64 f64 f64]
+Rgb:    [3][r][g][b][__]        String:  [3][ptr ptr ptr ptr][len len len len]
+Hsl:    [4][h][s][l][__]        Array:   [4][ptr ptr ptr ptr][len len len len]
+Grey:   [5][b][__][__][__]      Object:  [5][ptr ptr ptr ptr][len len len len]
 Darker: [6][ptr ptr ptr ptr]
 ```
 
-**Example — Json (9 bytes):**
+**Loads.** An enum is loaded by reading its tag, then the fields of the variant the tag names into their slots, the other slots 0: the tag's load, then one `if` for each payload variant, each in the `else` of the one before. The address is evaluated once. A tag no variant has is not checked by a load; a `match` on it traps ([5.4](#54-match-expressions)). Every read of an enum in memory as a value is this load: `let c = p.*`, `for c in xs`, an argument, a `match` or `if let` on a place in memory.
 
-```
-Null:    [0][__ __ __ __ __ __ __ __]
-Boolean: [1][b][__ __ __ __ __ __ __]
-Number:  [2][f64 f64 f64 f64 f64 f64 f64 f64]
-String:  [3][ptr ptr ptr ptr][len len len len]
-Array:   [4][ptr ptr ptr ptr][len len len len]
-Object:  [5][ptr ptr ptr ptr][len len len len]
+**Stores.** A variant written there (`p.* = Grey(k)`) is stored as the struct of its tag and its fields; any other value (a variable, a call, a load) is computed whole, then its tag is stored, then one `if` for each payload variant stores that variant's fields from its slots. **The padding is never written**: not by a store, not by a range fill (which for elements that hold an enum is the fill loop, never one `memory.fill`, [Filling and Copying](#filling-and-copying)), not by the store of a struct that holds an enum. Only `memcpy`, `memset` and a range copy move it, as bytes. A tag is stored in its width: a tag no variant has that comes from a host is stored truncated to its low 8 or 16 bits, and where those are a variant's tag the place then holds that variant, with whatever bytes its fields held before ([What the host sees](#what-the-host-sees)).
+
+A struct, tuple or fixed array that holds an enum is loaded and stored part by part, in field order, its enum parts as above. A literal laid out in memory lays a variant out as its tag, its fields and zeros for the padding; a part only known when it runs is stored each time it runs. A variant is no literal by itself, as a constructor is none: one enum in `data` is the one-element array `data spot = mut [Red]`.
+
+<!-- spec:begin compile -->
+
+```ents
+enum Color { Red, Blue, Green, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8), Grey(b: u8), Darker(c: *Color) }
+enum Json { Null, Boolean(bool), Number(f64), String([]u8), Array([]Json), Object([]([]u8, Json)) }
+type Pixel = (c: Color, a: u8)
+
+data palette: *[3]Color = [Red, Rgb(10, 20, 30), Grey(7)]
+data doc: *[2]Json = [String("hi"), Number(1.5)]
+data room = mut [0:u8; 32]
+
+func bytes(p: *Color) -> [*]u8 => p as [*]u8
+func level(p: *Pixel) -> u8 => match p.c {
+  Grey(b) => b
+  _ => 0
+}
+
+test "the bytes of variants in data" {
+  let b = palette as [*]u8
+  assert b[0] == 0 && b[5] == 3 && b[6] == 10 && b[8] == 30 && b[9] == 0 && b[10] == 5 && b[11] == 7
+  let d = doc as [*]u8
+  assert d[0] == 3 && d[5] == 2 && d[9] == 2
+  assert if let String(s) = doc[0] { s.len == 2 && (s[1] ?? 0) == 'i' } else { false }
+}
+
+test "a store leaves the padding; a struct that holds an enum is stored part by part" {
+  memset(room, 0xff, 32)
+  let cells = room as *mut [4]Color
+  cells[0..1] = Red
+  assert room[1] == 0xff && room[4] == 0xff && room[0] == 0
+  let px = room as *mut Pixel
+  px.* = Pixel(Grey(9), 4)
+  assert room[0] == 5 && room[1] == 9 && room[2] == 0xff && room[5] == 4
+  assert level(px) == 9
+}
 ```
 
-As everything in memory is ([9.6](#96-structs-and-slices-in-memory)), an enum is laid out with no alignment and no padding but the end padding.
+```ents
+enum Color { Red, Grey(b: u8) }
+data spot: Color = Red
+
+func f() -> u32 {
+  let p = &Grey(7)
+  return 0
+}
+```
+
+```errors
+data value must be a literal (array, string, tuple, or scalar)
+& requires a literal, a value in memory, or an element of an array, slice or many-pointer
+```
+
+<!-- spec:end -->
 
 ### 2.10 Type Conversions
 
@@ -2387,7 +2689,7 @@ A value changes type in three ways:
 
 - **Implicitly**, where nothing is lost: a narrower number widens to a type that holds all its values, a mutable pointer is used as a const one, a pointer to an array is used as a slice, and the others listed in [Every Implicit Conversion](#every-implicit-conversion).
 - **By taking the type it is used as**: a constant with no type of its own (`42`, `0.5`, a `def` of one, arithmetic on these) becomes a value of whatever type it meets, if that type holds it exactly ([Comptime Literal Promotion](#comptime-literal-promotion)).
-- **By a cast**, `x as T` or `T(x)`, for everything that may lose or reinterpret a value: narrowing, a change of signedness, float to integer, a bool to a number, a number to a pointer ([Explicit Casts](#explicit-casts)).
+- **By a cast**, `x as T` or `T(x)`, for everything that may lose or reinterpret a value: narrowing, a change of signedness, float to integer, a bool to a number, a number to a pointer ([Explicit Casts](#explicit-casts)). No cast takes or gives an enum value ([2.9](#29-enum-types-algebraic-data-types)).
 
 Nothing else converts. Every other mismatch is a compile error, and the error names both types.
 
@@ -2988,7 +3290,7 @@ Expected
 
 ### 2.11 Type Names
 
-`type Name = Type` gives a type a name. A `type` declaration stands at module level (in a function body it is a syntax error), and the name is a type identifier, which starts with a capital letter ([1.3](#13-type-identifiers)). The declarations of a module come in any order: a name can be used above the line that declares it, and names can refer to each other, also round to themselves through a pointer or a slice ([Types That Refer to Themselves](#types-that-refer-to-themselves)). A name is declared once in its module (a second `type` of the same name is accepted and replaces the first everywhere, a known bug), and it is not exported or imported: a module that needs the type declares it again or writes it out ([7.1](#71-imports)).
+`type Name = Type` gives a type a name. A `type` declaration stands at module level (in a function body it is a syntax error), and the name is a type identifier, which starts with a capital letter ([1.3](#13-type-identifiers)). The declarations of a module come in any order: a name can be used above the line that declares it, and names can refer to each other, also round to themselves through a pointer or a slice ([Types That Refer to Themselves](#types-that-refer-to-themselves)). A name is declared once in its module: a second `type` of the same name is refused (`'P' is already declared (first declared at 4:6)`), and the first stands ([How variants are named](#how-variants-are-named)). A name is not exported or imported: a module that needs the type declares it again or writes it out ([7.1](#71-imports)).
 
 A name is not a new type. It is the type it names, wherever it is used: `type Meters = u32` and `type Feet = u32` are both `u32`, so a `Meters` passes where a `Feet` is wanted, and either is a `u32` in arithmetic. Messages say the name that was written (`cannot assign int(8) to Small`). Any type can be named: a number, a ranged integer (`type Small = u32#8`), a pointer, a slice, an array, an optional, a tuple or struct, a function type (`type Scale = (u32) -> u32`), a generic type applied (`type Bytes = Vec(u8)`, [8.5](#85-generic-types)), or a name (`type Pt = Point`). A name in parentheses is the name, as any type is ([2.7](#27-tuple-types)).
 
@@ -3023,6 +3325,7 @@ What can be done with the type written out can be done with its name:
 - A pointer to an array becomes a slice under any of their names, and the conversions of [Every Implicit Conversion](#every-implicit-conversion) apply to names as to what they name.
 - A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). That holds at every depth and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables as a `*[2][3][4]u8` is, and `c[1][2][3]` loads two row pointers before the byte.
 - A name for a struct is its constructor: `Pt(1, 2)` with `type Pt = Point` ([2.8](#struct-constructors)).
+- A name for an enum is that enum: `type Hue = Color` takes the same variants and patterns ([2.9](#identity)).
 - A name for a number is cast to with `as` (`n as Count`). `Count(n)` is no cast: only a primitive type's own name is called as one ([Explicit Casts](#explicit-casts)).
 - A name for a ranged integer is meant to prove an index as the range does, but proves nothing (a known bug): with `type Slot = u32#8`, `squares[i]` for an `i: Slot` is refused as a run-time index. Write the range out in the parameter, `i: u32#8`.
 
@@ -3689,7 +3992,7 @@ global initializer must be a compile-time constant
 
 `def name = value` names a compile-time constant. Each use of the name is the value, as if it were written there in parentheses: a `def` takes no memory, has no address and is no wasm global, and each use compiles as the value written there would. `def mask: u32 = 0xff` is `(i32.const 255)` wherever it is used, and `def page = 64 * 1024` used as a `u64` is `(i64.mul (i64.const 64) (i64.const 1024))`, which an optimizer such as `wasm-opt` folds.
 
-The value is one scalar: an integer, a float, `true` or `false`, a codepoint (`'a'`), or an expression of these and of other defs with `+ - * / %`, `& | ^`, the shifts `<<` and `>>`, unary `-` and `~`, `sizeof(T)`, and the `.len` or `.wid` of a `data` array. A rotate, a comparison, `&&`, `||`, `!`, an `if`, a call (of a builtin too), an integer division by zero, a global and a variable are not constants (`def value must be a compile-time constant`). A float division by zero is a constant, infinity or NaN, as when it runs: `def inf = 1.0 / 0.0`. A `def` always has a value: `def buf: [4096]u8` is a syntax error.
+The value is one scalar: an integer, a float, `true` or `false`, a codepoint (`'a'`), or an expression of these and of other defs with `+ - * / %`, `& | ^`, the shifts `<<` and `>>`, unary `-` and `~`, `sizeof(T)`, and the `.len` or `.wid` of a `data` array. A rotate, a comparison, `&&`, `||`, `!`, an `if`, a call (of a builtin too), an integer division by zero, a global and a variable are not constants (`def value must be a compile-time constant`). An enum's variant is no scalar: `def c = Red` is `def value must be a number or a bool: Red is a value of the enum Color; use a global` ([2.9](#29-enum-types-algebraic-data-types)). A float division by zero is a constant, infinity or NaN, as when it runs: `def inf = 1.0 / 0.0`. A `def` always has a value: `def buf: [4096]u8` is a syntax error.
 
 With no type written, a `def` is the constant its value is. It is untyped when its value is (literals, the `.len` of a `data` array, operators on these): each use takes the type that use wants, as the literal itself would, and where nothing says, the literal's default type ([Integer Literals](#integer-literals)). Each use is checked on its own, so a `def page = 64 * 1024` is a `u64` in one place and an `f64` in another, and used as a `u16` it is `cannot assign int(65536) to u16`. With a type written, `def mask: u32 = 0xff`, or a typed value, `def mask = 0xff:u32` or `def s = sizeof(Pt)` (a `u32`, [10.4](#104-sizes)), it is of that type at every use, and widens from there as any `u32` does: `s` used as a `u8` is `cannot assign u32 to u8`.
 
@@ -5777,7 +6080,7 @@ When the left side is mutable (a `?*mut T`, a `?[]mut T`, or an index or range o
 
 #### `if let` Bindings
 
-`if let name = value { ... }` runs its first branch when `value` has a value, with `name` bound to it: an optional pointer, slice or host reference that is not none, or an index ([4.7](#47-bounds-checked-indexing)) or range ([4.8](#48-slicerange-syntax)) that is in range. Otherwise it runs its `else` branch, if it has one. The binding has the plain type: a `*T` for a `?*T`, a `[]T` for a `?[]T`, the element for an index. There is no `while let`: a chain of optional pointers is walked by a `loop` whose `if let` leaves it at none:
+`if let name = value { ... }` runs its first branch when `value` has a value, with `name` bound to it: an optional pointer, slice or host reference that is not none, or an index ([4.7](#47-bounds-checked-indexing)) or range ([4.8](#48-slicerange-syntax)) that is in range. Otherwise it runs its `else` branch, if it has one. The binding has the plain type: a `*T` for a `?*T`, a `[]T` for a `?[]T`, the element for an index. With a variant pattern in the place of the name, `if let Grey(b) = c`, it tests an enum value for a variant instead ([Variant Patterns](#variant-patterns)). There is no `while let`: a chain of optional pointers is walked by a `loop` whose `if let` leaves it at none:
 
 <!-- spec:begin compile -->
 
@@ -6199,7 +6502,7 @@ Assigning to a range fills it or copies into it: `buffer[..] = 0` gives every el
 
 What is assigned says which. A value that can be assigned to one element is a fill, whatever the element is, and even where it is an array of elements as well (a `Node` of `type Node = *[2]Node`): a number, a struct (`points[0..n] = origin`), a slice (`names[0..3] = "?"` makes each of three `[]u8` the same one-byte string), a pointer, and in a table a row pointer, so every row of the range then points at the same cells. Anything else is the elements to copy: a slice or a pointer to an array of the element type, an array literal (`buf[0..2] = [1, 2]`, laid out as the range's elements are), or an array held in registers, which is stored element by element. A table's rows are copied as its row pointers, so rows of a const table do not go into a mutable one (`cannot copy *[2][3]i32 into a range of *mut [3]i32: its rows are *[3]i32`), as `m[i] = r` is refused for them; an array literal copied there is written `mut`. A value that is neither is refused as the one it was meant as: a value of the element type as written, a `[3]i32` in registers or a const row for a `*mut [2][3]i32`, as a fill (`fill value: cannot assign [3]i32 to *mut [3]i32`, as `m[i] = r` says), anything else as a copy (`cannot copy []u8 into a range of []i32`).
 
-A fill of bytes, or of zeros of any element (a struct of zeros, a wide integer 0, none for an optional slice), is one `memory.fill`; any other fill computes the value once and stores it into each element in a loop. A copy is one `memory.copy`, or the stores of an array held in registers.
+A fill of bytes, or of zeros of any element (a struct of zeros, a wide integer 0, none for an optional slice), is one `memory.fill`; any other fill computes the value once and stores it into each element in a loop, and so does any fill of elements that hold an enum, whose padding is never written ([Memory Representation](#memory-representation)). A copy is one `memory.copy`, or the stores of an array held in registers.
 
 The range is written, so it must be known to fit without a runtime check, like an indexed write: constant or ranged bounds on a `*[N]T`, the whole of a slice (`s[..]`), or any range of a many-pointer. A fill can have a runtime length (`buf[..n] = 0` with `n: u32#17` on a `*[16]u8`). A copy needs both lengths known at compile time and equal (`cannot copy 3 elements into a range of 4`), so it can't overrun either side. With a length known only at run time, `memcpy` ([10.3](#103-memory-builtins)) copies into an array pointer, with the length written out; into a slice of run-time length, copy element by element.
 
@@ -6270,6 +6573,40 @@ test "method calls" {
 3. **The receiver is passed as written.** It gets the conversions any argument gets (`*mut` to `*`, an array pointer to a slice, a narrower number widened) and nothing more: no address is taken of it, and no pointer is followed for it. With `p: *Point`, `p.norm2()` for `norm2(p: Point)` is `receiver: cannot assign *Point to Point`: write `p.*.norm2()`.
 4. **Calls chain left to right.** `v.last().double()` is `double(last(v))`.
 5. **It is only syntax.** `x.f(a)` and `f(x, a)` are the same call and compile to the same code. Which function `f` is, among functions that share the name, is decided as for any call ([3.4](#functions-that-share-a-name)). A builtin is called the same way: `x.sqrt()`, `a.min(b)`. A parameter or loop variable that has a function's name hides the function in this form too: with a parameter `double: u32`, `double.double()` is `double(double)`, a call of a `u32`, and is refused; its message, `no field 'double' on type u32, and no function 'double' accepts (u32)`, should name the parameter (a known bug). A variable with a builtin's name hides nothing ([10](#10-builtin-functions)), so with a parameter `max: u32`, `max.max(4)` should be `max(max, 4)`, the builtin; it is refused with the same message (a known bug): write `max(max, 4)`.
+6. **A receiver is any argument, a type's name too.** An enum has no members, so `c.light()` and `Red.light()` are `light(c)` and `light(Red)` ([2.9](#29-enum-types-algebraic-data-types)). A type's name is a receiver as it is an argument: with `func size(comptime T: type) -> u32 => sizeof(T)`, `Point.size()` is `size(Point)`, as `u32.size()` is `size(u32)`. Where the first parameter takes a value, a type's name there is the error it is as any argument: `Point.length()` for `length(p: Point)` is `'Point' is a type; a type can only be passed for a comptime parameter`, and `Color.light()` is `'Color' is an enum: a value of it is one of its variants (Red or Grey)`.
+
+```ents
+enum Color { Red, Grey(b: u8) }
+type Point = (x: f32, y: f32)
+
+func size(comptime T: type) -> u32 => sizeof(T)
+func light(c: Color) -> u8 => match c {
+  Red => 255
+  Grey(b) => b
+}
+
+test "a variant and a type's name are receivers" {
+  assert Red.light() == 255 && Grey(7).light() == 7
+  assert Point.size() == 8 && Color.size() == 2 && u32.size() == 4
+}
+```
+
+```ents
+enum Color { Red, Grey(b: u8) }
+type Point = (x: f32, y: f32)
+
+func light(c: Color) -> u8 => 0
+func length(p: Point) -> f32 => p.x
+
+func a() -> f32 => Point.length()
+func b() -> u8 => Color.light()
+```
+
+```errors
+'Point' is a type; a type can only be passed for a comptime parameter
+'Color' is an enum: a value of it is one of its variants (Red or Grey)
+```
+
 
 ```ents
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
@@ -7145,7 +7482,7 @@ Line 3, col 6
 
 <!-- spec:end -->
 
-The subject is evaluated once, before the first test. Then the arms are tried in order: the first arm with a pattern that matches the subject runs, and no later arm is tried. When no arm matches, the program traps (wasm `unreachable`): the compiler does not check that the arms cover every value, and this holds for a `match` used as a statement too. `_` matches any value, so an arm `_ => ...` last makes the `match` cover everything; an arm after it is never tried. A statement `match` that may match nothing ends in `_ => {}`.
+The subject is evaluated once, before the first test. Then the arms are tried in order: the first arm with a pattern that matches the subject runs, and no later arm is tried. When no arm matches, the program traps (wasm `unreachable`): the compiler does not check that the arms cover every value, but on an enum ([6.3](#pattern-matching-on-enums)), and this holds for a `match` used as a statement too. `_` matches any value, so an arm `_ => ...` last makes the `match` cover everything; an arm after it is never tried. An arm that lists `_` among its patterns (`1, _ =>`) is a `_` arm. A statement `match` that may match nothing ends in `_ => {}`.
 
 These are the patterns that are implemented:
 
@@ -7156,10 +7493,11 @@ These are the patterns that are implemented:
 | one codepoint: `'a'` | the subject equal to its number, 97 ([Codepoint Literals](#codepoint-literals)) |
 | `true`, `false` | that bool |
 | `_` | any value |
+| `Red`, `Rgb(r, _, b)`, `Hsl(l:)` | on an enum, that variant, its parts bound to names ([6.3](#pattern-matching-on-enums)) |
 
-A pattern is compared in the subject's type, so it has to be a value of that type, or it is an error: `300` for a `u8` is `cannot match u8 against int(300)`, and so are `-1` for a `u32` and `1.5` for an `i32`. A ranged subject is compared as its plain type: `5` for a `u32#4` is accepted, and its arm never runs. A string is not a pattern: on a `[]u8` it is `cannot match []u8 against a string`, and on an integer `cannot match u8 against a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')`. The subject is an integer, a float or a `bool`, of at most 64 bits; a subject of any other type, a pointer, an optional, a host reference, a struct or a slice, takes no pattern but `_` (`cannot match *u32 against int(0)`), and neither does one wider than 64 bits (`cannot match u128 against int(0)`). A constant subject with no type of its own (`7`, an untyped `def`, a fixed array's `.len`) is compared in the default type of its value, an `i32` for 7, so `match 7 { 3000000000 => ... }` is `cannot match i32 against int(3000000000)`; a typed `def` is compared in its type. Patterns are not checked against one another: a value that two patterns match (`1, 1 =>`, or `1` in two arms) is no error, and the first arm with it runs.
+A pattern is compared in the subject's type, so it has to be a value of that type, or it is an error: `300` for a `u8` is `cannot match u8 against int(300)`, and so are `-1` for a `u32` and `1.5` for an `i32`. A ranged subject is compared as its plain type: `5` for a `u32#4` is accepted, and its arm never runs. A string is not a pattern: on a `[]u8` it is `cannot match []u8 against a string`, and on an integer `cannot match u8 against a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')`. The subject of a literal pattern is an integer, a float or a `bool`, of at most 64 bits; a subject of any other type, a pointer, an optional, a host reference, a struct, a slice or an enum, takes no literal pattern (`cannot match *u32 against int(0)`), and neither does one wider than 64 bits (`cannot match u128 against int(0)`). A variant pattern takes an enum alone: on anything else it is `cannot match u32 against the variant pattern Foo: only an enum has variants`. A constant subject with no type of its own (`7`, an untyped `def`, a fixed array's `.len`) is compared in the default type of its value, an `i32` for 7, so `match 7 { 3000000000 => ... }` is `cannot match i32 against int(3000000000)`; a typed `def` is compared in its type. Patterns are not checked against one another: a value that two patterns match (`1, 1 =>`, or `1` in two arms) is no error, and the first arm with it runs.
 
-A `def`'s name is not a pattern: a name in a pattern would be a binding ([6.3](#63-patterns-in-match-arms)), and a binding cannot take a def's name. Write the def's value, or compare with `if` and `elif`. The other patterns of [6.1](#61-pattern-forms), names, tuples, constructors and guards, are not implemented.
+A `def`'s name is not a pattern: a name in a pattern would be a binding ([6.3](#63-patterns-in-match-arms)), and a binding cannot take a def's name. Write the def's value, or compare with `if` and `elif`. The other patterns of [6.1](#61-pattern-forms), names, tuples, struct constructors and guards, are not implemented.
 
 <!-- spec:begin compile -->
 
@@ -7229,15 +7567,15 @@ cannot match *u32 against int(0)
 
 <!-- spec:end -->
 
-Match is an expression. Used as a value, each arm needs one, unless it always exits, and the arms widen to one type, as the branches of an `if` do ([5.1](#51-conditionals)). Used as a statement, its arms can end in anything. A `match` with a `_` arm whose every arm returns counts as returning ([3.4](#34-functions)).
+Match is an expression. Used as a value, each arm needs one, unless it always exits, and the arms widen to one type, as the branches of an `if` do ([5.1](#51-conditionals)). Used as a statement, its arms can end in anything. A `match` with a `_` arm whose every arm returns counts as returning ([3.4](#34-functions)), and so does a `match` on an enum that handles every variant.
 
-A `match` compiles to nested wasm `if`s, one for each arm but a `_` one, each testing the subject's equality with the arm's patterns (several patterns are or-ed); the innermost `else` is the `_` arm's body, or `unreachable` where there is none. A subject that is more than a variable's read is computed into a local first.
+A `match` compiles to nested wasm `if`s, one for each arm before the first `_` arm, the first arm outermost, each testing the subject's equality with the arm's patterns (several patterns are or-ed); the first `_` arm is the innermost `else`, and the arms after it are not compiled; with no `_` arm the innermost `else` is `unreachable`. A subject that is more than a variable's read is computed into locals first. On an enum the test is of the tag (`(i32.eq tag (i32.const k))`), every variant an arm names is tested, the last one too, and the `then` of an arm with a variant pattern starts by setting its names from their slots ([Stack Representation](#stack-representation)); a subject in memory is loaded whole first ([Memory Representation](#memory-representation)).
 
 ---
 
 ## 6. Pattern Matching
 
-A pattern is written where a value is taken apart or tested. There are two kinds. A binding pattern names the parts of a value, in a `let` or a `set`; it never fails. A match pattern tests a value, in a match arm, and the arm runs only if it matches. `if let` takes one name ([6.4](#64-if-let-bindings)). Patterns in function signatures, constructor patterns and enum patterns are designed and not implemented; each is labelled where it appears below.
+A pattern is written where a value is taken apart or tested. There are two kinds. A binding pattern names the parts of a value, in a `let` or a `set`; it never fails. A match pattern tests a value, in a match arm, and the arm runs only if it matches. `if let` and `elif let` take one name, or a variant pattern of an enum ([6.4](#64-if-let-bindings)). Patterns in function signatures, and in a match arm a name as the whole pattern, tuple and struct patterns and guards, are designed and not implemented; each is labelled where it appears below, and each is refused where it is written.
 
 ### 6.1 Pattern Forms
 
@@ -7291,13 +7629,14 @@ field 'size' not found in Header
 | `true`, `false` | that bool | implemented |
 | `_` | anything | implemented |
 | `p, q` | (an arm's patterns) any one of them | implemented |
-| `name` | anything, bound to `name` in the arm | **Not implemented**: accepted, and never matches |
+| `Red`, `Rgb` | on an enum ([2.9](#29-enum-types-algebraic-data-types)), that variant | implemented |
+| `Rgb(r, _, b)`, `Rgb(r:, b: blue)` | on an enum, that variant, its fields bound to the names | implemented: each part a name or `_` |
+| `name` | anything, bound to `name` in the arm | **Not implemented**: refused |
 | `(p, q)`, `'ok'` | a tuple, part by part | **Not implemented**: refused |
-| `Point(p, q)`, `Point(x: p, y:)` | a struct, field by field | **Not implemented**: accepted, and never matches |
-| `Red`, `Rgb(r, g, b)` | a variant of an enum ([2.9](#29-enum-types-algebraic-data-types)) | **Not implemented**: accepted, and never matches |
+| `Point(p, q)`, `Point(x: p, y:)` | a struct, field by field | **Not implemented**: refused |
 | `p if condition` | `p`, where the condition holds | **Not implemented**: a syntax error |
 
-The forms that are accepted and never match must not be written: an arm with one never runs. [6.3](#63-patterns-in-match-arms) has the details.
+No pattern is accepted that never matches: each form that is not implemented is refused where it is written. [6.3](#63-patterns-in-match-arms) has the details.
 
 ### 6.2 Patterns in Function Signatures
 
@@ -7342,32 +7681,38 @@ unknown identifier 'x'
 
 ### 6.3 Patterns in Match Arms
 
-The patterns a `match` compares are literals and `_`, several to an arm ([5.4](#54-match-expressions)). The other forms of the table in [6.1](#61-pattern-forms) are designed and not implemented.
+The patterns a `match` compares are literals and `_`, several to an arm ([5.4](#54-match-expressions)), and on an enum its variants ([Pattern Matching on Enums](#pattern-matching-on-enums)). The other forms of the table in [6.1](#61-pattern-forms) are designed and not implemented, and refused.
 
 #### Binding Patterns
 
-> **Not implemented.** A lower-case name as a pattern is meant to match any value and bind it in its arm. The compiler accepts the name, but binds nothing (a use of it is `unknown identifier`), and the arm never matches (a known bug). Write `_` for an arm that takes any value, and use the subject's own variable in its body.
+> **Not implemented.** A lower-case name as the whole pattern is meant to match any value and bind it in its arm. It is refused, on every subject: `a name as the whole pattern is not implemented: write _ and use the subject`. Write `_` for an arm that takes any value, and use the subject's own variable in its body.
 
 <!-- spec:begin compile -->
 
-The name is checked as a binding would be. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where the `match` is, nor a `def`'s:
+The name is checked first as a binding would be. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where the `match` is, nor a `def`'s, and where it has one that is the one error. Otherwise the pattern is refused, and the name is declared in its arm as a refused value, so its uses add no error of their own ([Examples](#examples)). On an enum, the arms of a `match` with such an arm are not checked for coverage ([Pattern Matching on Enums](#pattern-matching-on-enums)): what the name was meant to cover is not known.
 
 ```ents
 func next(n: u32, k: u32) -> u32 => match k {
   0 => 1
   n => n + 1
 }
+
+func again(k: u32) -> u32 => match k {
+  0 => 1
+  m => m + 1
+}
 ```
 
 ```errors
 'n' is already declared: a match binding cannot reuse the name of a parameter (first declared at 1:11)
+a name as the whole pattern is not implemented: write _ and use the subject
 ```
 
 <!-- spec:end -->
 
 #### Struct and Tuple Patterns
 
-> **Not implemented.** A tuple pattern is refused: `match cannot compare a tuple pattern yet: compare one field at a time`. A literal of several codepoints is the tuple of their numbers ([Codepoint Literals](#codepoint-literals)), so `'ok'` as a pattern is a tuple pattern too, and is refused the same way. A constructor pattern, `Point(0, y)`, is accepted and never matches (a known bug): do not write one. Match one field at a time, or compare with `if` and `elif`.
+> **Not implemented.** A tuple pattern is refused: `match cannot compare a tuple pattern yet: compare one field at a time`. A literal of several codepoints is the tuple of their numbers ([Codepoint Literals](#codepoint-literals)), so `'ok'` as a pattern is a tuple pattern too, and is refused the same way. A struct constructor pattern, `Point(0, y)` on a `Point`, is refused too: `match cannot compare a struct pattern yet: compare one field at a time` (in an `if let`, `if let cannot compare a struct pattern yet: take it apart with let (x, y) = p`). A type's name alone, `Point`, is a variant pattern, and on a subject that is no enum it is `cannot match Point against the variant pattern Point: only an enum has variants`. Match one field at a time, or compare with `if` and `elif`.
 
 <!-- spec:begin compile -->
 
@@ -7388,6 +7733,8 @@ test "one codepoint is a number; a tuple is compared field by field" {
 ```
 
 ```ents
+type Point = (x: i32, y: i32)
+
 func f(c: u8) -> u32 => match c {
   'ok' => 1
   _ => 0
@@ -7397,11 +7744,26 @@ func g(p: (i32, i32)) -> u32 => match p {
   (0, 0) => 1
   _ => 0
 }
+
+func h(p: Point) -> i32 => match p {
+  Point(0, y) => y
+  Point => 1
+}
+
+func k(p: Point) -> i32 {
+  if let Point(x, y) = p {
+    return x
+  }
+  return 0
+}
 ```
 
 ```errors
 'ok' is a tuple of codepoints, and match cannot compare a tuple pattern yet: compare one field at a time
 match cannot compare a tuple pattern yet: compare one field at a time
+match cannot compare a struct pattern yet: compare one field at a time
+cannot match Point against the variant pattern Point: only an enum has variants
+if let cannot compare a struct pattern yet: take it apart with let (x, y) = p
 ```
 
 <!-- spec:end -->
@@ -7423,40 +7785,221 @@ func describe(p: Point) -> []u8 => match p {
 
 In the design, the case of a name says what it is:
 
-- **Upper case** (`Point`, `Rgb`): a type constructor or an enum variant
+- **Upper case** (`Point`, `Rgb`): a type constructor or an enum variant (implemented: a variant, on an enum)
 - **lower case** (`x`, `y`): a binding, which introduces a variable
 - **literals** (`0`, `'a'`, `true`): an exact match
 - **`_`**: a wildcard, which matches anything and binds nothing
 
 #### Pattern Matching on Enums
 
-> **Not implemented.** Enum types are not implemented ([2.9](#29-enum-types-algebraic-data-types)), and a variant pattern is accepted and never matches (a known bug).
+A `match` whose subject is an enum value ([2.9](#29-enum-types-algebraic-data-types)) takes these patterns, several to an arm as any patterns are:
 
-In the design, `match` takes an enum value apart by its variant:
+| Pattern | Matches |
+|---|---|
+| `_` | any value |
+| `Red`, `Rgb` | that variant; a payload variant's name alone binds nothing |
+| `Rgb(r, g, b)`, `Rgb(r, _, _)` | that variant, its fields by position: one part for each field, each a name, bound to that field, or `_` |
+| `Rgb(r:, b: blue)`, `Hsl(l:)`, `Hsl(l: _)` | that variant, its fields by name: `f:` binds the field `f` to a variable `f`, `f: name` binds it to `name`, `f: _` binds nothing; any of the fields, each once, in any order |
+
+A name in a variant pattern is a variable of its arm, seen in the arm's body only, of the type of the field it binds: a `u8` for `Rgb(r, g, b)`, a `*Color` for `Darker(c)`. It is a copy, set from the subject's slots at the start of its arm ([Stack Representation](#stack-representation)): assigning it changes nothing else. It is checked as a match binding is ([Binding Patterns](#binding-patterns)): it cannot have the name of a variable seen where the `match` is, nor of a global, `def` or `data` block, and a name bound twice in one pattern is refused the same way (`'r' is already declared: a match binding cannot reuse the name of another in its pattern (first declared at 3:7)`).
 
 <!-- spec:begin compile -->
 
-```ents FuncDecl
-// Not implemented.
+```ents
+enum Color { Red, Blue, Green, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8), Grey(b: u8), Darker(c: *Color) }
+
 func describe(c: Color) -> []u8 => match c {
   Red => "red"
-  Green => "green"
   Blue => "blue"
-  Rgb(r, g, b) => "a mix"
-  Grey(level) => "grey"
-  Darker(inner) => describe(inner.*)
+  Green => "green"
+  Rgb(r, _, b) => if r > b { "reddish" } else { "bluish" }
+  Hsl => "hsl"
+  Grey => "grey"
+  Darker(c: inner) => describe(inner.*)
+}
+
+func light(c: Color) -> u8 => match c {
+  Red, Blue, Green => 128
+  Rgb(r:, g:, b:) => max(r, max(g, b))
+  Hsl(l:) => l
+  Grey(b) => b
+  Darker(c: inner) => light(inner.*) / 2
+}
+
+data base = [Grey(100), Rgb(1, 2, 3)]
+
+test "match takes a variant apart" {
+  assert describe(Green).len == 5
+  assert describe(Rgb(200, 0, 10)).len == 7 && describe(Rgb(0, 0, 10)).len == 6
+  assert describe(Darker(&base[1])).len == 6
+  assert light(Blue) == 128 && light(Rgb(10, 200, 30)) == 200 && light(Hsl(0, 0, 77)) == 77
+  assert light(Darker(&base[0])) == 50
 }
 ```
 
 <!-- spec:end -->
 
-In the design, a `match` on an enum is exhaustive: every variant is handled, or there is a `_` arm. As implemented, no `match` is checked for coverage: one that no arm matches traps ([5.4](#54-match-expressions)).
+Every rule of a variant pattern is checked, each where it is broken, at its arm:
+
+- **The names are the subject's.** A pattern's variant is looked up among the variants of the subject's enum, whatever else the module declares: `Color has no variant 'North': its variants are Red, Blue, Green, Rgb, Hsl, Grey and Darker`.
+- **A part is a name or `_`**, nothing else: `Grey(0)` and `Darker(Grey(b))` are `a part of a variant pattern is a name or _: compare the value in the arm`. So a variant pattern never fails once its variant matches.
+- **All by position or all by name**: `Rgb(r, b:)` is `a variant pattern takes its parts all by position or all by name`. By position, the count is the field count: `Rgb(r, g)` is `Rgb has 3 fields, but the pattern has 2: give each a name or _`. By name, an unknown field is `field 'x' not found in Rgb, whose fields are r, g and b`, or, for a payload whose fields have no names, `field 'level' not found in Grey, whose fields have no names: give the parts by position`; a field taken twice is `Rgb: field 'r' is given twice`.
+- **A unit variant has nothing to take apart**: `Red(x)` is `Red is a unit variant: its pattern is Red, without parentheses`.
+- **An arm of several patterns binds no names**: `Red, Blue, Green =>` matches where any of them does, and `Rgb(r, g, b), Hsl(r, g, b) =>` is `an arm of several patterns binds no names: give Rgb(r, g, b) an arm of its own`. A `_` part is fine there.
+- **Other patterns on an enum** are refused: a literal is `cannot match Color against int(0)`, a tuple pattern `match cannot compare a tuple pattern yet: compare one field at a time`, and a name as the whole pattern is refused as on any subject ([Binding Patterns](#binding-patterns)).
+- **A pointer is no enum**: a variant pattern on a `*Color` is `cannot match *Color against the variant pattern Grey: match what it points to, p.*`, and on any other subject that is no enum `cannot match u32 against the variant pattern Foo: only an enum has variants`.
+
+A refused pattern still declares, in its arm, every name it would bind, each as a refused value, so its uses add no error of their own; the arm's body is checked as usual.
+
+<!-- spec:begin compile -->
+
+```ents
+enum Color { Red, Blue, Green, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8), Grey(b: u8), Darker(c: *Color) }
+enum Color2 { Rgb2(r: u8, g: u8, b: u8), Grey2(u8) }
+
+func errs(c: Color) -> u8 => match c {
+  North => 1
+  Grey(0) => 2
+  Rgb(r, b:) => r + b
+  Rgb(r, g) => r + g
+  Red(x) => x
+  Hsl(x: q) => q
+  Hsl(h:, h:) => h
+  Rgb(r, g, b), Hsl(r, g, b) => r
+  Grey(b) => 0 + b
+  Rgb(r, r, _) => r
+  7 => 1
+  _ => 0
+}
+
+func pos(c: Color2) -> u8 => match c {
+  Grey2(level: x) => x
+  _ => 0
+}
+
+func ptr(p: *Color) -> u8 => match p {
+  Grey(b) => b
+  _ => 0
+}
+
+func num(x: u32) -> u32 => match x {
+  Foo => 1
+  Bar(y) => y
+  _ => 2
+}
+```
+
+```errors
+Color has no variant 'North': its variants are Red, Blue, Green, Rgb, Hsl, Grey and Darker
+a part of a variant pattern is a name or _: compare the value in the arm
+a variant pattern takes its parts all by position or all by name
+Rgb has 3 fields, but the pattern has 2: give each a name or _
+Red is a unit variant: its pattern is Red, without parentheses
+field 'x' not found in Hsl, whose fields are h, s and l
+Hsl: field 'h' is given twice
+an arm of several patterns binds no names: give Rgb(r, g, b) an arm of its own
+'r' is already declared: a match binding cannot reuse the name of another in its pattern (first declared at 14:7)
+cannot match Color against int(7)
+field 'level' not found in Grey2, whose fields have no names: give the parts by position
+cannot match *Color against the variant pattern Grey: match what it points to, p.*
+cannot match u32 against the variant pattern Foo: only an enum has variants
+cannot match u32 against the variant pattern Bar: only an enum has variants
+```
+
+<!-- spec:end -->
+
+**Every variant is handled.** A `match` on an enum, used as a value or as a statement, handles each variant: each is named by a pattern of some arm, or there is a `_` arm, one that lists `_` among its patterns (`_ =>`, or `Red, _ =>`). Otherwise it is one error, at the `match`, listing what is missing in declaration order: `match on Color does not handle Rgb, Hsl and Darker: add an arm for each, or a _ arm`. A `match` with an arm refused for an unknown variant or for a name as the whole pattern is not checked for coverage, since what that arm was meant to cover is not known: its error is the one said. Arms are not checked against each other: a variant named in two arms runs the first, an arm after the first `_` arm is checked and never tried, and neither is an error.
+
+A `_` arm runs for every value that no arm before it matched, **a tag no variant has among them**, wherever it stands, also after arms that handle every variant. Without one, every variant an arm names is tested, the last one too, and a tag no variant has (one a host gave, or bytes written as bytes, [Memory Representation](#memory-representation)) traps: no arm runs. Since every variant is handled, **a `match` on an enum whose every arm returns counts as returning** ([3.4](#34-functions)), with or without a `_` arm.
+
+<!-- spec:begin compile -->
+
+```ents
+enum Dir { North, East, South, West }
+
+data raw = mut [9:u8, 2]
+
+func code(d: Dir) -> u32 {
+  match d {
+    North => { return 1 }
+    East => { return 2 }
+    South, West => { return 3 }
+  }
+}
+
+func safe(d: Dir) -> u32 => match d {
+  North => 1
+  East => 2
+  South => 3
+  West => 4
+  _ => 5
+}
+
+func first(d: Dir) -> u32 => match d {
+  North, _ => 7
+  North => 8
+}
+
+test "every variant is handled, and a _ arm takes the rest" {
+  let p = (&raw[1]) as *Dir
+  let q = (&raw[0]) as *Dir
+  assert code(p.*) == 3 && code(West) == 3 && code(North) == 1
+  assert safe(p.*) == 3 && safe(q.*) == 5
+  assert first(East) == 7 && first(North) == 7
+}
+```
+
+```ents
+enum Color { Red, Blue, Green, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8), Grey(b: u8), Darker(c: *Color) }
+
+func f(c: Color) -> u8 => match c {
+  Red, Blue, Green => 1
+  Grey(b) => b
+}
+```
+
+```errors
+match on Color does not handle Rgb, Hsl and Darker: add an arm for each, or a _ arm
+```
+
+<!-- spec:end -->
+
+A `match` on an enum compiles as any `match` does ([5.4](#54-match-expressions)): nested `if`s, the first arm outermost, each testing the tag against its variants' tags, or-ed for several patterns; the `then` of an arm starts by setting its names from their slots; the first `_` arm is the innermost `else`, and with none that `else` is `unreachable`. A subject that is a variable's read is read where it is; any other value, one in memory too, is computed, or loaded whole ([Memory Representation](#memory-representation)), into scratch locals first:
+
+<!-- spec:begin compile -->
+
+```ents
+enum Color { Red, Blue, Green, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8), Grey(b: u8), Darker(c: *Color) }
+
+export func red-part(c: Color) -> u8 => match c {
+  Red => 255
+  Rgb(r, _, _) => r
+  Grey(b) => b
+  _ => 0
+}
+```
+
+<!-- spec:end -->
+
+```wat
+(func $red-part (param $c_tag i32) (param $c_0 i32) (param $c_1 i32) (param $c_2 i32) (result i32)
+  (local $r i32)
+  (local $b i32)
+  (if (result i32) (i32.eq (local.get $c_tag) (i32.const 0))
+  (then (i32.const 255))
+  (else (if (result i32) (i32.eq (local.get $c_tag) (i32.const 3))
+  (then (local.set $r (local.get $c_0)) (local.get $r))
+  (else (if (result i32) (i32.eq (local.get $c_tag) (i32.const 5))
+  (then (local.set $b (local.get $c_0)) (local.get $b))
+  (else (i32.const 0)))))))
+)
+```
 
 ### 6.4 If-Let Bindings
 
 `if let name = value { ... }` runs its first branch when `value` has a value, with `name` bound to it: an optional pointer, slice or host reference that is not none, or an index, range or element address that is in range. `elif let name = value { ... }` does the same in the place of an `elif`. What they check, the type of the binding, where the binding is seen, and how they work as a value are in [`if let` Bindings](#if-let-bindings).
 
-The pattern of an `if let` or `elif let` is one name. Any other is refused, `_`, a literal, a tuple and a constructor alike (`if let only supports simple bindings`), and so is a value with nothing to check (`if let requires an optional expression or bounds-checked index`), in an `elif let` as in an `if let`, where the error is reported at its `elif`.
+The pattern of an `if let` or `elif let` is one name, or a variant pattern of an enum (below). Any other is refused, `_`, a literal and a tuple alike (`if let takes a name, or a variant pattern of an enum`), and so are a struct constructor pattern (`if let cannot compare a struct pattern yet: take it apart with let (x, y) = p`, [Struct and Tuple Patterns](#struct-and-tuple-patterns)) and, after a name, a value with nothing to check (`if let requires an optional expression or bounds-checked index`), in an `elif let` as in an `if let`, where the error is reported at its `elif`.
 
 <!-- spec:begin compile -->
 
@@ -7550,19 +8093,106 @@ unknown identifier 'v'
 
 <!-- spec:end -->
 
-> **Not implemented:** constructor patterns in `if let`, to test for an enum variant and take it apart. In the design:
+#### Variant Patterns
+
+`if let P = value { ... }` and `elif let P = value { ... }` also take a variant pattern of [Pattern Matching on Enums](#pattern-matching-on-enums) other than `_`: `Red`, `Rgb`, `Rgb(r, g, b)`, `Rgb(r, _, _)`, `Hsl(l:)`. The value must be an enum, and the pattern's variant one of its variants, with the rules and messages of a match arm. The branch runs where the value is that variant, with the names bound to its fields; otherwise the `elif` and `else` branches go on as for any `if let`. The names are `if let` bindings ([`if let` Bindings](#if-let-bindings)): seen in their branch only, as a `let` in it is; never the name of a variable seen there, nor of a global, `def` or `data` block (`'b' is already declared: an if let binding cannot reuse the name of a parameter (first declared at 3:18)`); free again after the branch. With an `else`, it gives a value as any `if` does. It narrows nothing.
+
+- The value is evaluated once, when its branch is tried, as a `match` subject is: a variable's read is read where it is, any other value goes into scratch locals, and a value in memory is loaded whole first ([Memory Representation](#memory-representation)).
+- One `if let` tests one thing: a value that needs a bounds check is not resolved by a variant pattern. With `xs: []Color` and an unchecked `i`, `if let Grey(b) = xs[i]` is `runtime index on []Color requires 'if let' or '??'`: write `if let c = xs[i] { if let Grey(b) = c { ... } }`, or `xs[i] ?? Red`.
+- A name on an enum value is `if let requires an optional expression or bounds-checked index: Color is an enum, taken apart with a variant pattern, if let Red = c` (the value's name where it is a plain name, else `...`), and a variant pattern on a value that is no enum is `cannot match u32 against the variant pattern Grey: only an enum has variants`.
+
+It compiles to the test of a match arm, `(if (i32.eq tag (i32.const k)) (then bindings branch) (else ...))`, an `elif let` in the `else` of the branch before it.
 
 <!-- spec:begin compile -->
 
-```ents Expr
-// Not implemented.
-if let Rgb(r, g, b) = color {
-  draw_rgb(r, g, b)
-} elif let Hsl(h, s, l) = color {
-  draw_hsl(h, s, l)
-} else {
-  draw_default()
+```ents
+enum Color { Red, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8), Grey(b: u8) }
+
+global tried: u32 = 0
+
+func shade(color: Color) -> u8 {
+  if let Rgb(r, g, b) = color {
+    return max(r, max(g, b))
+  } elif let Hsl(l:) = color {
+    return l
+  } elif let Red = color {
+    return 255
+  }
+  return 0
 }
+
+func grey-of(c: Color) -> u8 => if let Grey(b) = c { b } elif let Rgb(g:) = c { g } else { 0 }
+
+// Counts its calls, and gives a Hsl.
+func next() -> Color {
+  tried += 1
+  return Hsl(1, 2, 3)
+}
+
+// next() is called only when c is not a Grey.
+func lazy(c: Color) -> u8 => if let Grey(b) = c { b } elif let Hsl(h:) = next() { h } else { 0 }
+
+data cells = [Red, Grey(40)]
+
+func at(i: u32) -> u8 {
+  if let c = cells[i] {
+    if let Grey(b) = c {
+      return b
+    }
+  }
+  return 0
+}
+
+test "if let and elif let test a variant" {
+  assert shade(Rgb(1, 9, 3)) == 9 && shade(Hsl(0, 0, 70)) == 70 && shade(Red) == 255 && shade(Grey(5)) == 0
+  assert grey-of(Grey(7)) == 7 && grey-of(Rgb(1, 2, 3)) == 2 && grey-of(Red) == 0
+  assert lazy(Grey(4)) == 4 && tried == 0
+  assert lazy(Red) == 1 && tried == 1
+  assert at(1) == 40 && at(0) == 0 && at(5) == 0
+}
+```
+
+```ents
+enum Color { Red, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8), Grey(b: u8) }
+
+func a(c: Color, b: u8) -> u8 {
+  if let Grey(b) = c {
+    return b
+  }
+  return 0
+}
+
+func d(c: Color) -> u8 {
+  if let x = c {
+    return 1
+  }
+  return 0
+}
+
+func e(n: u32) -> u32 {
+  if let Grey(b) = n {
+    return b
+  }
+  return 0
+}
+
+func f(c: Color) -> u8 => if let Purple = c { 1 } elif let Rgb(r, g) = c { r } else { 0 }
+
+func g(xs: []Color, i: u32) -> u8 {
+  if let Grey(b) = xs[i] {
+    return b
+  }
+  return 0
+}
+```
+
+```errors
+'b' is already declared: an if let binding cannot reuse the name of a parameter (first declared at 3:18)
+if let requires an optional expression or bounds-checked index: Color is an enum, taken apart with a variant pattern, if let Red = c
+cannot match u32 against the variant pattern Grey: only an enum has variants
+Color has no variant 'Purple': its variants are Red, Rgb, Hsl and Grey
+Rgb has 3 fields, but the pattern has 2: give each a name or _
+runtime index on []Color requires 'if let' or '??'
 ```
 
 <!-- spec:end -->
@@ -7881,6 +8511,7 @@ An exported or imported function is a wasm function whose parameters and results
 - a number, `bool` or pointer is one value: `i32` for everything of 32 bits or fewer (`bool`, `u8`, `i16`, `u32`, `*T`, `[*]T`, `*[N]T`), `i64`, `f32` or `f64`; a `u128` is two `i64`s, the low half first, and wider integers one more `i64` for each 64 bits;
 - a slice is two `i32`s, its address and its length;
 - a struct or tuple is its fields, and a fixed array `[N]T` its N elements, each flattened in turn;
+- an enum is an `i32` tag, then its slots, so an enum of unit variants is one `i32` ([Stack Representation](#stack-representation));
 - a host type is an `externref` ([2.13](#213-host-references));
 - several results are a wasm multi-value result.
 
@@ -7916,9 +8547,9 @@ test "nearest" {
 
 <!-- spec:end -->
 
-The host is trusted to pass values of the declared types. Nothing is checked or masked where a value comes in: a `u8` parameter given 300 is 300 in the function, and a `u32#6` parameter given 7 is 7, though the checker took it to be below 6 ([Ranged Integers](#ranged-integers)). A plain host type is the exception, checked for null ([2.13](#213-host-references)). An exported function that takes a many-pointer (`[*]T`) is warned of, `exported function parameter 'p' uses [*] many-pointer — consider []u8 slice for a safe API`: the host can pass any address and no length, where a slice carries its length.
+The host is trusted to pass values of the declared types. Nothing is checked or masked where a value comes in: a `u8` parameter given 300 is 300 in the function, and a `u32#6` parameter given 7 is 7, though the checker took it to be below 6 ([Ranged Integers](#ranged-integers)). An enum's tag is not checked either: given a tag no variant has, a `match` with no `_` arm traps, and stored in memory the tag is truncated to its width ([Memory Representation](#memory-representation)). A plain host type is the exception, checked for null ([2.13](#213-host-references)). An exported function that takes a many-pointer (`[*]T`) is warned of, `exported function parameter 'p' uses [*] many-pointer — consider []u8 slice for a safe API`: the host can pass any address and no length, where a slice carries its length.
 
-An exported global is a mutable wasm global, which the host can read and write; one of several values is one wasm global per value, named `name_part` as a parameter is (`size_w`, `order_ptr` and `order_len` for a slice, `pos_0` and `pos_1` for a tuple exported as `"pos"`). A part's name is not checked against the module's other export names: `export global size: (w: u32, h: u32)` beside an `export func size_w()` passes the check, and the module does not validate (a known bug). A global imported from the host is an immutable wasm global.
+An exported global is a mutable wasm global, which the host can read and write; one of several values is one wasm global per value, named `name_part` as a parameter is (`size_w`, `order_ptr` and `order_len` for a slice, `pos_0` and `pos_1` for a tuple exported as `"pos"`, `g_tag`, `g_0`, ... for an enum). A part's name is not checked against the module's other export names: `export global size: (w: u32, h: u32)` beside an `export func size_w()` passes the check, and the module does not validate (a known bug). A global imported from the host is an immutable wasm global.
 
 #### Starting and running
 
@@ -9222,7 +9853,7 @@ The rules of this chapter refuse these too; they are not features to come:
 | A host import with comptime parameters, of a generic function or a generic type | `a host import cannot have comptime parameters` |
 | A length or a bound that is not a compile-time constant, `[len]u8` with a variable | `array length must be a compile-time constant` (for a parameter, with the hint `to give it at compile time, write comptime len: u32`) |
 | A generic type that refers to itself with a type made of its parameters, `List(*T)` in `List(T)` | `generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end` |
-| A generic type that shares its name with a `type` or another generic type | `'Vec' is already declared: a generic type's name is unique in its module` |
+| A generic type that shares its name with a `type`, an enum, a variant or another generic type | `'Vec' is already declared (first declared at 1:6)`, at the one declared second ([How variants are named](#how-variants-are-named)) |
 | A generic type without its arguments, or with the wrong number | `'Vec' is a generic type: write Vec(T)`; `Vec expects 1 type argument, got 2` |
 | A type that is not generic, applied | `'Point' is not a generic type` |
 | A constructor on a type that is not a struct or tuple | `u32 is not a struct or tuple type: it has no constructor; to convert a number write x as T` |
@@ -9487,6 +10118,7 @@ Each type is held in registers as these wasm values:
 | `?Canvas` | `externref`, null for none |
 | a struct or tuple, `(a: T1, b: T2, ...)` | the values of each field, in order |
 | a fixed array `[N]T` held by value | the values of each element, in order |
+| an enum, `enum Color { ... }` | `i32`, its tag, then its slots ([Stack Representation](#stack-representation)) |
 | `()` | nothing |
 
 A value of several wasm values is that many parameters, results, locals or globals, in that order: a parameter `p: Point` is two `f32` parameters, a `[]u8` result is two `i32` results. Their names in the WAT text are the compiler's; to the host only the order counts ([7.2](#72-exports)).
@@ -9636,6 +10268,7 @@ Any value type but a host reference ([2.13](#213-host-references)) can be an ele
 | `[]T`, `?[]T` | 8: the address, then the length |
 | `[N]T` | N × `sizeof(T)` |
 | `(a: T1, b: T2, ...)` | the sum of its fields; field `b` starts where `a` ends |
+| an enum | its tag (1, 2 or 4 bytes by its number of variants), then the largest payload, packed; a smaller one is followed by padding ([Memory Representation](#memory-representation)) |
 | `()` | 0 |
 
 `sizeof(T)` is this size ([10.4](#104-sizes)), and it is the stride of `[*]T`, `*[N]T` and `[]T`: element `i` is at `i * sizeof(T)` bytes from the start. A struct inside a struct, or a slice or fixed array inside one, lies in place at its field's offset. The one exception is a fixed array that is the element of a pointer or slice (`*[N][M]T`, `[][M]T`, `[*][M]T`): there each element is a 4-byte pointer to its row, which lies apart ([Nesting](#nesting)).
@@ -10077,7 +10710,7 @@ memcpy length 20 exceeds buffer size 4 bytes
 
 ### 10.4 Sizes
 
-`sizeof(T)` is the number of bytes a value of type `T` takes in memory ([9.6](#96-structs-and-slices-in-memory)): 1 for a `u8` or a `bool`, 4 for any pointer, 8 for any slice, the sum of the fields for a struct, N times the element for `[N]T`, 0 for `()`. Its operand is a type, never a value: `sizeof(x)` of a variable is a syntax error, so the size of what a variable holds is the size of its type. It is a `u32` constant, which widens as a `u32` does (to a `u64`, not to an `i32` or a `u8`: `cannot assign u32 to u8`), and the compiler knows it wherever a constant is wanted: a length (`[sizeof(Pt) * 4]u8`), a range (`u32#(sizeof(Pt))`), a `def`, a global's initializer, a value in `data`. A type with no size is an error: a host reference, which is never in memory (`cannot take the size of Canvas: a host reference has no bytes, so it is never in memory ...`). `[!]T` is the pointer `*[!]T`, whose size is 4, but `sizeof([!]u8)` is refused (`sizeof: cannot compute size of dynamically sized type`) and a struct field written `[!]T` is given no size (a known bug): write `*[!]T` there.
+`sizeof(T)` is the number of bytes a value of type `T` takes in memory ([9.6](#96-structs-and-slices-in-memory)): 1 for a `u8` or a `bool`, 4 for any pointer, 8 for any slice, the sum of the fields for a struct, N times the element for `[N]T`, the tag and its largest payload for an enum ([Memory Representation](#memory-representation)), 0 for `()`. Its operand is a type, never a value: `sizeof(x)` of a variable is a syntax error, so the size of what a variable holds is the size of its type. It is a `u32` constant, which widens as a `u32` does (to a `u64`, not to an `i32` or a `u8`: `cannot assign u32 to u8`), and the compiler knows it wherever a constant is wanted: a length (`[sizeof(Pt) * 4]u8`), a range (`u32#(sizeof(Pt))`), a `def`, a global's initializer, a value in `data`. A type with no size is an error: a host reference, which is never in memory (`cannot take the size of Canvas: a host reference has no bytes, so it is never in memory ...`). `[!]T` is the pointer `*[!]T`, whose size is 4, but `sizeof([!]u8)` is refused (`sizeof: cannot compute size of dynamically sized type`) and a struct field written `[!]T` is given no size (a known bug): write `*[!]T` there.
 
 `sizeof data`, written without parentheses (`sizeof(data)` is a syntax error), is the address just past the last byte of the program's data: where memory that nothing is laid out in begins ([9.0](#90-data-layout)). It is a `u32`, the same in every module of a program (larger in the test build than in the compiled program, [9.0](#90-data-layout)), and known only once the whole program is laid out: it is read in a function, but it is no constant of the source, so it starts no global, `def` or `data` and is no length (`global initializer must be a compile-time constant`).
 
@@ -10935,7 +11568,7 @@ The directory `examples/` holds larger programs, each built and tested with the 
 
 ## 15. Future Additions
 
-Features under consideration for later versions of Encantis. None of them is implemented: the syntax of each is a syntax error, and its examples are not working code. The features designed in the earlier chapters but not implemented (enums, function values, struct patterns and others) are described where they belong and listed in [Implementation Status](#implementation-status).
+Features under consideration for later versions of Encantis. None of them is implemented: the syntax of each is a syntax error, and its examples are not working code. The features designed in the earlier chapters but not implemented (generic enums, function values, struct patterns and others) are described where they belong and listed in [Implementation Status](#implementation-status).
 
 ### 15.1 SIMD Support
 

@@ -8966,8 +8966,9 @@ class CheckContext {
       if (this.errorsReported > reported) clashes.add(name)
     }
     const found = this.variantPattern(pattern, valueType, arm.condition, 'if let', error)
+    const twice = found.bindings ? boundTwice(pattern, 'if let', clashes, error, (at) => this.firstDeclared(at)) : []
     this.declare(arm)
-    const bindings = found.bindings ?? patternBindings(pattern).map((b) => ({ ...b, type: RECOVERY }))
+    const bindings = onceEach(found.bindings ?? patternBindings(pattern).map((b) => ({ ...b, type: RECOVERY })), twice)
     for (const b of bindings) {
       if (!clashes.has(b.name)) this.bindName(then, b.name, b.type, arm.span.start, 'if let', arm, b.at)
     }
@@ -9038,7 +9039,9 @@ class CheckContext {
     const subject = unwrap(stripMax(subjectType))
     const covered = new Set<number>()
     let catchAll = false
-    let unknownVariant = false
+    // An unknown variant or a name as the whole pattern leaves what the
+    // arms cover unknown: no coverage error is added to it.
+    let unknownCover = false
     const armBindings = expr.arms.map((arm) => {
       const bindings: Binding[] = []
       // A name that clashes is that one error, and is not declared again.
@@ -9049,6 +9052,8 @@ class CheckContext {
         this.bindName(this.currentScope, name, null, arm.span.start, 'match', arm)
         if (this.errorsReported > reported) clashes.add(name)
       }
+      // A name an accepted pattern binds twice
+      const twice: string[] = []
       const clashed = this.errorsReported > before
       const said = this.declared.has(arm)
       this.declare(arm)
@@ -9076,14 +9081,18 @@ class CheckContext {
           // Said where the name does not clash: a clash is the one error.
           if (!clashed) error('a name as the whole pattern is not implemented: write _ and use the subject')
           refused = true
+          unknownCover = true
           continue
         }
         if (pattern.kind === 'variant' || pattern.kind === 'constructor') {
           const found = this.variantPattern(pattern, subjectType, expr.subject, 'match', error)
-          if (found.unknown) unknownVariant = true
+          if (found.unknown) unknownCover = true
           if (found.index !== null) covered.add(found.index)
           if (found.bindings === null) refused = true
-          else bindings.push(...found.bindings)
+          else {
+            twice.push(...boundTwice(pattern, 'match', clashes, error, (at) => this.firstDeclared(at)))
+            bindings.push(...found.bindings)
+          }
           continue
         }
         const value = pattern.value
@@ -9108,15 +9117,15 @@ class CheckContext {
       // A refused pattern still declares the names it would bind, as refused
       // values: their uses say nothing more.
       if (refused) {
-        return arm.patterns.flatMap(patternBindings).filter((b) => !clashes.has(b.name)).map((b) => ({ ...b, type: RECOVERY }))
+        return onceEach(arm.patterns.flatMap(patternBindings).filter((b) => !clashes.has(b.name)).map((b) => ({ ...b, type: RECOVERY })), twice)
       }
-      return bindings.filter((b) => !clashes.has(b.name))
+      return onceEach(bindings.filter((b) => !clashes.has(b.name)), twice)
     })
     // A match on an enum handles every variant, or has a _ arm.
     if (subject.kind === 'enum') {
       const missing = subject.variants.filter((_, k) => !covered.has(k)).map((v) => v.name)
       if (catchAll || missing.length === 0) EXHAUSTIVE.add(expr)
-      else if (!unknownVariant && !this.declared.has(expr)) {
+      else if (!unknownCover && !this.declared.has(expr)) {
         this.error(expr.span.start, `match on ${typeToString(subjectType)} does not handle ${spoken(missing)}: add an arm for each, or a _ arm`)
       }
       this.declare(expr)
@@ -12730,6 +12739,39 @@ function patternBindings(pattern: AST.MatchPattern): { name: string; at: number 
     default:
       return []
   }
+}
+
+// A name a pattern binds twice, `Rgb(r, r, _)`, is refused as a name that
+// clashes is, said through `error`; the names given back are declared once,
+// as refused values (onceEach).
+function boundTwice(pattern: AST.MatchPattern, kind: BindingKind, clashes: Set<string>, error: (message: string) => void, where: (at: number) => string): string[] {
+  const first = new Map<string, number>()
+  const twice: string[] = []
+  for (const { name, at } of patternBindings(pattern)) {
+    const seen = first.get(name)
+    if (seen === undefined) {
+      first.set(name, at)
+      continue
+    }
+    if (clashes.has(name) || twice.includes(name)) continue
+    twice.push(name)
+    const what = kind === 'if let' ? 'an if let binding' : 'a match binding'
+    error(`'${name}' is already declared: ${what} cannot reuse the name of another in its pattern${where(seen)}`)
+  }
+  return twice
+}
+
+// The bindings of a pattern with each name once: a name bound twice
+// (`twice`) is declared once, as a refused value.
+function onceEach<B extends { name: string; type: ResolvedType }>(bindings: B[], twice: Set<string> | string[]): B[] {
+  const repeated = new Set(twice)
+  const seen = new Set<string>()
+  return bindings.flatMap((b) => {
+    if (!repeated.has(b.name)) return [b]
+    if (seen.has(b.name)) return []
+    seen.add(b.name)
+    return [{ ...b, type: RECOVERY }]
+  })
 }
 
 // A pattern as it is written, for a message
