@@ -3231,7 +3231,7 @@ A plain host type is never null: a `Canvas` is always a value the host gave. So 
 
 A reference that may be null is a `?Canvas`, the optional form, written as `?*T` is for a pointer ([Optional Types](#optional-types)); `?Screen` is the same type through another name for it. It follows the rules of `?*T`:
 
-- none is written `0`, the literal: also `-0` (the literal with its sign), in parentheses, as the value of a branch, or as a `def` of 0, but nothing computed (`0 + 0` and `-(0)` are not none). A comptime value parameter is the number its call gave, written in its place ([8.7](#87-comptime-value-parameters)): in an instance given 0 it is the literal 0, however the call wrote the 0;
+- none is written `0`, the literal: also `-0` (the literal with its sign), in parentheses, as the value of each branch of an `if` that has an `else` (an `if let` or an `elif let` branch too) or of a `match`, a branch that exits aside, or as a `def` of 0, but nothing computed (`0 + 0` and `-(0)` are not none). A comptime value parameter is the number its call gave, written in its place ([8.7](#87-comptime-value-parameters)): in an instance given 0 it is the literal 0, however the call wrote the 0;
 - it starts as none: a `let` or a global of one given no value is none;
 - `opt == 0` and `opt != 0` ask whether it is none, and are its only comparisons;
 - `if let c = opt { ... }` gives a plain `Canvas` where it is not none, and `opt ?? other` is `opt` unless it is none, and `other` (a `Canvas`) then;
@@ -3349,7 +3349,11 @@ export func untyped(c: ?Canvas) -> ?Canvas {
 func with-none(comptime T: type, x: T) -> [2]?T => [x, 0]
 export func generic(c: Canvas) -> [2]?Canvas => with-none(c)
 func given(comptime n: i32) -> ?Canvas => n
+data seven = 7:u32
 export func signed() -> [2]?Canvas => [-0, given(1 - 1)]
+export func found(p: ?*u32) -> ?Canvas => (if let v = p { 0 } else { 0 }) as ?Canvas
+export func either(b: bool, p: ?*u32) -> ?Canvas => (if b { 0 } elif let v = p { 0 } else { 0 }) as ?Canvas
+export func neither(p: ?*u32, x: ?Canvas) -> bool => x == (if let v = p { 0 } else { 0 })
 
 func none(a: [2]?Canvas) -> bool => a[0] == 0 && a[1] == 0
 test "none is 0 in each place" {
@@ -3360,6 +3364,10 @@ test "none is 0 in each place" {
   assert pick(2, 0) == 0
   assert three()[2] == 0
   assert none(signed())
+  assert found(seven) == 0
+  assert found(0) == 0
+  assert either(false, seven) == 0
+  assert neither(0, 0)
 }
 ```
 
