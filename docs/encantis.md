@@ -5820,10 +5820,13 @@ An `elif let name = value` branch is an `if let` in the place of an `elif`: it i
 
 ```ents
 type Node = (value: u32, next: ?*Node)
+type Canvas = host
 
 data nodes = [Node(1, 0), Node(2, 0)]
 data cells = [7:u32, 8, 9]
 data names = ["ab", "cde"]
+global calls: u32 = 0
+import "env" "screen" global screen: Canvas
 
 // The cell at i, else the length of the name at j plus 100, else 0.
 func lookup(i: u32, j: u32) -> u32 {
@@ -5851,7 +5854,32 @@ func measure(p: ?*u32, q: ?[]u8) -> u32 {
   return 0
 }
 
+// Counts its calls, and gives the first cell.
+func bump() -> ?*u32 {
+  calls += 1
+  return &cells[0]
+}
+
+// bump() is called only when c is false.
+func lazy(c: bool) -> u32 {
+  if c { return 1 } elif let p = bump() { return p.* }
+  return 0
+}
+
+// A host reference that may be none, bound as a plain one.
+func tagged(c: Canvas, n: u32) -> u32 => n
+func which(c: bool, a: ?Canvas, b: ?Canvas) -> u32 =>
+  if c { 9 } elif let x = a { tagged(x, 1) } elif let y = b { tagged(y, 2) } else { 0 }
+
 test "elif let binds as an if let does" {
+  assert lazy(true) == 1
+  assert calls == 0
+  assert lazy(false) == 7
+  assert calls == 1
+  assert which(true, screen, screen) == 9
+  assert which(false, screen, 0) == 1
+  assert which(false, 0, screen) == 2
+  assert which(false, 0, 0) == 0
   assert measure(&cells[1], 0) == 8
   assert measure(0, names[1]) == 4
   assert measure(0, 0) == 0
