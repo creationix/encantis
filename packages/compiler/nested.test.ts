@@ -154,6 +154,39 @@ test "t" {
       ])
     })
 
+    // Refused as the function's own name, in a block that has ended, a
+    // declaration is no first of the name: the one in that block is, and
+    // where that was refused in turn, what had the name
+    test('a third declaration is told the first place also after a refusal of the function\'s own name', () => {
+      expect(errorsOf(`
+func helper() -> u32 => 1
+export func f(n: u32) -> u32 {
+  if n > 1 { func s() { } }
+  func s() { }
+  func s() { }
+  func q(s: u32) -> u32 => s
+  for w in 3 { }
+  func w() { }
+  func w() { }
+  if n > 2 { func v() { } }
+  let v: u32 = 1
+  if n > 3 { func v() { } }
+  func helper() -> u32 => 2
+  let helper: u32 = 4
+  return q(n) + v
+}`)).toEqual([
+        "'s' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 4:19)",
+        "'s' is already declared: a nested function cannot reuse the name of a nested function in scope (first declared at 4:19)",
+        "'s' is already declared: a parameter of a nested function cannot reuse the name of a nested function in scope (first declared at 4:19)",
+        "'w' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 8:7)",
+        "'w' is already declared: a nested function cannot reuse the name of a nested function in scope (first declared at 8:7)",
+        "'v' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 11:19)",
+        "'v' is already declared: a nested function cannot reuse the name of a variable in scope (first declared at 11:19)",
+        "'helper' is already declared: a nested function cannot reuse the name of a function of the module (first declared at 2:6)",
+        "'helper' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 2:6)",
+      ])
+    })
+
     test('a variable declared after it cannot take its name, in any block', () => {
       expect(errorsOf(`
 func g() -> u32 {
@@ -217,6 +250,7 @@ func over(comptime T: type, x: T) -> T {
   return see(x)
 }
 export func use(x: u32) -> u32 => over(x)
+export func use2(x: u64) -> u64 => over(x)
 test "t" {
   def d = 7
   let z: u32 = 1
@@ -226,9 +260,29 @@ test "t" {
 }`)).toEqual([
         "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 2:5)",
         "'k' is already declared: a named result cannot reuse the name of a def (first declared at 2:5)",
-        "'d' is already declared: a parameter cannot reuse the name of a def (first declared at 14:7)",
-        "'d' is already declared: a parameter cannot reuse the name of a def (first declared at 14:7)",
-        "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 2:5), in over(T = u32)",
+        // In a generic, once with the declarations, as its own parameters
+        // are, not once per instance
+        "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 2:5)",
+        "'d' is already declared: a parameter cannot reuse the name of a def (first declared at 15:7)",
+        "'d' is already declared: a parameter cannot reuse the name of a def (first declared at 15:7)",
+      ])
+    })
+
+    test('in a generic nothing calls, a nested function\'s parameter with a def\'s name is reported all the same', () => {
+      expect(errorsOf(`
+def k = 3
+func over(comptime T: type, x: T) -> T {
+  if x > 0 {
+    func see(y: T) -> T {
+      func deeper(k: T) -> T => k
+      return deeper(y)
+    }
+    return see(x)
+  }
+  return x
+}
+export func use(x: u32) -> u32 => x`)).toEqual([
+        "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 2:5)",
       ])
     })
 

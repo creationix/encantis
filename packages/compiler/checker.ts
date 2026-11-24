@@ -1210,6 +1210,12 @@ class CheckContext {
   // declared all the same: the declaration it clashed with, the first of
   // the name, is the one a later clash with the name says (see firstOf).
   clashedWith = new WeakMap<Symbol, Symbol>()
+  // A declaration refused because its function declares the name before it
+  // where it is no longer seen (ownNameError) is told the place of that one:
+  // the place, as a later clash with the name is told it (see pinFirst)
+  private firstText = new WeakMap<Symbol, string>()
+  // Each variable of a function, by where it is declared (registerVar)
+  private varAt = new Map<number, Symbol>()
   // The functions being checked, innermost last (see FuncFrame), the
   // variable each variable symbol is, and the nested functions, their
   // order in each function and the calls of them (see TypeCheckResult)
@@ -1601,6 +1607,8 @@ class CheckContext {
   // imported). Nothing where that is not known.
   declaredFirst(name: string, found: Symbol): string {
     const sym = this.firstOf(found)
+    const pinned = this.firstText.get(sym)
+    if (pinned !== undefined) return pinned
     const at = this.declaredAt.get(sym) ?? this.localDefs.get(sym) ??
       (this.moduleScope.symbols.get(name) === sym ? this.symbolDefOffsets.get(name) : undefined)
     if (at !== undefined) return this.firstDeclared(at)
@@ -4135,9 +4143,9 @@ class CheckContext {
     // A variable whose declaration was refused is what the first of its
     // name is: a binding may hide a function a refused let took the name of.
     const taken = existing && takenName(this.firstOf(existing))
-    const nestedFirst = this.declared.has(node) ? undefined : this.nestedNamedBefore(name, defAt)
+    const nestedFirst = this.nestedNamedBefore(name, defAt)
     if (nestedFirst && this.frame) {
-      this.error(at, this.ownNameError(name, this.frame, nestedFirst))
+      if (!this.declared.has(node)) this.error(at, this.ownNameError(name, this.frame, nestedFirst))
     } else if (taken && !this.declared.has(node)) {
       const what = kind === 'loop' ? 'a loop variable' : kind === 'if let' ? 'an if let binding' : 'a match binding'
       this.error(at, `'${name}' is already declared: ${what} cannot reuse the name of ${taken}${this.declaredFirst(name, existing)}`)
@@ -4147,6 +4155,7 @@ class CheckContext {
     // Its body's scope is new each time it is checked: what it is refused
     // for is the same each time.
     if (taken) this.clashed(sym, existing, true)
+    if (nestedFirst) this.pinFirst(sym, name, nestedFirst)
     scope.symbols.set(name, sym)
     this.registerVar(sym, name, defAt)
     this.types.set(typeKey(defAt, 'Binding'), type)
@@ -4159,15 +4168,16 @@ class CheckContext {
       case 'IdentPattern': {
         const existing = this.lookup(pattern.name)
         const refused = !!existing && !this.declared.has(pattern)
-        const nestedFirst = this.declared.has(pattern) ? undefined : this.nestedNamedBefore(pattern.name, pattern.span.start)
+        const nestedFirst = this.nestedNamedBefore(pattern.name, pattern.span.start)
         if (nestedFirst && this.frame) {
-          this.error(pattern.span.start, this.ownNameError(pattern.name, this.frame, nestedFirst))
+          if (!this.declared.has(pattern)) this.error(pattern.span.start, this.ownNameError(pattern.name, this.frame, nestedFirst))
         } else if (refused) {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope${this.declaredFirst(pattern.name, existing)}`)
         }
         this.declare(pattern)
         const sym: Symbol = { kind: 'local', type }
         this.clashed(sym, existing, refused)
+        if (nestedFirst) this.pinFirst(sym, pattern.name, nestedFirst)
         this.letScope().symbols.set(pattern.name, sym)
         this.registerVar(sym, pattern.name, pattern.span.start)
         this.letAt.set(sym, pattern.span.start)
@@ -4232,15 +4242,16 @@ class CheckContext {
     const at = namedPartAt(element)
     const existing = this.lookup(varName)
     const refused = !!existing && !this.declared.has(element)
-    const nestedFirst = this.declared.has(element) ? undefined : this.nestedNamedBefore(varName, at)
+    const nestedFirst = this.nestedNamedBefore(varName, at)
     if (nestedFirst && this.frame) {
-      this.error(pattern.span.start, this.ownNameError(varName, this.frame, nestedFirst))
+      if (!this.declared.has(element)) this.error(pattern.span.start, this.ownNameError(varName, this.frame, nestedFirst))
     } else if (refused) {
       this.error(pattern.span.start, `'${varName}' is already declared in this scope${this.declaredFirst(varName, existing)}`)
     }
     this.declare(element)
     const sym: Symbol = { kind: 'local', type }
     this.clashed(sym, existing, refused)
+    if (nestedFirst) this.pinFirst(sym, varName, nestedFirst)
     this.letScope().symbols.set(varName, sym)
     this.registerVar(sym, varName, at)
     this.letAt.set(sym, at)
@@ -10394,6 +10405,12 @@ class CheckContext {
   // not where it is declared.
   private skipGenericBody(decl: AST.FuncDecl): void {
     this.literalSlots.set(decl, this.pendingLiterals.length)
+    // The parameters and named results of the functions nested in it take
+    // no def's name (3.4): said here, as its own are, whether or not
+    // anything calls it
+    for (const nested of nestedDeclsIn(decl.body)) {
+      for (const { at, message } of this.defNamedFields(nested)) this.error(at, message)
+    }
     // What the declaration names in its module is used by it, instantiated
     // or not: a module that only exports its generics has no instance of them,
     // and every helper of theirs would be reported as never used. Without
@@ -10609,6 +10626,7 @@ class CheckContext {
     const info: VarInfo = shared ?? { v: { id: nextVarId++, name, type: sym.type }, frame, at }
     this.varInfo.set(sym, info)
     this.varById.set(info.v.id, info)
+    this.varAt.set(at, sym)
   }
 
   // Where a function's name is written: after `func`, or `inline func`
@@ -10632,18 +10650,34 @@ class CheckContext {
 
   // Where a nested function of the function being checked, of this name, is
   // declared before `at`: then a variable declared at `at` cannot have the
-  // name (N8). The place is the name's first declaration in the function.
-  private nestedNamedBefore(name: string, at: number): number | undefined {
+  // name (N8). What is given is the name's first declaration in the function.
+  private nestedNamedBefore(name: string, at: number): OwnName | undefined {
     const frame = this.frame
     if (!frame) return undefined
     const own = this.ownNames(frame).get(name) ?? []
     return own.some((e) => e.func !== null && e.at < at) ? firstOwnBefore(own, at) : undefined
   }
 
-  // `first`: where the name's first declaration in the function is, which
-  // the message says (see firstDeclared)
-  private ownNameError(name: string, frame: FuncFrame, first: number): string {
-    return `'${name}' is already declared in ${frame.shown}: a nested function's name is its own in the whole function that declares it${this.firstDeclared(first)}`
+  // `first`: the name's first declaration in the function, whose place the
+  // message says (see ownFirst)
+  private ownNameError(name: string, frame: FuncFrame, first: OwnName): string {
+    return `'${name}' is already declared in ${frame.shown}: a nested function's name is its own in the whole function that declares it${this.ownFirst(name, first)}`
+  }
+
+  // Where the first declaration of a name is, said after a refusal by the
+  // function's own declaration of it (ownNameError): that declaration's
+  // place, or, where it was refused in turn, the place its refusal said, so
+  // that an import or a function of the module that had the name is told
+  private ownFirst(name: string, first: OwnName): string {
+    const sym = first.func ? this.nestedFuncs.get(first.func)?.sym : this.varAt.get(first.at)
+    return sym ? this.declaredFirst(name, sym) : this.firstDeclared(first.at)
+  }
+
+  // A declaration refused by the function's own declaration of its name,
+  // which is not in scope where it stands: a later clash with the name, with
+  // it in scope, is told the place of that first declaration (3.3)
+  private pinFirst(sym: Symbol, name: string, first: OwnName): void {
+    this.firstText.set(sym, this.ownFirst(name, first))
   }
 
   // What a nested function's name cannot be the name of, as N7's messages
@@ -10764,17 +10798,19 @@ class CheckContext {
     // name is (see firstOf)
     const kind = existing && !this.ofAnotherTest(existing, name) ? this.declarationKind(this.firstOf(existing), name) : null
     const own = (this.ownNames(frame).get(name) ?? []).filter((e) => e.func !== decl)
+    const ownFirst = kind && existing ? undefined : firstOwnBefore(own, nameAt)
     if (kind && existing) {
       this.error(nameAt, `'${name}' is already declared: ${what} cannot reuse the name of ${kind}${this.declaredFirst(name, existing)}`)
-    } else if (own.some((e) => e.at < nameAt)) {
-      this.error(nameAt, this.ownNameError(name, frame, firstOwnBefore(own, nameAt)))
+    } else if (ownFirst) {
+      this.error(nameAt, this.ownNameError(name, frame, ownFirst))
     } else if (!existing && BUILTIN_NAMES.has(name)) {
       this.warn(nameAt, `'${name}' replaces the builtin ${name} in the body of ${frame.shown}`)
     }
     // Its parameters and named results take no def's name, as a function
     // of the module's do not (3.4): the defs seen where it is declared, a
-    // test's own included
-    for (const { at, message } of this.defNamedFields(decl)) this.error(at, message)
+    // test's own included. In a generic's body that is said once, where the
+    // generic is declared (skipGenericBody), and not in each instance.
+    if (!this.currentInstance) for (const { at, message } of this.defNamedFields(decl)) this.error(at, message)
     const type = this.resolveSignature(decl.signature)
     const sym: Symbol & { kind: 'func' } = { kind: 'func', type, inline: decl.inline }
     const nested: NestedFunc = {
@@ -10810,6 +10846,7 @@ class CheckContext {
       if (kind) this.clashed(sym, existing, true)
       this.currentScope.symbols.set(name, sym)
     }
+    if (ownFirst) this.pinFirst(sym, name, ownFirst)
     this.recordDefinition(name, nameAt, sym)
     return nested
   }
@@ -12793,6 +12830,22 @@ function holdsSlice(t: ResolvedType, seen = new Set<ResolvedType>()): boolean {
 // names rather than use them.
 const NOT_CODE = new Set(['span', 'type', 'signature', 'pattern', 'patterns', 'binding'])
 
+// The functions declared in a body, at any depth, and those nested in them
+function nestedDeclsIn(body: unknown): AST.FuncDecl[] {
+  const found: AST.FuncDecl[] = []
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n)
+      return
+    }
+    if (!node || typeof node !== 'object') return
+    if ((node as { kind?: string }).kind === 'FuncDecl') found.push(node as AST.FuncDecl)
+    for (const child of codeEntries(node)) walk(child)
+  }
+  walk(body)
+  return found
+}
+
 function codeEntries(node: object): unknown[] {
   if (ArrayBuffer.isView(node)) return []
   return Object.entries(node).flatMap(([k, v]) => (NOT_CODE.has(k) || !v || typeof v !== 'object' ? [] : [v]))
@@ -13057,10 +13110,10 @@ function freeNamesOf(decl: AST.FuncDecl): Map<string, number[]> {
   return free
 }
 
-// Where the first of a function's declarations of a name (ownNamesOf) is,
-// of those before `at`: what a message refusing a later one says.
-function firstOwnBefore(own: readonly OwnName[], at: number): number {
-  return own.reduce((first, e) => (e.at < at && e.at < first ? e.at : first), at)
+// The first of a function's declarations of a name (ownNamesOf), of those
+// before `at`: the one a message refusing a later one names.
+function firstOwnBefore(own: readonly OwnName[], at: number): OwnName | undefined {
+  return own.reduce<OwnName | undefined>((first, e) => (e.at < at && (!first || e.at < first.at) ? e : first), undefined)
 }
 
 // The names a function declares itself, wherever in it, with where (N8):
