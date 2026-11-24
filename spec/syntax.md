@@ -427,14 +427,17 @@ Expected
 
 Enum declarations can have multiple variants, each of which can be a unit variant, a tuple variant, or a struct variant.  Here are some test cases for enum declarations.
 
-A simple enum literal. Bare unit variants don't parse as expressions yet (enums are design-only), so for now this records the error:
+A unit variant is its bare name, which parses as a name (the checker finds what it names):
 
 ```ents Expr
 Red
 ```
 
-```errors
-Expected "("
+```json ast
+{
+  "kind": "IdentExpr",
+  "name": "Red"
+}
 ```
 
 A tuple variant enum literal:
@@ -471,8 +474,54 @@ Enum literals are the bare names for unit variants, and the name with arguments 
 [Red, Green, Dark(Blue), Light(Orange)]
 ```
 
-```errors
-Expected "("
+```json ast
+{
+  "kind": "ArrayExpr",
+  "elements": [
+    {
+      "kind": "IdentExpr",
+      "name": "Red"
+    },
+    {
+      "kind": "IdentExpr",
+      "name": "Green"
+    },
+    {
+      "kind": "CallExpr",
+      "callee": {
+        "kind": "IdentExpr",
+        "name": "Dark"
+      },
+      "args": [
+        {
+          "kind": "Arg",
+          "name": null,
+          "value": {
+            "kind": "IdentExpr",
+            "name": "Blue"
+          }
+        }
+      ]
+    },
+    {
+      "kind": "CallExpr",
+      "callee": {
+        "kind": "IdentExpr",
+        "name": "Light"
+      },
+      "args": [
+        {
+          "kind": "Arg",
+          "name": null,
+          "value": {
+            "kind": "IdentExpr",
+            "name": "Orange"
+          }
+        }
+      ]
+    }
+  ]
+}
 ```
 
 These enum variants can be pattern matched using a match expression.

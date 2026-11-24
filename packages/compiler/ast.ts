@@ -159,6 +159,8 @@ export interface TypeDecl extends BaseNode {
 export interface EnumDecl extends BaseNode {
   kind: 'EnumDecl'
   ident: string
+  // Where its name is written, after `enum`
+  identSpan: Span
   variants: EnumVariant[]
 }
 
@@ -567,18 +569,20 @@ export interface MatchArm extends BaseNode {
   body: FuncBody | Expr
 }
 
+// `span` of a constructor or variant pattern is where its name is written
 export type MatchPattern =
-  | { kind: 'constructor'; type: string; elements: MatchPatternElement[] }
+  | { kind: 'constructor'; type: string; elements: MatchPatternElement[]; span: Span }
   | { kind: 'tuple'; elements: MatchPatternElement[]; quoted?: true }
-  | { kind: 'variant'; type: string }
+  | { kind: 'variant'; type: string; span: Span }
   // `span` is where the name stands: an if let defines it there
   | { kind: 'binding'; name: string; span: Span }
   | { kind: 'literal'; value: LiteralValue }
   | { kind: 'wildcard' }
 
+// `span` of a part by name is where the field's name is written
 export type MatchPatternElement =
-  | { kind: 'named'; field: string; pattern: MatchPattern }
-  | { kind: 'namedShort'; field: string }
+  | { kind: 'named'; field: string; pattern: MatchPattern; span: Span }
+  | { kind: 'namedShort'; field: string; span: Span }
   | { kind: 'positional'; pattern: MatchPattern }
 
 // (expr, expr) or (name: expr, name: expr)

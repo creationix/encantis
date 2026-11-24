@@ -107,7 +107,7 @@ Expected
 
 ## Type arguments
 
-A call argument that could not start an expression is parsed as a type. A bare type name:
+A call argument that could not start an expression is parsed as a type. A bare type name can (it is also how a unit variant is written), so it is a name, which the checker reads as a type where a type is wanted:
 
 ```ents Expr
 first(Pt, ps)
@@ -125,11 +125,8 @@ first(Pt, ps)
       "kind": "Arg",
       "name": null,
       "value": {
-        "kind": "TypeExpr",
-        "type": {
-          "kind": "TypeRef",
-          "name": "Pt"
-        }
+        "kind": "IdentExpr",
+        "name": "Pt"
       }
     },
     {
@@ -1577,22 +1574,16 @@ first(Vec(u32), Pair(A, B)(1, 2))
               "kind": "Arg",
               "name": null,
               "value": {
-                "kind": "TypeExpr",
-                "type": {
-                  "kind": "TypeRef",
-                  "name": "A"
-                }
+                "kind": "IdentExpr",
+                "name": "A"
               }
             },
             {
               "kind": "Arg",
               "name": null,
               "value": {
-                "kind": "TypeExpr",
-                "type": {
-                  "kind": "TypeRef",
-                  "name": "B"
-                }
+                "kind": "IdentExpr",
+                "name": "B"
               }
             }
           ]

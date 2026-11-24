@@ -927,6 +927,8 @@ class CheckContext {
   // constant: the values of a literal are worked out at the end of the
   // function, when its names are no longer in scope.
   readAs = new WeakMap<AST.IdentExpr, Symbol>()
+  // Names that are called, Point(1, 2): a type's name is a value there only
+  private callees = new WeakSet<AST.IdentExpr>()
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
   statementExprs = new Set<AST.Expr>()
@@ -5665,7 +5667,12 @@ class CheckContext {
         return sym.type
 
       case 'type':
-        // Type used as expression (constructor)
+        // A type's name is a value only as the callee of its constructor,
+        // Point(1, 2). Anywhere else a value is wanted it is the type.
+        if (!this.callees.has(expr)) {
+          this.error(expr.span.start, `'${expr.name}' is a type; a type can only be passed for a comptime parameter`)
+          return RECOVERY
+        }
         return sym.type
 
       case 'typefunc':
@@ -5810,6 +5817,7 @@ class CheckContext {
       }
     }
 
+    if (expr.callee.kind === 'IdentExpr') this.callees.add(expr.callee)
     const calleeType = named ? named.type : this.inferExpr(expr.callee)
     if (named) this.exprTypes.set(expr.callee, calleeType)
 
@@ -10680,11 +10688,18 @@ function lengthText(expr: AST.Expr): string {
   }
 }
 
-function typeOfArg(expr: AST.Expr, apply?: ApplyOf): AST.Type | null {
+// A capitalised name is read as a type unless it is a variant (`isVariant`,
+// looked up where the argument is written): a type's, an enum's, a host
+// type's, a type parameter's, or one that names nothing, which is then an
+// unknown type where it is resolved.
+function typeOfArg(expr: AST.Expr, apply?: ApplyOf, isVariant?: (name: string) => boolean): AST.Type | null {
   switch (expr.kind) {
     case 'TypeExpr':
       return expr.type
     case 'IdentExpr':
+      if (/^[A-Z]/.test(expr.name)) {
+        return isVariant?.(expr.name) ? null : { kind: 'TypeRef', name: expr.name, span: expr.span }
+      }
       return PRIMITIVE_NAMES.has(expr.name)
         ? { kind: 'PrimitiveType', name: expr.name as AST.PrimitiveType['name'], span: expr.span }
         : null
@@ -10692,10 +10707,10 @@ function typeOfArg(expr: AST.Expr, apply?: ApplyOf): AST.Type | null {
       if (expr.elements.length === 0) return null
       // (u32) is u32, as a type in parentheses is anywhere.
       const only = expr.elements[0]
-      if (expr.elements.length === 1 && !only.name) return only.value ? typeOfArg(only.value, apply) : null
+      if (expr.elements.length === 1 && !only.name) return only.value ? typeOfArg(only.value, apply, isVariant) : null
       const fields: AST.Field[] = []
       for (const el of expr.elements) {
-        const type = el.value ? typeOfArg(el.value, apply) : null
+        const type = el.value ? typeOfArg(el.value, apply, isVariant) : null
         if (!type) return null
         fields.push({ kind: 'Field', ident: el.name, type, span: el.span })
       }
@@ -10704,11 +10719,13 @@ function typeOfArg(expr: AST.Expr, apply?: ApplyOf): AST.Type | null {
     case 'CallExpr': {
       const applied = apply?.(expr)
       if (applied !== undefined) return applied
-      // Vec(u32): a generic type applied, when every argument is a type
+      // Vec(u32): a generic type applied, when every argument is a type.
+      // A variant's constructor, Solid(Red), is a value.
       if (expr.callee.kind !== 'IdentExpr' || !/^[A-Z]/.test(expr.callee.name) || expr.args.length === 0) return null
+      if (isVariant?.(expr.callee.name)) return null
       const args: AST.Type[] = []
       for (const arg of expr.args) {
-        const type = arg.value && !arg.name ? typeOfArg(arg.value, apply) : null
+        const type = arg.value && !arg.name ? typeOfArg(arg.value, apply, isVariant) : null
         if (!type) return null
         args.push(type)
       }

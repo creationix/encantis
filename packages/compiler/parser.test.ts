@@ -147,6 +147,72 @@ describe('parser', () => {
       const decl = result.module?.decls[0] as EnumDecl
       expect(decl.variants[0].fields).toHaveLength(1)
     })
+
+    test('the name of an enum and of each variant has its place', () => {
+      const source = 'enum Dir { North East }'
+      const decl = parse(source).module?.decls[0] as EnumDecl
+      expect(source.slice(decl.identSpan.start, decl.identSpan.end)).toBe('Dir')
+      expect(decl.variants.map((v) => source.slice(v.span.start, v.span.start + v.name.length))).toEqual(['North', 'East'])
+    })
+
+    test('an enum is declared at module level only, and is not exported', () => {
+      expect(parse('export enum Dir { North }').errors).toHaveLength(1)
+      expect(parse('func f() { enum Dir { North } }').errors).toHaveLength(1)
+      expect(parse('test "t" { enum Dir { North } }').errors).toHaveLength(1)
+      expect(parse('enum Color { Rgb() }').errors).toHaveLength(1)
+    })
+  })
+
+  describe('unit variants as values', () => {
+    const expr = (source: string): Expr => {
+      const result = parse(source, { startRule: 'Expr' })
+      expect(result.errors).toEqual([])
+      return result.module as unknown as Expr
+    }
+
+    test('a bare capitalised name is a name, in every place a value goes', () => {
+      expect(expr('Red')).toMatchObject({ kind: 'IdentExpr', name: 'Red', span: { start: 0, end: 3 } })
+      expect(expr('f(Red, 1)')).toMatchObject({ kind: 'CallExpr', args: [{ value: { kind: 'IdentExpr', name: 'Red' } }, {}] })
+      expect(expr('(Red, Blue)')).toMatchObject({ kind: 'TupleExpr', elements: [{ value: { kind: 'IdentExpr', name: 'Red' } }, { value: { kind: 'IdentExpr', name: 'Blue' } }] })
+      expect(expr('[Red, Grey(7)]')).toMatchObject({ kind: 'ArrayExpr', elements: [{ kind: 'IdentExpr', name: 'Red' }, { kind: 'CallExpr' }] })
+      expect(expr('[Red; 8]')).toMatchObject({ kind: 'RepeatExpr', value: { kind: 'IdentExpr', name: 'Red' } })
+      expect(expr('d == North')).toMatchObject({ kind: 'BinaryExpr', right: { kind: 'IdentExpr', name: 'North' } })
+      expect(expr('match d { North => East, _ => West }')).toMatchObject({
+        kind: 'MatchExpr',
+        arms: [{ body: { kind: 'IdentExpr', name: 'East' } }, { body: { kind: 'IdentExpr', name: 'West' } }],
+      })
+      expect(expr('Solid(Red)')).toMatchObject({ kind: 'CallExpr', callee: { name: 'Solid' }, args: [{ value: { kind: 'IdentExpr', name: 'Red' } }] })
+    })
+
+    test('a constructor is still a call', () => {
+      expect(expr('Rgb(1, 2, 3)')).toMatchObject({ kind: 'CallExpr', callee: { kind: 'IdentExpr', name: 'Rgb' } })
+    })
+
+    test('a unit variant in a let, a return and a global', () => {
+      const result = parse('global g: Dir = North\nfunc f() -> Dir {\n  let d = East\n  return d\n}\nfunc h() -> Dir => West')
+      expect(result.errors).toEqual([])
+    })
+
+    test('a line that starts with ( continues the variant before it, as a call', () => {
+      const result = parse('func f(a: u8) {\n  let c = Red\n  (a)\n}')
+      expect(result.errors).toEqual([])
+      const body = (result.module?.decls[0] as FuncDecl).body
+      expect(body.kind === 'Block' && body.stmts[0]).toMatchObject({ kind: 'LetStmt', value: { kind: 'CallExpr', callee: { name: 'Red' } } })
+    })
+
+    test('a type name is the receiver of a method call', () => {
+      expect(expr('Point.size()')).toMatchObject({ kind: 'CallExpr', callee: { kind: 'MemberExpr', object: { kind: 'IdentExpr', name: 'Point' } } })
+      expect(expr('Red.light()')).toMatchObject({ kind: 'CallExpr', callee: { kind: 'MemberExpr', object: { kind: 'IdentExpr', name: 'Red' } } })
+    })
+
+    test('variant patterns say where their names are written', () => {
+      const source = 'match c { Red => 0, Rgb(r:, g: x, _) => 1, _ => 2 }'
+      const match = expr(source) as unknown as { arms: { patterns: { span?: { start: number; end: number }; elements?: { span?: { start: number; end: number } }[] }[] }[] }
+      const at = (s?: { start: number; end: number }) => (s ? source.slice(s.start, s.end) : null)
+      expect(at(match.arms[0].patterns[0].span)).toBe('Red')
+      expect(at(match.arms[1].patterns[0].span)).toBe('Rgb')
+      expect(match.arms[1].patterns[0].elements?.map((e) => at(e.span))).toEqual(['r', 'g', null])
+    })
   })
 
   describe('match expressions', () => {
@@ -342,7 +408,6 @@ describe('parser', () => {
     }
 
     test('a type that cannot start an expression is a TypeExpr', () => {
-      expect(firstArg('first(Pt, ps)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'TypeRef', name: 'Pt' } })
       expect(firstArg('first([]u8, ps)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'IndexedType' } })
       expect(firstArg('first(*mut Pt, ps)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'PointerType', mutable: true } })
       expect(firstArg('first(?*Pt, ps)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'PointerType', optional: true } })
@@ -351,7 +416,6 @@ describe('parser', () => {
       expect(firstArg('first(u8#16, ps)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'PrimitiveType', max: 16 } })
       expect(firstArg('apply((u32) -> u32, f)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'FuncType' } })
       expect(firstArg('apply(u32 -> u32, f)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'FuncType' } })
-      expect(firstArg('only(Pt)')).toMatchObject({ kind: 'TypeExpr' })
     })
 
     test('a TypeExpr spans the type', () => {
@@ -360,6 +424,10 @@ describe('parser', () => {
 
     test('a type that is also an expression stays one', () => {
       expect(firstArg('max(u32, a, b)')).toMatchObject({ kind: 'IdentExpr', name: 'u32' })
+      // A capitalised name is an expression, as a unit variant (Red) is:
+      // the checker reads a type's name as a type where a type is wanted.
+      expect(firstArg('first(Pt, ps)')).toMatchObject({ kind: 'IdentExpr', name: 'Pt' })
+      expect(firstArg('only(Pt)')).toMatchObject({ kind: 'IdentExpr', name: 'Pt' })
       expect(firstArg('first((i32, i32), ps)')).toMatchObject({ kind: 'TupleExpr' })
       expect(firstArg('f(Point(1, 2), x)')).toMatchObject({ kind: 'CallExpr', callee: { name: 'Point' } })
       expect(firstArg('f([], x)')).toMatchObject({ kind: 'ArrayExpr', elements: [] })
@@ -367,8 +435,12 @@ describe('parser', () => {
       expect(firstArg('f([4, 5], x)')).toMatchObject({ kind: 'ArrayExpr' })
     })
 
-    test('types inside a tuple argument are TypeExprs', () => {
+    test('types inside a tuple argument are TypeExprs where they cannot be expressions', () => {
       expect(firstArg('first((Pt, u32), ps)')).toMatchObject({
+        kind: 'TupleExpr',
+        elements: [{ value: { kind: 'IdentExpr', name: 'Pt' } }, { value: { kind: 'IdentExpr', name: 'u32' } }],
+      })
+      expect(firstArg('first(([]u8, u32), ps)')).toMatchObject({
         kind: 'TupleExpr',
         elements: [{ value: { kind: 'TypeExpr' } }, { value: { kind: 'IdentExpr', name: 'u32' } }],
       })
@@ -420,19 +492,23 @@ describe('parser', () => {
         expect(arg.value.kind).toBe('TypeExpr')
         return arg.value.type?.fields.map(f => f.ident)
       }
-      expect(fields('size((at: Pt, n: u8))')).toEqual(['at', 'n'])
+      expect(fields('size((at: *Pt, n: u8))')).toEqual(['at', 'n'])
       expect(fields('pick((name: []u8, at: Pt), a, b)')).toEqual(['name', 'at'])
       // One that is also an expression stays an expression: the checker
       // reads it as a type where the parameter is one. (p: ?*Node) is the
       // name p given a type, in parentheses.
       const kind = (source: string) => (parse(source, { startRule: 'Expr' }).module as unknown as { args: { value: { kind: string } }[] }).args[0].value.kind
       expect(kind('pick((q: i32, r: i32), a, b)')).toBe('TupleExpr')
+      expect(kind('size((at: Pt, n: u8))')).toBe('TupleExpr')
       expect(kind('pick((*u8, u32), a, b)')).toBe('TupleExpr')
       expect(kind('id((p: ?*Node), v)')).toBe('GroupExpr')
     })
 
-    test('a named argument still takes a value, not a type', () => {
-      expect(parse('f(x: T)', { startRule: 'Expr' }).errors).toHaveLength(1)
+    test('a named argument takes a value: a capitalised name is one', () => {
+      // T is an expression (a unit variant, or a type's name, which the
+      // checker refuses as a value); a type that is no expression is not.
+      expect(parse('f(x: T)', { startRule: 'Expr' }).errors).toHaveLength(0)
+      expect(parse('f(x: []u8)', { startRule: 'Expr' }).errors).toHaveLength(1)
     })
 
     test('a type at the end of a match arm does not swallow the pattern on the next line', () => {

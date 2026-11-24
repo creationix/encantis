@@ -582,6 +582,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return {
       kind: 'EnumDecl',
       ident: ident.sourceString,
+      identSpan: span(ident),
       variants: variants.children.map((v: ohm.Node) => v.toAST()),
       span: span(this),
     } as AST.EnumDecl
@@ -1719,6 +1720,11 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.SizeofExpr
   },
 
+  // Red, a unit variant: a name, as the callee of a constructor is
+  PrimaryExpr_variant(typeName) {
+    return { kind: 'IdentExpr', name: typeName.sourceString, span: span(typeName) } as AST.IdentExpr
+  },
+
   PrimaryExpr_constructor(typeName, _lp, argsOpt, _rp) {
     return {
       kind: 'CallExpr',
@@ -1815,6 +1821,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
       kind: 'constructor',
       type: typeIdent.sourceString,
       elements: elements.toAST(),
+      span: span(typeIdent),
     } as AST.MatchPattern
   },
 
@@ -1829,6 +1836,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return {
       kind: 'variant',
       type: typeIdent.sourceString,
+      span: span(typeIdent),
     } as AST.MatchPattern
   },
 
@@ -1871,6 +1879,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return {
       kind: 'named',
       field: ident.sourceString,
+      span: span(ident),
       pattern: pattern.toAST(),
     } as AST.MatchPatternElement
   },
@@ -1879,6 +1888,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return {
       kind: 'namedShort',
       field: ident.sourceString,
+      span: span(ident),
     } as AST.MatchPatternElement
   },
 
