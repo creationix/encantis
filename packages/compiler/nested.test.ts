@@ -2474,6 +2474,29 @@ test "main" { assert m() == 1 }`
     expect(own.wat).toContain('(func $apply<x@s>')
   })
 
+  // Each name of a match arm is its own declaration: the later clash with
+  // any of them is told what that one could not take
+  test('a later clash is told the place of what each name of a refused match arm could not take', () => {
+    expect(errorsOf(`global a: u32 = 0
+global b: u32 = 0
+global total: u32 = 0
+export func h(x: u32) -> u32 {
+  match x { a, b => { } }
+  if true { func a() -> u32 => 1 }
+  let a: u32 = 1
+  if true { func b() -> u32 => 1 }
+  let b: u32 = 1
+  match x { 1, total => { } }
+  if true { func total() -> u32 => 1 }
+  let total: u32 = 1
+  return 0
+}`).filter((e) => e.includes("in 'h'"))).toEqual([
+      "'a' is already declared in 'h': a nested function's name is its own in the whole function that declares it (first declared at 1:8)",
+      "'b' is already declared in 'h': a nested function's name is its own in the whole function that declares it (first declared at 2:8)",
+      "'total' is already declared in 'h': a nested function's name is its own in the whole function that declares it (first declared at 3:8)",
+    ])
+  })
+
   // The third declaration of a name is told the first place (3.3): where a
   // nested function was refused a global's, def's or data block's name, or
   // a match arm a global's, the place of what had the name

@@ -9135,7 +9135,9 @@ class CheckContext {
     }
     const subject = unwrap(stripMax(subjectType))
     for (const arm of expr.arms) {
-      for (const name of arm.patterns.flatMap(patternNames)) this.bindName(this.currentScope, name, null, arm.span.start, 'match', arm)
+      // Each name is defined where it stands, as ownNamesOf has it: a later
+      // clash is told what that one could not take (see ownFirst)
+      for (const { name, at } of arm.patterns.flatMap((p) => patternBindings(p, arm.span.start))) this.bindName(this.currentScope, name, null, arm.span.start, 'match', arm, at)
       this.declare(arm)
       for (const pattern of arm.patterns) {
         // Only a number, a bool or _ is compared: a tuple pattern would
@@ -13473,14 +13475,16 @@ function hiddenCaptures(args: readonly ComptimeValue[]): CaptureSets {
   return { captures, writes: captures.filter((v) => written.has(v.id)) }
 }
 
-// The names a match pattern binds, wherever they are in it.
-function patternNames(pattern: AST.MatchPattern): string[] {
+// The names a match pattern binds, wherever they are in it, with where each
+// is defined: where the name stands, or for a field written alone, `at`,
+// where its arm starts
+function patternBindings(pattern: AST.MatchPattern, at: number): { name: string; at: number }[] {
   switch (pattern.kind) {
     case 'binding':
-      return [pattern.name]
+      return [{ name: pattern.name, at: pattern.span?.start ?? at }]
     case 'constructor':
     case 'tuple':
-      return pattern.elements.flatMap((e) => (e.kind === 'namedShort' ? [e.field] : patternNames(e.pattern)))
+      return pattern.elements.flatMap((e) => (e.kind === 'namedShort' ? [{ name: e.field, at }] : patternBindings(e.pattern, at)))
     default:
       return []
   }
