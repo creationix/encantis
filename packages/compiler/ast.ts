@@ -221,7 +221,11 @@ export type TestItem =
 // Statements
 // ============================================================================
 
+// A FuncDecl or TypeFuncDecl among a body's statements is a nested function
+// (reference 3.4); the checker refuses the generic forms there.
 export type Statement =
+  | FuncDecl
+  | TypeFuncDecl
   | LetStmt
   | SetStmt
   | WhileStmt
@@ -929,6 +933,15 @@ export function walkFuncBody(body: FuncBody, visitor: ASTVisitor): void {
 
 export function walkStatement(stmt: Statement, visitor: ASTVisitor): void {
   switch (stmt.kind) {
+    // A nested function: its body is walked as part of the body around it.
+    case 'FuncDecl':
+      if (visitor.visitFuncDecl?.(stmt) !== false) {
+        walkFuncBody(stmt.body, visitor)
+      }
+      break
+    case 'TypeFuncDecl':
+      visitor.visitTypeFuncDecl?.(stmt)
+      break
     case 'LetStmt':
       if (visitor.visitLetStmt?.(stmt) !== false) {
         if (stmt.value) walkExpr(stmt.value, visitor)

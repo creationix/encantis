@@ -222,15 +222,27 @@ export function nesting(source: string, limit = Infinity): { deepest: number; ov
  */
 function extractError(
   matchResult: ohm.FailedMatchResult,
-  _source: string,
+  source: string,
   _filePath?: string,
 ): ParseError {
   const pos = matchResult.getRightmostFailurePosition()
-  const expected = matchResult
-    .getExpectedText()
+  const expectedText = matchResult.getExpectedText()
+  const expected = expectedText
     .split('\n')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
+
+  // Function syntax Encantis does not have gets a sentence saying what is
+  // written instead, in place of the list of what was expected.
+  const sentence = unsupportedFunctionSyntax(source, pos, expectedText)
+  if (sentence) {
+    const lines = matchResult.message.split('\n')
+    let last = lines.length - 1
+    while (last >= 0 && !lines[last].startsWith('Expected')) last--
+    if (last >= 0) lines.splice(last, lines.length - last, sentence)
+    else lines.push(sentence)
+    return { message: lines.join('\n'), shortMessage: sentence, span: { start: pos, end: pos + 1 }, expected }
+  }
 
   return {
     message: matchResult.message,
@@ -238,4 +250,48 @@ function extractError(
     span: { start: pos, end: pos + 1 },
     expected,
   }
+}
+
+export const NO_LAMBDAS = 'there are no lambdas: declare a nested function, func name(x: T) -> R => ..., before this statement, and call it or pass its name'
+export const FN_IS_FUNC = 'a function is declared with func: func name(x: T) -> R { ... }'
+export const FUNC_NOT_A_VALUE = 'a function is not a value: declare it as a statement, func name(x: T) -> R => ..., and call it or pass its name'
+export const EXPORT_IN_BODY = 'export is written at module level: a function declared in a body cannot be exported'
+
+// A lambda's parameter list: |x|, |a, b|, |x: u32| (P1 of the reference's
+// list of syntax errors for function syntax)
+const BAR_PARAMS = /^\|\s*[a-z_]\w*(\s*:\s*[^|,\n]+)?(\s*,\s*[a-z_]\w*(\s*:\s*[^|,\n]+)?)*\s*\|/
+// `fn` as the first token of a statement or an item, or after ( or ,
+// followed by a parameter list or a name and one (P4)
+const FN_DECL = /(^|[{;(,])\s*\bfn(\(|\s+[A-Za-z_][\w-]*\()/g
+
+// The sentence for a syntax error at `pos` that is function syntax Encantis
+// does not have, tried in the order P4, P1, P2, P3, P5, P6; null for any
+// other syntax error, which keeps the parser's list. Each rule is on the
+// tokens at or before `pos`, so a program that parses never reaches one.
+function unsupportedFunctionSyntax(source: string, pos: number, expected: string): string | null {
+  const lineStart = source.lastIndexOf('\n', pos - 1) + 1
+  const lineEnd = source.indexOf('\n', pos) < 0 ? source.length : source.indexOf('\n', pos)
+  const line = source.slice(lineStart, lineEnd)
+  // P4: fn twice(x: u32) ..., xs.any(fn(x) { ... }). At module level the
+  // parser fails at the `fn` itself.
+  for (const m of line.matchAll(FN_DECL)) {
+    const fnAt = lineStart + (m.index ?? 0) + m[0].indexOf('fn', m[1].length)
+    if (fnAt <= pos) return FN_IS_FUNC
+  }
+  const here = source.slice(pos)
+  const arrowExpected = expected.includes('"=>"')
+  // P1: |x| x > n, || true
+  if (!arrowExpected && (here.startsWith('||') || BAR_PARAMS.test(here))) return NO_LAMBDAS
+  // P2: (x) => ..., x => ...
+  if (here.startsWith('=>')) {
+    const before = source.slice(0, pos).trimEnd()
+    if (/(\)|[A-Za-z_][\w-]*)$/.test(before) && !/(^|[^\w-])\d[\w-]*$/.test(before)) return NO_LAMBDAS
+  }
+  // P3: the > of -> where a - was read as a minus: (x: u32) -> u32 => ...
+  if (source[pos] === '>' && source[pos - 1] === '-') return NO_LAMBDAS
+  // P5: func where an expression is wanted
+  if (/^func(?![\w-])/.test(here)) return FUNC_NOT_A_VALUE
+  // P6: export inside a body or a test, where a } is expected
+  if (/^export(?![\w-])/.test(here) && expected.includes('"}"')) return EXPORT_IN_BODY
+  return null
 }

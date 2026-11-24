@@ -555,3 +555,125 @@ describe('how deep source may nest', () => {
     expect(nested(`${fn}${'"(((" + '.repeat(300)}a // ${'('.repeat(300)}\n`)).toEqual([])
   })
 })
+
+// Nested functions (reference 3.4): `func` is a statement in any block.
+describe('nested functions', () => {
+  const bodyOf = (source: string): FuncDecl => {
+    const result = parse(source)
+    expect(result.errors).toEqual([])
+    return result.module?.decls[0] as FuncDecl
+  }
+  const stmts = (decl: FuncDecl) => (decl.body.kind === 'Block' ? decl.body.stmts : [])
+
+  test('a func statement in a body is a FuncDecl among its statements', () => {
+    const f = bodyOf(`func f(n: u32) -> u32 {
+  func g(x: u32) -> u32 => x + n
+  inline func h(x: u32) -> u32 { return x }
+  return g(h(n))
+}`)
+    const [g, h] = stmts(f)
+    expect(g.kind).toBe('FuncDecl')
+    expect((g as FuncDecl).ident).toBe('g')
+    expect((g as FuncDecl).body.kind).toBe('ArrowBody')
+    expect(h.kind).toBe('FuncDecl')
+    expect((h as FuncDecl).inline).toBe(true)
+  })
+
+  test('in every kind of block, and in a nested function', () => {
+    const f = bodyOf(`func f(n: u32) -> u32 {
+  if n > 1 { func a() { } } elif n > 0 { func b() { } } else { func c() { } }
+  for i in n { func d() { } }
+  while n > 0 { func e() { } }
+  loop { func k() { } }
+  let v = match n { 0 => { func m() { } } _ => { } }
+  func outer() { func inner() { func deepest() { } } }
+  return 0
+}`)
+    const names: string[] = []
+    const visit = (node: unknown) => {
+      if (Array.isArray(node)) return node.forEach(visit)
+      if (!node || typeof node !== 'object') return
+      const n = node as { kind?: string; ident?: string }
+      if (n.kind === 'FuncDecl' && n.ident !== 'f') names.push(n.ident as string)
+      for (const [k, v] of Object.entries(node)) if (k !== 'span') visit(v)
+    }
+    visit(f)
+    expect(names).toEqual(['a', 'b', 'c', 'd', 'e', 'k', 'm', 'outer', 'inner', 'deepest'])
+  })
+
+  test('the generic forms parse in a body, for the checker to refuse', () => {
+    const f = bodyOf(`func f() {
+  func(x: u32) -> u32 => x + 1
+  func pick(comptime T: type, a: T) -> T => a
+  func Box(comptime T: type) -> type => (v: T)
+}`)
+    expect(stmts(f).map((s) => s.kind)).toEqual(['FuncDecl', 'FuncDecl', 'TypeFuncDecl'])
+    expect((stmts(f)[0] as FuncDecl).ident).toBeNull()
+  })
+
+  test('return on the line before a func is a bare return', () => {
+    const f = bodyOf(`func f() {
+  return
+  func g() { }
+}`)
+    expect(stmts(f).map((s) => s.kind)).toEqual(['ReturnStmt', 'FuncDecl'])
+  })
+
+  test('if (c) => 1 else => 2 still parses', () => {
+    expect(parse(`func f(c: bool) -> u32 => if (c) => 1 else => 2`).errors).toEqual([])
+  })
+})
+
+// What a syntax error says where the source writes a function Encantis does
+// not have (P1 to P6 of the reference's list); every other syntax error keeps
+// the parser's list of what it expected.
+describe('unsupported function syntax', () => {
+  const first = (source: string) => parse(source).errors[0]
+  const lambda = 'there are no lambdas: declare a nested function'
+  const cases: [string, string, string][] = [
+    ['|x| (P1)', `func f(xs: []u32, n: u32) -> u32 => xs.count(|x| x > n)`, lambda],
+    ['|a, b| with types (P1)', `func f(xs: []u32) -> u32 => xs.sort(|a: u32, b: u32| a < b)`, lambda],
+    ['|| (P1)', `func f(xs: []u32) -> bool => xs.any(|| true)`, lambda],
+    ['(x) => (P2)', `func f(xs: []u32, n: u32) -> u32 => xs.count((x) => x > n)`, lambda],
+    ['x => (P2)', `func f(xs: []u32) -> bool => xs.any(x => x > 1)`, lambda],
+    ['(a, b) => (P2)', `func f(xs: []u32) -> u32 => xs.sort((a, b) => a < b)`, lambda],
+    ['(x: u32) -> u32 => (P3)', `func f() -> u32 {\n  let g = (x: u32) -> u32 => x + 1\n  return 0\n}`, lambda],
+    ['fn as a statement (P4)', `func f(n: u32) -> u32 {\n  fn twice(x: u32) -> u32 { x * 2 }\n  return twice(n)\n}`, 'a function is declared with func'],
+    ['fn(x) { } as an argument (P4)', `func f(xs: []u32) -> bool => xs.any(fn(x) { x > 1 })`, 'a function is declared with func'],
+    ['fn at module level (P4)', `fn twice(x: u32) -> u32 { x * 2 }`, 'a function is declared with func'],
+    ['func as an argument (P5)', `func f(xs: []u32, n: u32) -> u32 => xs.count(func(x: u32) -> bool => x > n)`, 'a function is not a value'],
+    ['func after => (P5)', `func f() -> u32 => func g() -> u32 => 1`, 'a function is not a value'],
+    ['export in a body (P6)', `func f(n: u32) -> u32 {\n  export func twice(x: u32) -> u32 => x * 2\n  return twice(n)\n}`, 'export is written at module level'],
+    ['export in a test (P6)', `test "t" {\n  export func g() { }\n}`, 'export is written at module level'],
+  ]
+  for (const [name, source, message] of cases) {
+    test(name, () => {
+      const error = first(source)
+      expect(error?.shortMessage.startsWith(message)).toBe(true)
+      // The place and the source line stay; the list of what was expected goes.
+      expect(error?.message).toContain(message)
+      expect(error?.message).toMatch(/^Line \d+, col \d+:/)
+      expect(error?.message).not.toContain('Expected')
+    })
+  }
+
+  test('the position is where the parser failed', () => {
+    expect(first(`func f(xs: []u32, n: u32) -> u32 => xs.count(|x| x > n)`)?.span.start).toBe(45)
+    expect(first(`func f(xs: []u32, n: u32) -> u32 => xs.count((x) => x > n)`)?.span.start).toBe(49)
+  })
+
+  const kept: [string, string][] = [
+    ['a call of a function named fn on a broken line', `func f() -> u32 => fn(1) + )`],
+    ['the typo a | | b', `func f(a: u32, b: u32) -> u32 => a | | b`],
+    ['a match arm 1 | 2 =>', `func f(a: u32) -> u32 => match a { 1 | 2 => 3 }`],
+    ['a match arm a | b =>', `func f(a: u32, b: u32) -> u32 => match a { a | b => 3 }`],
+    ['export export at module level', `export export func f() {}`],
+    ['a missing parenthesis', `func main( {`],
+  ]
+  for (const [name, source] of kept) {
+    test(`${name} keeps the parser's message`, () => {
+      const error = first(source)
+      expect(error?.message).toContain('Expected')
+    })
+  }
+})
