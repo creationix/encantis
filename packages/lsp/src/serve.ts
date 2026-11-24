@@ -85,6 +85,12 @@ function kindToPrefix(kind: MetaSymbol['kind']): string {
 }
 
 // Format symbol display using proper Encantis syntax
+// A parameter or local that is a refused value has no type to show: what it
+// is and its name (MetaSymbol.refused)
+function refusedDisplay(symbol: MetaSymbol): string {
+  return `${symbol.kind === 'param' ? 'input' : symbol.kind === 'return' ? 'output' : 'let'} ${symbol.name}`;
+}
+
 function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
   switch (symbol.kind) {
     case 'global':
@@ -773,7 +779,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
 
         if (symbol) {
           if (!answersFor(cached, document, symbol)) return null;
-          const display = formatLine(formatSymbolDisplay(shownValue(cached, symbol), typeStr));
+          // A refused value (a name of a refused pattern, a variable given a
+          // refused operator's result) has no type to show: its name alone.
+          const display = symbol.refused ? refusedDisplay(symbol) : formatLine(formatSymbolDisplay(shownValue(cached, symbol), typeStr));
           let value = `\`\`\`encantis\n${display}\n\`\`\``;
           value += hintDetails(hint, meta);
           if (symbol.doc) {

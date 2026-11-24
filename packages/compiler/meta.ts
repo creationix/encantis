@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { partBinding } from './ast'
-import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, refusedBindingAt, type TypeCheckResult } from './checker'
+import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, isRefusedType, type TypeCheckResult } from './checker'
 import { ownName, callOf, memberIn, instancesListed, applicationsListed, genericAround, type GenericInfo } from './instances'
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow, enumText, variantSignature } from './types'
 import { LineMap } from './position'
@@ -118,6 +118,10 @@ export interface MetaSymbol {
   doc?: string
   value?: string // For def constants: the literal value
   inline?: boolean // For functions: whether it's an inline function
+  // A parameter or local that is a refused value (a name of a refused
+  // pattern, a variable given a refused operator's result, one of a type
+  // that did not resolve): it has no type to show
+  refused?: boolean
 }
 
 export interface MetaHint {
@@ -844,6 +848,7 @@ class MetaBuilder {
     if (doc) symbol.doc = doc
     if (value) symbol.value = value
     if (inline) symbol.inline = true
+    if (local && typeof type !== 'string' && isRefusedType(type)) symbol.refused = true
 
     const index = this.symbols.length
     this.symbols.push(symbol)
@@ -1221,9 +1226,10 @@ class MetaBuilder {
       const binding = partBinding(part)
       if (!binding) continue
       const { name, at } = binding
-      // A name of a refused pattern is a refused value: it has no type to show
+      // A name of a refused pattern is a refused value: its symbol has no
+      // type to show (MetaSymbol.refused)
       const type = this.bindingType(at, 'Binding')
-      if (!type || refusedBindingAt(this.checkResult, at)) continue
+      if (!type) continue
       const symbolIndex = this.symbolIndexByDef.get(at) ?? this.addSymbol(name, 'local', type, at)
       this.addHint(at, name.length, this.typeRegistry.register(type), symbolIndex)
     }
@@ -1254,10 +1260,16 @@ class MetaBuilder {
 
     switch (expr.kind) {
       case 'IdentExpr': {
-        // A use of a name of a refused pattern, a refused value, has no type to show
-        const bound = this.checkResult.symbolRefs.get(expr.span.start)
-        if (bound !== undefined && refusedBindingAt(this.checkResult, bound)) break
         const symbolIndex = this.usedSymbol(expr)
+        // A refused value has no type to show: the use of a refused local is
+        // that local (MetaSymbol.refused), a type's name where a value is
+        // wanted (a type argument, a method call's receiver) is the type,
+        // and anything else has no hint.
+        if (isRefusedType(type)) {
+          const symbol = symbolIndex !== undefined ? this.symbols[symbolIndex] : undefined
+          if (symbol) this.addHint(expr.span.start, expr.name.length, symbol.type, symbolIndex)
+          break
+        }
         // Check for builtin functions when no symbol is found
         const effectiveType = type ?? BUILTIN_SIGNATURES[expr.name]
         if (effectiveType) {

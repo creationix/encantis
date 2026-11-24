@@ -1223,9 +1223,25 @@ func f(c: Color) -> u8 => match c {
     expect(checked.errors.map((e) => e.message)).toEqual(['a variant pattern takes its parts all by position or all by name'])
     const bound = source.indexOf('r, b:')
     const used = source.indexOf('=> r') + 3
-    expect([hover(source, p.module!, checked, bound), hover(source, p.module!, checked, used)]).toEqual([null, null])
+    const shown = { name: 'r', type: '', kind: 'local' }
+    expect([hover(source, p.module!, checked, bound), hover(source, p.module!, checked, used)]).toEqual([shown, shown])
+    expect(hoverText(shown)).toBe('local r')
+    // Its uses are its own, a symbol with no type to show
     const meta = buildMeta(p.module!, source, { checkResult: checked })
     const key = (offset: number) => `${source.slice(0, offset).split('\n').length - 1}:${offset - source.lastIndexOf('\n', offset - 1) - 1}`
-    expect([meta.hints[key(bound)], meta.hints[key(used)]]).toEqual([undefined, undefined])
+    const symbols = [meta.hints[key(bound)], meta.hints[key(used)]].map((h) => (h?.symbol !== undefined ? meta.symbols[h.symbol] : undefined))
+    expect(symbols.map((s) => s && { name: s.name, refused: s.refused, def: s.def, refs: s.refs })).toEqual([
+      { name: 'r', refused: true, def: key(bound), refs: [key(used)] },
+      { name: 'r', refused: true, def: key(bound), refs: [key(used)] },
+    ])
+  })
+
+  test('a variable given a refused value is shown with no type', () => {
+    const source = 'type P = (x: u32)\nfunc f(b: bool, s: P, z: Nope) -> u32 {\n  let x = -b\n  let y = s & 1\n  let w = z\n  return 0\n}\n'
+    const p = parse(source)
+    const checked = typecheck(p.module!, { source })
+    for (const [name, at] of [['x', 'x ='], ['y', 'y ='], ['w', 'w ='], ['z', 'z: Nope'], ['z', 'z\n']]) {
+      expect(hover(source, p.module!, checked, source.indexOf(at))).toEqual({ name, type: '', kind: 'local' })
+    }
   })
 })

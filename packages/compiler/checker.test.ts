@@ -4752,3 +4752,61 @@ describe('the names a test declares', () => {
     `)).toEqual([])
   })
 })
+
+// A refused value (a refused operator, a builtin given the wrong kind of
+// operand, a type's name where a value is wanted, a value of a type that did
+// not resolve) is one error: where it is used, nothing more is said, and an
+// error that does not depend on it is still said.
+describe('a refused value says nothing more where it is used', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  test('next to other values: elements, branches, a template', () => {
+    expect(errs('type P = (x: u32, y: u32)\nfunc a(b: bool, s: P, x: f32) -> u32 {\n  let t = [-b, true]\n  let u = [s & 1, s]\n  let v = [~x, true]\n  let w = if b { -b } else { P(1, 2) }\n  let m = `a${-b}b`\n  return 0\n}')).toEqual([
+      "'-' needs a number, not bool",
+      "'&' cannot be applied to P and int(1)",
+      "'~' needs an integer, not f32",
+      "'-' needs a number, not bool",
+      "'-' needs a number, not bool",
+    ])
+  })
+  test('cast, given to a builtin, ranged', () => {
+    expect(errs('type P = (x: u32, y: u32)\ndata buf = mut [0:u8; 8]\nfunc a(b: bool) -> bool => (-b) as bool\nfunc c(b: bool) -> P => (-b) as P\nfunc d(b: bool) { memset(-b, 0, 4) }\nfunc e(b: bool) { memcpy(buf, -b, 4) }\nfunc f(b: bool) -> u32 {\n  let q = (-b)[0..1]\n  return 0\n}')).toEqual(Array(5).fill("'-' needs a number, not bool"))
+  })
+  test('in a constant: data, a global, a def and its uses', () => {
+    expect(errs('type Point = (x: f32, y: f32)\ndata d: *[2]u32 = [-true, 1]\ndata e = [-true, 1:u32]\ndata f = [Point, 1:u32]\nglobal g: u32 = -true\nglobal h: u32 = u32\ndef k: u32 = -true\ndef unit: u32 = Point\ndef n = Point\ndef t = u32\nfunc u() -> u32 => k + unit + 1\nfunc v() -> [n]u8 => [0; n]\nfunc w() -> u32 => t')).toEqual([
+      "'-' needs a number, not bool",
+      "'-' needs a number, not bool",
+      "'Point' is a type; a type can only be passed for a comptime parameter",
+      "'-' needs a number, not bool",
+      "'u32' is a type; a type can only be passed for a comptime parameter",
+      "'-' needs a number, not bool",
+      "'Point' is a type; a type can only be passed for a comptime parameter",
+      "'Point' is a type; a type can only be passed for a comptime parameter",
+      "'u32' is a type; a type can only be passed for a comptime parameter",
+    ])
+  })
+  test('an arithmetic operator refused on a bool or a float; a comparison is a bool', () => {
+    expect(errs('func a(b: bool) -> u32 => b + 1\nfunc c(f: f32) -> u32 => f & 1\nfunc d(b: bool) -> u32 {\n  let x = b << 1\n  return x\n}\nfunc e(b: bool) -> u32 => b < true')).toEqual([
+      "'+' cannot be applied to bool: cast it to an integer first",
+      "'&' needs integer operands, not f32",
+      "'<<' cannot be applied to bool: cast it to an integer first",
+      "'<' cannot be applied to bool: cast it to an integer first",
+      'cannot assign bool to u32',
+    ])
+  })
+  test('the other operand of && and || is checked as ever', () => {
+    expect(errs('func a(b: bool) -> bool => -b && 5\nfunc c(b: bool) -> bool => 7 || -b\nfunc e(z: Nope) -> bool => z && 5')).toEqual([
+      "unknown type 'Nope'",
+      "'-' needs a number, not bool",
+      "operand of '&&' must be bool, not int(5)",
+      "'-' needs a number, not bool",
+      "operand of '||' must be bool, not int(7)",
+      "operand of '&&' must be bool, not int(5)",
+    ])
+  })
+  test('a type pun on a pointer to a type that did not resolve is still the pointer', () => {
+    expect(errs('func f(p: *mut S) {\n  p.u32 = 1\n}')).toEqual([
+      "unknown type 'S'",
+      'cannot assign to .u32: it is the pointer as [*]mut u32, not the u32 it points at — write .u32[0] = value to store one',
+    ])
+  })
+})

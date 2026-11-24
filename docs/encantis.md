@@ -248,7 +248,7 @@ Line 1, col 6
 
 <!-- spec:end -->
 
-The case alone tells the parser whether a word is a type or a name, without looking for a declaration: in `let point = Point(1.0, 2.0)`, `point` is a variable and `Point(…)` builds a `Point`. A capitalised name alone in an expression is a unit variant (`let c = Red`) or, where a type is wanted (an argument for a comptime type parameter, a method call's receiver), a type's name. Anywhere else a type's name is one error, and what it is used for says nothing more (`&Point`, a global's initializer, an element of `data`, a `def`, a range bound): a struct's or another type's name is `'Point' is a type; a type can only be passed for a comptime parameter`, an enum's is `'Color' is an enum: a value of it is one of its variants (Red or Grey)` ([2.9](#29-enum-types-algebraic-data-types)), and a generic type's is `'Vec' is a generic type: write Vec(T)` ([8.5](#85-generic-types)).
+The case alone tells the parser whether a word is a type or a name, without looking for a declaration: in `let point = Point(1.0, 2.0)`, `point` is a variable and `Point(…)` builds a `Point`. A capitalised name alone in an expression is a unit variant (`let c = Red`) or, where a type is wanted (an argument for a comptime type parameter, a method call's receiver), a type's name. Anywhere else a type's name is one error, and what it is used for says nothing more (`&Point`, a global's initializer, an element of `data`, a `def` and each use of it, a range bound): a struct's or another type's name is `'Point' is a type; a type can only be passed for a comptime parameter`, an enum's is `'Color' is an enum: a value of it is one of its variants (Red or Grey)` ([2.9](#29-enum-types-algebraic-data-types)), and a generic type's is `'Vec' is a generic type: write Vec(T)` ([8.5](#85-generic-types)).
 
 <!-- spec:begin compile -->
 
@@ -2506,7 +2506,7 @@ test "a let without a value holds the zero when the function is entered" {
 
 #### Operators, casts and sizeof
 
-`==` and `!=` compare two values of one enum **whose every variant is a unit variant**, by their tags. On an enum with a payload variant, `==` is `'==' cannot be applied to Color and Color: an enum with a payload is compared with match or if let`. No other operator takes an enum, and no builtin does: an enum of unit variants is one `i32` in wasm, and no integer to the checker. Refused as for a struct: arithmetic, bitwise and shift operators (`'+' cannot be applied to Dir and int(1)`), `<` and the other orderings (`'<' cannot be applied to Dir and Dir`), unary operators (`'-' needs a number, not Dir`), compound assignment, builtins (`min requires a numeric type, got Dir`), an index, a loop count (`cannot iterate over Dir: ...`), a condition (`condition must be bool, not Dir`) and a template element, which is the element type of the template's bytes (`` `at ${d}` `` is `cannot assign Dir to u8`). A refused operator or builtin is a refused value: where its result is used, as `d & 1` returned for a `u32`, nothing more is said.
+`==` and `!=` compare two values of one enum **whose every variant is a unit variant**, by their tags. On an enum with a payload variant, `==` is `'==' cannot be applied to Color and Color: an enum with a payload is compared with match or if let`. No other operator takes an enum, and no builtin does: an enum of unit variants is one `i32` in wasm, and no integer to the checker. Refused as for a struct: arithmetic, bitwise and shift operators (`'+' cannot be applied to Dir and int(1)`), `<` and the other orderings (`'<' cannot be applied to Dir and Dir`), unary operators (`'-' needs a number, not Dir`), compound assignment, builtins (`min requires a numeric type, got Dir`), an index, a loop count (`cannot iterate over Dir: ...`), a condition (`condition must be bool, not Dir`) and a template element, which is the element type of the template's bytes (`` `at ${d}` `` is `cannot assign Dir to u8`). A refused arithmetic, bitwise or shift operator, unary `-` or `~`, or builtin is a refused value, on an enum as on any other type: where its result is used, as `d & 1` returned for a `u32`, nothing more is said. A comparison or a logical operator (`<`, `==`, `!`, `&&`) is a `bool` whatever it is given, so what it is used for is checked as a `bool` is: `d < e` returned for a `u32` is also `cannot assign bool to u32`.
 
 No cast takes or gives an enum value, but a cast to its own type: `c as u32` is `cannot cast Color to u32: an enum is no number; match on it`, and `3 as Dir` is `cannot cast int(3) to Dir: an enum value is made by naming its variant`. A pointer to an enum casts as any pointer does ([Explicit Casts](#explicit-casts)): `p as *u8` reads its tag's byte. Such a cast, `memcpy`, `memset` and a host that writes memory are the ways a tag no variant has gets into memory.
 
@@ -2563,6 +2563,19 @@ cannot cast int(3) to Dir: an enum value is made by naming its variant
 '-' needs a number, not Dir
 min requires a numeric type, got Dir
 cannot assign Dir to u8
+```
+
+```ents
+enum Dir { North, East, South, West }
+
+func a(d: Dir) -> u32 => d & 1
+func b(d: Dir, e: Dir) -> u32 => d < e
+```
+
+```errors
+'&' cannot be applied to Dir and int(1)
+'<' cannot be applied to Dir and Dir
+cannot assign bool to u32
 ```
 
 <!-- spec:end -->

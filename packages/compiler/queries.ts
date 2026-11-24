@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, refusedBindingAt } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, refusedBindingAt, isRefusedType } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, type ResolvedField, byteSize, unwrap, isValueArray, enumText, variantSignature } from './types'
 import { typeToWasm } from './codegen'
@@ -81,8 +81,9 @@ export function payloadFieldNamed(module: AST.Module, checkResult: TypeCheckResu
 
 // A hover as one line of text, as the CLI prints it:
 // local x: T — in index_of(T = u32): u32; in index_of(T = f64): f64
+// A refused value has no type to show (type ''): its kind and name alone.
 export function hoverText(r: HoverResult): string {
-  const head = `${r.kind} ${r.name}: ${r.type}${r.value !== undefined ? ` = ${r.value}` : ''}`
+  const head = `${r.kind} ${r.name}${r.type ? `: ${r.type}` : ''}${r.value !== undefined ? ` = ${r.value}` : ''}`
   const parts = [
     ...(r.as !== undefined ? [r.as] : []),
     ...(r.calls !== undefined ? [`calls ${r.calls}`] : []),
@@ -348,9 +349,10 @@ export function hover(
   // is named like).
   const defined = checkResult.symbolRefs.get(start) ?? (checkResult.references.has(start) ? start : undefined)
   if (defined !== undefined && localDefinedAt(checkResult, defined)) {
-    // A name of a refused pattern is a refused value: it has no type to show
-    if (refusedBindingAt(checkResult, defined)) return null
+    // A name of a refused pattern is a refused value, and so is a variable
+    // given one or of a type that did not resolve: it has no type to show
     const type = localType(checkResult, start) ?? localType(checkResult, defined)
+    if (refusedBindingAt(checkResult, defined) || isRefusedType(type)) return { name, type: '', kind: 'local' }
     return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
   }
 

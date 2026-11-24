@@ -223,6 +223,11 @@ const RECOVERY: ResolvedType = primitive('i32')
 // with no type, where it is bound and where it is used.
 export const refusedBindingAt = (check: TypeCheckResult, offset: number): boolean => check.types.get(typeKey(offset, 'Binding')) === RECOVERY
 
+// Whether a type is a refused value's (a name of a refused pattern, a
+// variable given a refused operator's result, a type that did not resolve):
+// the editor has no type to show for it.
+export const isRefusedType = (type: ResolvedType | undefined): boolean => type === RECOVERY
+
 export interface Scope {
   parent: Scope | null
   symbols: Map<string, Symbol>
@@ -1138,6 +1143,12 @@ class CheckContext {
   testDeclared = new Set<Symbol>()
   // Names of generics that a later declaration tried to take
   contested = new Set<string>()
+  // Where a def's value is put in for its name, by the parser
+  // (Module.defUses): the offset of the name, and the def's declaration
+  private defUseAt = new Map<number, number>()
+  // The defs whose value is refused, by where each is declared, with the
+  // length of its name: a use of one is a refused value (refusedDefUse)
+  private refusedDefs = new Map<number, number>()
   // The matches on an enum this check found to handle every variant, or to
   // have a _ arm: no value falls through one (exprTerminates)
   private exhaustive = new WeakSet<AST.MatchExpr>()
@@ -1367,6 +1378,7 @@ class CheckContext {
   }
 
   checkModule(module: AST.Module): void {
+    for (const { decl, at } of module.defUses ?? []) this.defUseAt.set(at, decl)
     // Each capitalised name is declared once in its module: said first.
     this.checkCapitalisedNames(module)
     // Pre-pass: register all type names (to allow forward references)
@@ -2375,8 +2387,11 @@ class CheckContext {
     const sym = value
       ? { kind: 'def' as const, type, value }
       : { kind: 'def' as const, type, value: { kind: 'int' as const, value: 0n } }
-    // A type's name has its error already
-    if (!value && !this.namesType(decl.value)) {
+    // A refused value (a type's name, a refused operator) has its error
+    // already, and each use of the def is a refused value too.
+    const refused = !value && (inferredType === RECOVERY || this.refusedValue(decl.value))
+    if (refused) this.refusedDefs.set(decl.span.start, decl.ident.length)
+    if (!value && !refused) {
       // A variant is no scalar: a def is one number or bool (3.1).
       const variant = unwrap(inferredType).kind === 'enum' ? exprText(decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value) : null
       this.error(decl.span.start, variant !== null
@@ -2501,8 +2516,8 @@ class CheckContext {
   // program fills it in: each value in it has to be known by then.
   private requireConstants(name: string, literal: AST.Expr): void {
     for (const leaf of this.literalLeaves(literal)) {
-      // A type's name has its error already
-      if (this.namesType(leaf)) continue
+      // A refused value (a type's name, a refused operator) has its error
+      if (this.refusedValue(leaf)) continue
       if (!this.evalComptimeExpr(leaf, true)) {
         this.error(leaf.span.start, `data '${name}' is laid out at compile time: its values must be constants`)
       }
@@ -3144,15 +3159,27 @@ class CheckContext {
     this.recordDefinition(name, decl.pattern.span.start)
   }
 
-  // Whether an expression is a type's name where a value is wanted (refused
-  // where it is inferred: 'Point' is a type), which a declaration that wants
-  // a constant says nothing more of
-  private namesType(expr: AST.Expr): boolean {
+  // Whether an expression is a refused value, which a declaration that
+  // wants a constant says nothing more of: one inferred to have its error
+  // already (a type's name where a value is wanted, 'Point' is a type or
+  // 'u32' is a type; a refused operator, -true; a use of a def of one), or a
+  // type's name not inferred yet.
+  private refusedValue(expr: AST.Expr): boolean {
     let e = ungrouped(expr)
     while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+    if (this.exprTypes.get(e) === RECOVERY || this.refusedDefUse(e)) return true
     if (e.kind !== 'IdentExpr' || this.variants.has(e)) return false
     const kind = this.lookup(e.name)?.kind
-    return kind === 'type' || kind === 'typefunc'
+    return kind === 'type' || kind === 'typefunc' || (!kind && PRIMITIVE_NAMES.has(e.name))
+  }
+
+  // Whether an expression is the value of a refused def, put in by the
+  // parser where the def's name is written: a refused value, its error said
+  // at the def (`def unit: u32 = Point`), and nothing said where it is used.
+  private refusedDefUse(expr: AST.Expr): boolean {
+    const at = expr.span.start % INSTANCE_STRIDE
+    const decl = this.defUseAt.get(at)
+    return decl !== undefined && this.refusedDefs.get(decl) === expr.span.end - expr.span.start
   }
 
   // A wasm global starts as a constant, so its initializer has to be one: a
@@ -3166,6 +3193,8 @@ class CheckContext {
     // value inside them (`(sizeof(u32))` for a u64): it is recorded there.
     const inner = groupedExpr(expr)
     if (inner) return this.isConstantInitializer(inner)
+    // A refused value has its error
+    if (this.refusedValue(expr)) return true
     const value = this.evalComptimeExpr(expr, true)
     if (value) {
       this.constants.set(expr, value)
@@ -3196,8 +3225,8 @@ class CheckContext {
           && expr.args.every(a => a.value !== null && this.isConstantInitializer(a.value))
       }
       case 'IdentExpr':
-        // A function's index, or a unit variant; a type's name has its error
-        return this.lookup(expr.name)?.kind === 'func' || this.variants.has(expr) || this.namesType(expr)
+        // A function's index, or a unit variant
+        return this.lookup(expr.name)?.kind === 'func' || this.variants.has(expr)
       case 'ArrayExpr':
       case 'RepeatExpr':
         // An array behind a pointer or a slice lives in the data section,
@@ -3324,6 +3353,8 @@ class CheckContext {
   // A many-pointer is refused where it's written through; memcpy may read from one.
   private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false, written = false): ResolvedType {
     const type = this.inferExpr(expr)
+    // A refused value has its error.
+    if (unresolved(type)) return type
     const u = unwrap(type)
     const arr = pointeeArray(u)
     if (arr) {
@@ -3641,9 +3672,15 @@ class CheckContext {
         // so there is no place behind it to store to. The place is p.u32[0].
         if (stmt.target.kind === 'MemberExpr' && stmt.target.member.kind === 'type') {
           const pun = typeToString(this.resolveType(stmt.target.member.type))
-          const pointer = targetType && unwrap(targetType).kind === 'pointer'
-          this.error(stmt.span.start, pointer
-            ? `cannot assign to .${pun}: it is the pointer as ${typeToString(targetType as ResolvedType)}, not the ${pun} it points at — write .${pun}[0] = value to store one`
+          // A pointer to a type that did not resolve is a pointer all the
+          // same: the pun is it as a many-pointer, as on any other.
+          const object = this.exprTypes.get(stmt.target.object)
+          const of = object && unwrap(object)
+          const shown = targetType && unwrap(targetType).kind === 'pointer' ? typeToString(targetType)
+            : of?.kind === 'pointer' && unresolved(of) ? `[*]${of.mutable ? 'mut ' : ''}${pun}`
+            : null
+          this.error(stmt.span.start, shown
+            ? `cannot assign to .${pun}: it is the pointer as ${shown}, not the ${pun} it points at — write .${pun}[0] = value to store one`
             : `cannot assign to .${pun}: a type pun is not a place a value can be stored to`)
           this.writingTo = null
           this.inferExpr(stmt.value)
@@ -4627,6 +4664,8 @@ class CheckContext {
   // computed exactly, as no type (a u32's `/` and `>>` would take wrapped
   // operands). Null, with the error reported, for anything else.
   private typeNumber(expr: AST.Expr, what: 'array length' | 'range bound'): bigint | null {
+    // The value of a refused def has its error at the def.
+    if (this.refusedDefUse(ungrouped(expr))) return null
     this.collectDefsIn(expr)
     // A typed constant is what it is in any expression: 300:u8 is an error,
     // and ~0:u8 is 255 (see comptimeValue).
@@ -5791,6 +5830,8 @@ class CheckContext {
   private inferExprOf(expr: AST.Expr, typedByContext: boolean): ResolvedType {
     // Inferring afresh: whatever context marked it for widening before is gone.
     this.coercions.delete(expr)
+    // The value of a refused def, where its name is written, has its error at the def.
+    if (this.refusedDefUse(expr)) return RECOVERY
     switch (expr.kind) {
       case 'LiteralExpr':
         return this.inferLiteral(expr, typedByContext)
@@ -7067,6 +7108,11 @@ class CheckContext {
     const leftType = this.inferExpr(expr.left)
     const rightType = this.inferExpr(expr.right)
     if (leftType === RECOVERY || rightType === RECOVERY) {
+      // The other operand of && or || is still a condition of its own.
+      if (expr.op === '&&' || expr.op === '||') {
+        if (leftType !== RECOVERY) this.requireBool(expr.left, leftType, `operand of '${expr.op}'`)
+        if (rightType !== RECOVERY) this.requireBool(expr.right, rightType, `operand of '${expr.op}'`)
+      }
       return ['==', '!=', '<', '>', '<=', '>=', '&&', '||'].includes(expr.op) ? primitive('bool') : RECOVERY
     }
     const op = expr.op
@@ -7100,7 +7146,7 @@ class CheckContext {
     if (lone?.value.kind === 'string') {
       const shown = (operand: AST.Expr, type: ResolvedType) => (string(operand) === lone ? 'a string' : typeToString(type))
       this.error(expr.span.start, `'${op}' cannot be applied to ${shown(expr.left, leftType)} and ${shown(expr.right, rightType)} — ${notACharacter(lone.value.bytes)}`)
-      return comparison ? primitive('bool') : this.concretize(stripMax(lone === string(expr.left) ? rightType : leftType))
+      return comparison ? primitive('bool') : RECOVERY
     }
     // ...and a single-quoted literal is codepoints, never a string: compared
     // with an address it would be taken for one.
@@ -7129,10 +7175,12 @@ class CheckContext {
       return this.errorsReported > before && !comparison ? RECOVERY : fallback
     }
 
+    // An arithmetic, bitwise or shift operator refused on a bool or a float
+    // is a refused value too; a comparison is a bool whatever it compares.
     const problem = operandProblem(op, leftType) ?? operandProblem(op, rightType)
     if (problem) {
       this.error(expr.span.start, problem)
-      return fallback
+      return comparison ? fallback : RECOVERY
     }
 
     // Arithmetic with a comptime constant propagates ranges:
@@ -7391,6 +7439,8 @@ class CheckContext {
   // What is wrong with a cast, if anything. A function's name cast to a
   // number or an address (f as u32) has no value to cast.
   private castProblemOf(operand: AST.Expr, from: ResolvedType, to: ResolvedType): string | null {
+    // A refused value, or a type that did not resolve, has its error.
+    if (unresolved(from) || unresolved(to)) return null
     // A host reference is no number and no address: nothing converts to or
     // from one, and one host type is not another. 0 is an optional one's
     // none, and a plain one widens to its optional.
@@ -8132,6 +8182,8 @@ class CheckContext {
     }
     const start = bound(expr.start)
     const end = bound(expr.end)
+    // A refused value has its error: it has no range to say anything of.
+    if (unresolved(ranged)) return RECOVERY
 
     let elem: ResolvedType
     let mutable: boolean
@@ -8789,12 +8841,12 @@ class CheckContext {
   inferRepeat(expr: AST.RepeatExpr): ResolvedType {
     // [value; count] - repeat value count times
     const valueType = this.inferExpr(expr.value)
-    this.inferExpr(expr.count) // Type check the count expression
+    const countType = this.inferExpr(expr.count) // Type check the count expression
 
-    // Count should be a compile-time integer
+    // Count should be a compile-time integer; a refused one has its error
     const countValue = this.evalComptimeExpr(expr.count)
     if (!countValue || countValue.kind !== 'int') {
-      this.error(expr.count.span.start, 'repeat count must be a compile-time integer')
+      if (countType !== RECOVERY) this.error(expr.count.span.start, 'repeat count must be a compile-time integer')
       return comptimeArray(valueType)
     }
 
@@ -8872,7 +8924,11 @@ class CheckContext {
   // The one type several values, not all of them constants, widen to: the
   // widest of them. `odd` is one that doesn't widen to it, when they have no
   // such type.
-  private commonType(types: ResolvedType[]): { type: ResolvedType; odd?: ResolvedType } {
+  private commonType(all: ResolvedType[]): { type: ResolvedType; odd?: ResolvedType } {
+    // A refused value fits wherever it is used: the others say what the
+    // type is, and it is never the odd one.
+    const types = all.filter((t) => !unresolved(t))
+    if (types.length === 0) return { type: all[0] }
     // Tuples with constants in them agree field by field, as their fields
     // would as values by themselves: (1, 0) and (0, n) are an (i32, i32).
     // A field that is a constant in each takes the default that holds them.
