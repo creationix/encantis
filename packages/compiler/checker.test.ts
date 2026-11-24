@@ -4809,4 +4809,71 @@ describe('a refused value says nothing more where it is used', () => {
       'cannot assign to .u32: it is the pointer as [*]mut u32, not the u32 it points at — write .u32[0] = value to store one',
     ])
   })
+  test('next to constants alone, a refused value is the whole: no type is guessed from them', () => {
+    expect(errs('type Point = (x: i32, y: i32)\nfunc f(a: u32, c: bool) -> u32 {\n  let xs = [-true, 1]\n  let p: u8 = xs[0]\n  let ys = [Point, 1]\n  let q: u8 = ys[0]\n  let x = if c { -true } else { 1 }\n  let r: u8 = x\n  let y = match a {\n    0 => min(true, 1)\n    _ => 1\n  }\n  let s: u8 = y\n  return xs[1] + x + a\n}')).toEqual([
+      "'-' needs a number, not bool",
+      "'Point' is a type; a type can only be passed for a comptime parameter",
+      "'-' needs a number, not bool",
+      'min requires a numeric type, got bool',
+    ])
+  })
+  test('a tuple or an array holding a refused value is never the odd one, and the others still meet', () => {
+    const source = 'func f(a: u32, b: i32, c: bool, d: bool) -> u32 {\n  let t = if c { (-true, 1) } elif d { (a, 2) } else { (b, 3) }\n  let v = if c { (a, 2) } else { (-true, 1) }\n  let xs = [(-true, 1), (a, 2), (b, 3)]\n  let ys = [(Nope, 1), (a, 2), (b, 3)]\n  let zs = [[-true, 1], [a, 2], [b, 3]]\n  let ws = [(x: Nope, y: a), (x: a, y: a), (x: b, y: a)]\n  return 0\n}'
+    const at = (offset: number) => { const before = source.slice(0, offset).split('\n'); return `${before.length}:${before[before.length - 1].length + 1}` }
+    expect(checkModule(source).errors.map((e) => `${at(e.offset)} ${e.message}`)).toEqual([
+      "2:19 '-' needs a number, not bool",
+      '2:56 branches have different types: (i32, int(3)) and (u32, i32): give the value its type, as in let v: T = ..., and each branch is checked against T',
+      "3:35 '-' needs a number, not bool",
+      "4:14 '-' needs a number, not bool",
+      '4:34 cannot assign i32 to u32',
+      "5:14 unknown identifier 'Nope'",
+      '5:33 cannot assign i32 to u32',
+      "6:14 '-' needs a number, not bool",
+      '6:34 cannot assign i32 to u32',
+      "7:17 unknown identifier 'Nope'",
+      '7:48 cannot assign i32 to u32',
+    ])
+  })
+  test('a pointer to a type that did not resolve is checked as a pointer all the same', () => {
+    expect(errs('type Point = (x: i32, y: i32)\nfunc g() -> u32 => 1\nfunc f(p: *[4]Nope, q: [*]Nope, s: []Nope, m: *mut [4]u8, r: *Nope) {\n  memset(p, 0, 4)\n  memzero(p)\n  memcpy(q, m, 4)\n  let a = p[5..9]\n  let b = q[1..]\n  let c = p as Point\n  let d = s as u32\n  let e = g as *Nope\n  let h = p as *u8\n  let i = r[0..2]\n  memset(r, 0, 4)\n}')).toEqual([
+      "unknown type 'Nope'",
+      "unknown type 'Nope'",
+      "unknown type 'Nope'",
+      "unknown type 'Nope'",
+      'memset dest: cannot write through const pointer *[4]i32 — use *mut for mutable access',
+      'memzero dest: cannot write through const pointer *[4]i32 — use *mut for mutable access',
+      'memcpy dest: many-pointer has no bounds — use a sized pointer for safe memory operations',
+      'memcpy dest: cannot write through const pointer [*]i32 — use *mut for mutable access',
+      'range 5..9 is out of bounds for *[4]i32',
+      'a range on a many-pointer needs an end: it has no length',
+      'cannot cast *[4]i32 to Point',
+      'cannot cast []i32 to u32',
+      "unknown type 'Nope'",
+      "cannot cast func() -> u32 to *i32: 'g' is a function, which has no run-time value yet",
+    ])
+  })
+  test('a value read when the program runs is no constant, whether or not its type resolved', () => {
+    expect(errs('global h: Nope = 1\nglobal k: u32 = 2\nglobal g: u32 = h\ndata d = [h, 1]\ndef j = h\nglobal g2: u32 = (-true) + k\nfunc f(n: Nope) -> u32 {\n  let m = -true\n  let a = [0; n]\n  let b = [0; m]\n  return 0\n}')).toEqual([
+      "unknown type 'Nope'",
+      'global initializer must be a compile-time constant',
+      "data 'd' is laid out at compile time: its values must be constants",
+      'def value must be a compile-time constant',
+      "'-' needs a number, not bool",
+      'global initializer must be a compile-time constant',
+      "unknown type 'Nope'",
+      "'-' needs a number, not bool",
+      'repeat count must be a compile-time integer',
+      'repeat count must be a compile-time integer',
+    ])
+  })
+  test('a refused value given for a comptime value parameter says nothing more', () => {
+    expect(errs('type Point = (x: i32, y: i32)\ndef bad = Point\ndef worse = -true\nfunc id(comptime n: u32) -> u32 => n\nfunc Buf(comptime n: u32) -> type => (items: [n]u8)\nfunc f(r: Buf(bad), s: Buf(worse), t: Buf(-true), x: u32) -> u32 {\n  return id(-true) + id(true + 1) + id(bad) + id(worse) + id(x)\n}')).toEqual([
+      "'Point' is a type; a type can only be passed for a comptime parameter",
+      "'-' needs a number, not bool",
+      "'-' needs a number, not bool",
+      "'-' needs a number, not bool",
+      "'+' cannot be applied to bool: cast it to an integer first",
+      "argument 1 of 'id' must be a compile-time constant: n is a comptime value parameter",
+    ])
+  })
 })

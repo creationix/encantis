@@ -220,6 +220,11 @@ type Later = [2]E
       '10:1 def value must be a number or a bool: Red is a value of the enum Color; use a global',
       '11:1 def value must be a number or a bool: Grey(3) is a value of the enum Color; use a global',
     ])
+    // That is its one error: each use of it, typed or not, is a refused value.
+    expect(errors(`${COLOR}def k = Red\ndef j: u32 = Red\nfunc f() -> u32 {\n  let a: Color = k\n  let b: u32 = j\n  return j + 1\n}\n`)).toEqual([
+      '10:1 def value must be a number or a bool: Red is a value of the enum Color; use a global',
+      '11:1 def value must be a number or a bool: Red is a value of the enum Color; use a global',
+    ])
   })
 
   test('the type limit counts an enum, its variants and its fields (E8)', () => {
