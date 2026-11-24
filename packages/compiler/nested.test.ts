@@ -1834,7 +1834,7 @@ test "a test sorts with a comparator that captures" {
     const result = check(source)
     expect(result.errors).toEqual([])
     expect(result.instances.map((i) => [i.name, i.label])).toEqual([
-      ['sort<i32|__test1.closer>', 'sort(T = i32, before = __test1.closer)'],
+      ['sort<i32|__test1.closer>', 'sort(T = i32, before = test "a test sorts with a comparator that captures".closer)'],
       ['sort<i32|__test1.desc>', 'sort(T = i32, before = desc)'],
     ])
     const { failed, ran } = await runTestsOfSource(source)
@@ -2047,6 +2047,28 @@ test "t" {
     }
     expect(hoverText(hover(src, module, result, def)!)).toBe('func seek: func() -> u32 — nested in test "t"; captures k')
     expect(hoverText(hover(src, module, result, src.indexOf('deep()'))!)).toBe('func deep: func() -> u32 — nested in test "t"; captures k')
+  })
+
+  // A test's frame is __test<n> in the output, and named as its source
+  // names it everywhere it is shown: hover and an instance's label
+  test('deeper in a test, hover and labels name the test, not __test<n>', () => {
+    const src = `func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+test "one" {
+  let k: u32 = 1
+  func step(x: u32) -> u32 {
+    let y = x + k
+    func g() -> u32 => y
+    return g()
+  }
+  assert apply(step, 1) == 2
+}`
+    const module = parse(src).module!
+    const result = typecheck(module, { source: src, includeTests: true })
+    expect(result.errors).toEqual([])
+    expect(hoverText(hover(src, module, result, src.indexOf('y\n'))!)).toBe('local y: u32 — captured from test "one".step')
+    expect(hoverText(hover(src, module, result, src.indexOf('g()'))!)).toBe('func g: func() -> u32 — nested in test "one".step; captures y')
+    expect(result.instances.map((i) => [i.name, i.label])).toEqual([['apply<__test1.step>', 'apply(f = test "one".step)']])
+    expect([...result.nested.values()].map((n) => n.path)).toEqual(['__test1.step', '__test1.step.g'])
   })
 
   test('document symbols list it after its function, by its path', () => {

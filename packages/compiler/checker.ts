@@ -255,7 +255,7 @@ export interface NestedFunc extends CaptureSets {
   // Its name in the module's output, the path of the functions around it
   // (count_over.note, over<u32>.big, __test1.see for a test, see testIds)
   path: string
-  // As messages and the editor name it (by_distance.closer)
+  // As messages and the editor name it (by_distance.closer, test "t".see)
   shown: string
   type: FuncRT
   // Captures that reach it through a comptime function parameter of the
@@ -3155,8 +3155,11 @@ class CheckContext {
     // (testIds, emitTestDecl)
     const id = this.testIdOf.get(decl) ?? '__test'
     const isGroup = decl.children.some((item) => item.kind === 'TestDecl')
+    // Messages, hover and an instance's label name what it declares under
+    // the test as its source does, test "t".helper, not by __test<n>
+    const shown = `test "${decl.name ?? ''}"`
     const frame = {
-      kind: 'test' as const, shown: `test "${decl.name ?? ''}"`, path: id, shownPath: id,
+      kind: 'test' as const, shown, path: id, shownPath: shown,
       owner: decl, signature: null, body: decl.children, nested: null, instance: null, inTest: true,
     }
     this.openTests.push(decl)

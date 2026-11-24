@@ -324,7 +324,6 @@ function nestedAround(checkResult: TypeCheckResult, offset: number): NestedFunc 
 // The function a nested function is declared in, as its path names it, or
 // the test, as messages name it (test "t")
 function nestedParent(nested: NestedFunc): string {
-  if (nested.parent.kind === 'TestDecl') return `test "${nested.parent.name ?? ''}"`
   return nested.shown.slice(0, nested.shown.length - nested.name.length - 1)
 }
 
