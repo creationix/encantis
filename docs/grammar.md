@@ -486,7 +486,7 @@ ComptimeType   = "int" "(" intLiteral ")"                -- int
 
 `mut` after `[]`, `[*]` and `*` makes a pointer or slice writable. `mut` after the brackets of a fixed array (`[N]mut T`, `[!]mut T`) parses and means nothing: the compiler drops it, so write `*mut [N]T`. `^T` parses, and the compiler stops on it with an internal error: it is not a type of the language.
 
-**Nesting.** Brackets (`(`, `[`, `{`, and the `${` of a template literal), and prefixes before what they apply to (`-`, `~`, `!`, `&`, `*`, `?`, `^`, `mut`, `[]`, `[*]`, `[N]`), nest at most 256 deep: a prefix counts until its operand, and one before a bracket as long as the bracket is open. Deeper source is the error `nested more than 256 deep` at the first place it goes deeper, and is not parsed.
+**Nesting.** Brackets (`(`, `[`, `{`, and the `${` of a template literal), and prefixes before what they apply to (`-`, `~`, `!`, `&`, `*`, `?`, `^`, `mut`, `[]`, `[*]`, `[N]`), nest at most 128 deep: a prefix counts until its operand, and one before a bracket as long as the bracket is open. Deeper source is the error `nested more than 128 deep` at the first place it goes deeper, and is not parsed.
 
 ### Primitive and Ranged Types
 

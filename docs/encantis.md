@@ -3055,7 +3055,7 @@ A program has these limits. Each is checked when it is compiled, and going over 
 | everything one function holds (parameters, variables, the values its code computes) | 50000 registers | the JS API's limit on a function's locals; it also keeps the body under the 7654321 bytes the API allows |
 | a program's globals | 1000000 registers | the JS API's limit for a module |
 | a program's imports, and the entry module's exports | 100000 each | the same |
-| brackets and prefixes nested in source | 256 deep | the compiler's parser |
+| brackets and prefixes nested in source | 128 deep | the compiler's parser |
 | an array's length, and the size of any type in memory (an array or a struct) | 4294967295 elements, 4294967295 bytes | a 32-bit memory ([2.4](#24-fixed-arrays-value-type)) |
 
 A limit is reached, not passed, at its number: a global `[65535]u8` (65536 parts) and parameters of exactly 1000 registers are accepted. A register is a wasm value: a number, a bool, a pointer or a host reference is one, a slice two, a `u128` two `i64`s, and a struct or an array held by value one for each of its fields and elements. The sections below say how each is counted.
@@ -3169,7 +3169,7 @@ the program exports more than 100000 wasm functions, globals and memories, the m
 
 <!-- spec:end -->
 
-Brackets, and prefixes such as `-`, `*`, `?` and `[]` before what they apply to, nest at most 256 deep: `((((x))))` is four levels, and so is `*[]?*u8`. Deeper source is one error, `nested more than 256 deep`, before it is parsed.
+Brackets, and prefixes such as `-`, `*`, `?` and `[]` before what they apply to, nest at most 128 deep: `((((x))))` is four levels, and so is `*[]?*u8`. Deeper source is one error, `nested more than 128 deep`, before it is parsed.
 
 ### 2.13 Host References
 
