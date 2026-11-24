@@ -1924,11 +1924,13 @@ class CheckContext {
             }
             const sym: Symbol = { kind: 'global', type: exported.type }
             this.importedGlobalSyms.add(sym)
+            this.importedGlobalAt.set(item.item, sym)
             this.moduleScope.symbols.set(item.item.ident, sym)
           } else {
             const type = this.resolveHeld(item.item.type)
             const sym: Symbol = isSource ? { kind: 'global', type } : { kind: 'global', type, fromHost: true }
             this.importedGlobalSyms.add(sym)
+            this.importedGlobalAt.set(item.item, sym)
             this.moduleScope.symbols.set(item.item.ident, sym)
           }
           // Defined at its local name, as an imported function is
@@ -2128,8 +2130,10 @@ class CheckContext {
   // that name: a test's function or import of the name is told it (12.4),
   // as for an imported function's
   private readonly importedGlobals = new Map<string, number>()
-  // The globals the module or a test imports, by their symbols
+  // The globals the module or a test imports, by their symbols, and the
+  // symbol each import of a global declared
   private readonly importedGlobalSyms = new WeakSet<Symbol>()
+  private readonly importedGlobalAt = new WeakMap<AST.ImportGlobal, Symbol>()
   // Where the local names of functions imported again are (declareFunc):
   // places of the first import's name, which are no uses of it
   readonly importedAgain = new Set<number>()
@@ -2278,7 +2282,7 @@ class CheckContext {
   // in the build that ships. Reports that, and says whether it did.
   private sharedByModule(name: string, offset: number): boolean {
     if (!this.shared(name)) return false
-    this.error(offset, `'${name}' is the name of several functions of the module: a function declared in a test cannot take it over`)
+    this.error(offset, `'${declaredName(name)}' is the name of several functions of the module: a function declared in a test cannot take it over`)
     return true
   }
 
@@ -3445,6 +3449,9 @@ class CheckContext {
     // each under the test (reference 12.6), and two would be one name. One
     // the module's names refused already (takenByAnother) takes none.
     const named = new Set<string>()
+    // What took each of those names first, where it is an import: what a
+    // refused second import of the name is told (below)
+    const firstImported = new Map<string, Symbol>()
     const once = (name: string | undefined, offset: number, from: number): void => {
       if (name === undefined || this.errors.slice(from).some((e) => e.offset === offset)) return
       if (named.has(name)) this.error(offset, `'${name}' is already declared in this test`)
@@ -3474,12 +3481,19 @@ class CheckContext {
             const name = imported.item.kind === 'ImportFunc' ? imported.item.ident ?? imported.name : imported.item.kind === 'ImportGlobal' ? imported.item.ident : undefined
             if (name === undefined) continue
             const refusals = this.errors.length
+            const firstOfName = !named.has(name)
             once(name, imported.span.start, from)
+            // What this item declared, which a later item of the group can
+            // have replaced in module scope since: known by where it is
+            const own = imported.item.kind === 'ImportFunc' ? this.funcSyms.get(imported.item) : imported.item.kind === 'ImportGlobal' ? this.importedGlobalAt.get(imported.item) : undefined
+            if (own && !this.declaredAt.has(own)) this.declaredAt.set(own, imported.item.span.start)
+            if (firstOfName && own && named.has(name)) firstImported.set(name, own)
             // Refused as a second of the test's names, it is the name all
-            // the same, as a function is (below)
+            // the same, as a function is (below): the first of the test's,
+            // an earlier item of this import's or a declaration above it
             const key = imported.item.kind === 'ImportFunc' ? callableName(imported) : name
-            const first = known.get(key)
-            const after = this.moduleScope.symbols.get(key)
+            const first = firstImported.get(name) ?? known.get(key)
+            const after = own ?? this.moduleScope.symbols.get(key)
             if (this.errors.length > refusals && first && after && after !== first) this.clashed(after, first, true)
           }
           break
@@ -10774,12 +10788,12 @@ class CheckContext {
     // types this is read off the syntax: a name the generic itself declares
     // (a parameter, a let, a loop variable) is taken to be that one.
     const { names, locals } = namesIn(decl)
-    // The body's own nested functions are names of its own too
+    // The body's own nested functions are names of its own too, whatever
+    // the module or a test declares of the name, above or below
     const nestedNames = new Set(nestedDeclsIn(decl.body).flatMap((nested) => (nested.ident ? [nested.ident] : [])))
     for (const { name, offset, called } of names) {
-      if (locals.has(name)) continue
+      if (locals.has(name) || nestedNames.has(name)) continue
       if (!this.moduleScope.symbols.has(name)) {
-        if (nestedNames.has(name)) continue
         this.namedNothing.push({ at: offset, name })
         continue
       }
@@ -11398,11 +11412,14 @@ class CheckContext {
         best = candidate
       }
     }
-    for (const [candidate, sym] of this.moduleScope.symbols) {
+    for (const [known, sym] of this.moduleScope.symbols) {
       // Not a name that could have been meant: an instance's, the one a
       // function that shares its name is known by, another module's function
-      // an instance calls, or one the code being checked cannot see.
-      if (candidate.includes('<') || candidate.includes(':') || candidate.includes('@') || !this.lookup(candidate) || !meant(sym)) continue
+      // an instance calls, or one the code being checked cannot see. An
+      // import that cannot be called is named as the import writes it, not
+      // by the % the checker knows it by (callableName).
+      if (known.includes('<') || known.includes(':') || known.includes('@') || !this.lookup(known) || !meant(sym)) continue
+      const candidate = known.startsWith('%') ? known.slice(1) : known
       const dist = editDistance(name, candidate)
       if (dist < bestDist) {
         bestDist = dist
@@ -12499,10 +12516,13 @@ export function declaredName(name: string): string {
 }
 
 // A source import's path as one spelling of it, where there is no file to
-// resolve it from: ./lib, lib.ents and ./sub/../lib.ents are one file
+// resolve it from: ./lib, ./lib.ents and ./sub/../lib.ents are one file. It
+// starts with ./, ../ or / as a source import's path does, so that no host
+// module's name ("lib.ents") is one of its spellings (7.1).
 function spelledAlike(module: string): string {
   const normal = posix.normalize(module)
-  return normal.endsWith('.ents') ? normal : `${normal}.ents`
+  const path = normal === '..' || normal.startsWith('../') || normal.startsWith('/') ? normal : `./${normal}`
+  return path.endsWith('.ents') ? path : `${path}.ents`
 }
 
 // Whether a function an import brings in without a local name can be called

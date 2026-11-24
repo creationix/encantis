@@ -3698,3 +3698,131 @@ export "größe \\"w\\"" func m() -> u32 {
     expect(built.wat).toContain('(export "gr\\c3\\b6\\c3\\9fe \\22w\\22" (func $m))')
   })
 })
+
+describe('nested functions: names, imports and the editor (seventh review)', () => {
+  // An import that cannot be called is named in messages as it is written,
+  // not by the % the checker knows it by (7.1, 12.4)
+  test('messages name an import that cannot be called as it is written', () => {
+    expect(errorsOf(`import "env" (
+  "x.y" func(a: i32)
+  "x.y" func(a: i64)
+)
+test "t" {
+  import "env" "x.y" func(a: f32)
+  assert true
+}`)).toEqual([`'x.y' is the name of several functions of the module: a function declared in a test cannot take it over`])
+    const unknown = errorsOf(`import "env" "console.log" func(msg: []u8)
+export func m() {
+  consolelog("hi")
+}
+test "t" {
+  import "env" "a.b" func(x: u32)
+  ab(1)
+}`)
+    expect(unknown).toContain(`unknown identifier 'consolelog' — did you mean 'console.log'?`)
+    expect(unknown).toContain(`unknown identifier 'ab' — did you mean 'a.b'?`)
+  })
+
+  // Host functions of one name with other parameters, imported without a
+  // local name, are called by that name (7.1), here and in an imported module
+  test('functions of one name imported without a local name build and are called', async () => {
+    const calls: number[] = []
+    const env = new Proxy({}, { get: () => (x?: number) => (calls.push(x ?? -1), x === undefined ? 1.5 : x * 10) })
+    const one = await buildPlain({
+      'main.ents': `import "env" (
+  "now" func() -> f64
+  "now" func(x: i32) -> f64
+)
+export func m() -> f64 => now() + now(1:i32)`,
+    }, env as Record<string, unknown>)
+    expect(one.wat).toContain('(import "env" "now" (func $now:i32 (param $x i32) (result f64)))')
+    expect((one.exports as unknown as { m: () => number }).m()).toBe(11.5)
+    const imported = await buildPlain({
+      'lib.ents': `import "env" ("tick" func() -> u32 "tick" func(x: u32) -> u32)
+export func lt() -> u32 => tick() + tick(1)`,
+      'main.ents': `import "./lib" "lt" func lt() -> u32
+export func m2() -> u32 => lt()`,
+    }, { tick: (x?: number) => (x === undefined ? 5 : x * 10) })
+    expect(imported.wat).toContain('(func $lib$tick:u32 (param $x i32) (result i32))')
+    expect(imported.exports?.m2()).toBe(15)
+  })
+
+  // The second of two imports of one name in one test, refused, is told the
+  // first, also where the two are items of one import, whatever held the
+  // name before: the module's function, or another test's (12.4, 3.3)
+  test('a refused second item of an import is told the first item', () => {
+    expect(errorsOf(`func f(x: u32) -> u32 => x
+export func m() -> u32 => f(1)
+test "t" {
+  func f(x: u32) -> u32 => x
+  assert f(1) == 1
+}
+test "u" {
+  import "env" ("a" func f(x: u32) -> u32 "b" func f(x: u32) -> u32)
+  let f: u32 = 1
+  assert true
+}
+test "v" {
+  let y: u32 = 1
+  import "env" ("a" func f(x: u32) -> u32 "b" func f(x: u32) -> u32)
+  func f() -> u32 => y
+  assert true
+}`)).toEqual([
+      `'f' is already declared in this test`,
+      `'f' is already declared in this scope (first declared at 8:26)`,
+      `'f' is already declared in this test`,
+      `'f' is already declared: a function that uses its test's variables cannot reuse the name of an import (first declared at 14:26)`,
+    ])
+    // A global first, with nothing of the name before
+    expect(errorsOf(`test "t" {
+  let y: u32 = 1
+  import "env" ("a" global f: u32 "b" func f(x: u32) -> u32)
+  func f() -> u32 => y
+  assert true
+}`)).toEqual([
+      `'f' is already declared in this test`,
+      `'f' is already declared: a function that uses its test's variables cannot reuse the name of an import (first declared at 3:28)`,
+    ])
+  })
+
+  // Checked without a path (the editor's fallback), a source import is no
+  // host import of the module whose name is its path spelled alike (7.1)
+  test('checked without a path, a source import is not a host module of its file\'s name', () => {
+    expect(errorsOf(`import "lib.ents" "f" func f(x: u32) -> u32
+export func use() -> u32 => f(1)
+test "t" {
+  import "./lib" "f" func f(x: u32) -> u32
+  assert f(1) > 0
+}`)).toEqual([`'f' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 1:28)`])
+    // One file's spellings are still one file
+    expect(errorsOf(`import "./lib" "f" func f(x: u32) -> u32
+export func use() -> u32 => f(1)
+test "t" {
+  import "./sub/../lib.ents" "f" func f(x: u32) -> u32
+  assert f(1) > 0
+}`)).toEqual([])
+  })
+
+  // A nested function of a generic's body is the body's own, also where a
+  // test above the generic declares a function of the name: the editor
+  // finds it at its call (Nested Functions, 12.4)
+  test('a generic\'s nested function named like a test\'s function above it is the generic\'s', () => {
+    const source = `test "declares tf" {
+  func tf() -> u32 => 2
+  assert gen(1 as u32) == 3
+  assert tf() == 2
+}
+func gen(comptime T: type, x: T) -> u32 {
+  func tf() -> u32 => 3
+  return tf()
+}
+export func above() -> u32 => gen(1 as u32)
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    expect(result.errors).toEqual([])
+    const call = source.indexOf('tf()\n}')
+    expect(result.unseen.has(call)).toBe(false)
+    expect(hoverText(hover(source, parsed.module!, result, call)!)).toBe('func tf: func() -> u32 — nested in gen(T = u32)')
+  })
+})

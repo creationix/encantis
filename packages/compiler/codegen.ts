@@ -4569,7 +4569,9 @@ function unnamedImportWat(known: string): string {
 // the import by can be another declaration's key in the module's name map (a
 // nested function's path, console.log).
 function unnamedImportName(item: AST.ImportItem, funcNames: ReadonlyMap<AST.FuncDecl | AST.ImportFunc, string> | undefined, prefix: string): string | undefined {
-  if (item.item.kind !== 'ImportFunc' || item.item.ident) return undefined
+  // One whose name can be called is called by the name the checker knows it
+  // by (now, or now:i32 where functions share the name), as its calls are
+  if (item.item.kind !== 'ImportFunc' || item.item.ident || isCallableName(item.name)) return undefined
   // The checker knows one that cannot be called with a % first (callableName)
   const name = funcNames?.get(item.item) ?? item.name
   const known = name.startsWith('%') ? name.slice(1) : name
