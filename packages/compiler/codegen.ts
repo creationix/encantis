@@ -3949,9 +3949,12 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
 // order is what lets a generic program and the same program written out by
 // hand be the same file. A generic nobody called has no instances, and
 // nothing is emitted for it.
-function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult): AST.FuncDecl[] {
+// `tested`: the modules whose tests are in the build (none by default). An
+// instance given a function of a test of another module is left out.
+function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult, path?: string, tested: ReadonlySet<string> = new Set()): AST.FuncDecl[] {
   const instancesOf = new Map<AST.FuncDecl, AST.FuncDecl[]>()
   for (const inst of checkResult.instances) {
+    if (givenUntestedTest(inst.args, checkResult, path, tested)) continue
     instancesOf.set(inst.of, [...(instancesOf.get(inst.of) ?? []), inst.decl])
   }
   const funcs: AST.FuncDecl[] = []
@@ -3966,6 +3969,21 @@ function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult): A
     funcs.push(...instances.sort((a, b) => ((a.ident as string) < (b.ident as string) ? -1 : 1)))
   }
   return funcs
+}
+
+// Whether an instance is given a function of a test whose tests are not in
+// the build: a function the test declares or imports, or a nested function
+// of it, named under the test, __test<n> (testIds), in the module `path` or,
+// given from another module, in that one (externs). Such an instance is
+// called from that test alone, and neither is there: an imported module's
+// tests are checked with the program's and not built (12.4, 12.5).
+function givenUntestedTest(args: readonly ComptimeValue[], checkResult: TypeCheckResult, path: string | undefined, tested: ReadonlySet<string>): boolean {
+  return args.some((arg) => {
+    if (arg.kind !== 'func') return false
+    const extern = checkResult.externs.get(arg.name)
+    const module = extern?.module ?? path
+    return /^__test\d/.test(extern?.name ?? arg.name) && (module === undefined || !tested.has(module))
+  })
 }
 
 // A generic is never exported to the host: there is no one function to
@@ -4663,7 +4681,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    for (const fn of funcsInOrder(loaded.module.decls, result)) {
+    for (const fn of funcsInOrder(loaded.module.decls, result, path, tested)) {
       if (!fn.ident) continue
       const known = result.funcNames.get(fn) ?? fn.ident
       const watName = modNameMap.get(known) ?? known

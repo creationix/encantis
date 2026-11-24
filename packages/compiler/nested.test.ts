@@ -1930,6 +1930,48 @@ test "t" { assert over_limit([1, 5, 9], 4) == 5 }`,
     expect(failed).toEqual([])
     expect(signatureOf(wat, 'lib$count_seen<u32|over_limit.big@main>.k2')).toBe('(func $lib$count_seen<u32|over_limit.big@main>.k2 (param $x i32) (param $seen i32) (param $limit i32) (result i32 i32)')
   })
+
+  // An imported module's tests are checked with the program and not built
+  // (12.5): an instance one of them gives its function is not emitted.
+  test('across modules: an imported module\'s own tests give their functions, and the importer\'s tests build', async () => {
+    const lib = `export func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x) + f(x)
+export func twice(x: u32) -> u32 => apply(double, x)
+func double(x: u32) -> u32 => x * 2
+test "lib's plain" {
+  func add(x: u32) -> u32 => x + 1
+  assert apply(add, 1) == 4
+}
+test "lib's capturing" {
+  let k: u32 = 1
+  func add(x: u32) -> u32 => x + k
+  assert apply(add, 1) == 4
+}
+test "lib's import" {
+  import "./other.ents" ("g" func tri(x: u32) -> u32)
+  assert apply(tri, 1) == 6
+}`
+    const other = 'export func g(x: u32) -> u32 => x * 3'
+    const main = `import "./lib.ents" (
+  "apply" func apply(comptime f: (u32) -> u32, x: u32) -> u32
+  "twice" func twice(x: u32) -> u32
+)
+func inc(x: u32) -> u32 => x + 1
+test "main's" {
+  let k: u32 = 10
+  func plus(x: u32) -> u32 => x + k
+  assert apply(plus, 1) == 22 && apply(inc, 1) == 4 && twice(3) == 12
+}`
+    const { ran, failed, wat } = await runProgram({ 'main.ents': main, 'lib.ents': lib, 'other.ents': other })
+    expect(ran).toEqual(["main's"])
+    expect(failed).toEqual([])
+    expect(wat).not.toContain('__test1.add')
+    expect(wat).not.toContain('__test2.add')
+    expect(wat).not.toContain('__test3.tri')
+    expect(wat).toContain('(func $lib$apply<__test1.plus@main>')
+    expect(wat).toContain('(func $lib$apply<double>')
+    // Built by itself, the module's own tests pass
+    expect(await runTestsOfSource(lib, { 'other.ents': other })).toEqual({ ran: ["lib's plain", "lib's capturing", "lib's import"], failed: [] })
+  })
 })
 
 describe('nested functions: the editor (N42)', () => {
