@@ -1708,6 +1708,10 @@ class CheckContext {
 
   collectImport(decl: AST.ImportDecl, inTest = false): void {
     const isSource = isSourceImport(decl.module)
+    // The file a source import imports, which one file's two spellings
+    // (./lib, ./lib.ents) name alike: importing one function or global of
+    // it twice is that one again (3.4)
+    const from = isSource && this.filePath ? resolveModulePath(decl.module, this.filePath) : decl.module
     let depExports: Map<string, Symbol> | undefined
     if (isSource && this.filePath && this.moduleExports) {
       const depPath = resolveModulePath(decl.module, this.filePath)
@@ -1723,7 +1727,7 @@ class CheckContext {
         case 'ImportFunc': {
           const name = item.item.ident ?? item.name
           if (this.takenByGeneric(name, item.span.start)) break
-          if (this.takenByAnother(name, item.span.start, 'func', inTest)) break
+          if (this.takenByAnother(name, item.span.start, 'func', inTest, true)) break
           // A test takes no name of an import of the module (12.4). A
           // function of another source module imported again is that one
           // again (3.4); a host function is not, whatever its parameters
@@ -1731,7 +1735,7 @@ class CheckContext {
           // second import of a name with the same parameters is refused
           // too, 7.1). A name several functions of the module share has its
           // own message (sharedByModule).
-          const imported = `${isSource && this.filePath ? resolveModulePath(decl.module, this.filePath) : decl.module}\n${item.name}`
+          const imported = `${from}\n${item.name}`
           const known = inTest && !this.shared(name) ? this.importedFuncs.get(name) : undefined
           if (known && (!isSource || known.key !== imported)) {
             this.error(item.span.start, `'${name}' is already declared: an import in a test cannot reuse the name of an import of the module${this.firstDeclared(known.at)}`)
@@ -1768,11 +1772,11 @@ class CheckContext {
               this.errors.push({ offset: item.span.start, message: `'${item.name}' in '${decl.module}' is not a function` })
               break
             }
-            this.declareFunc(item.item, name, { kind: 'func', type: exported.type, inline: exported.inline }, inTest, `${decl.module}:${item.name}`)
+            this.declareFunc(item.item, name, { kind: 'func', type: exported.type, inline: exported.inline }, inTest, `${from}:${item.name}`)
           } else {
             const sig = this.resolveSignature(item.item.signature)
             const sym: Symbol = isSource ? { kind: 'func', type: sig, inline: false } : { kind: 'func', type: sig, inline: false, host: true }
-            this.declareFunc(item.item, name, sym, inTest, isSource ? `${decl.module}:${item.name}` : undefined)
+            this.declareFunc(item.item, name, sym, inTest, isSource ? `${from}:${item.name}` : undefined)
           }
           break
         }
@@ -1785,10 +1789,11 @@ class CheckContext {
           if (this.takenByGeneric(item.item.ident, item.span.start)) break
           // Importing a global of another module twice is the same global
           // again, as it is for a function (declareFunc).
-          const origin = isSource ? `${decl.module}:${item.name}` : undefined
+          const origin = isSource ? `${from}:${item.name}` : undefined
           if (origin !== undefined && this.globalOrigins.get(item.item.ident) === origin) break
-          if (this.takenByAnother(item.item.ident, item.span.start, 'value', inTest)) break
+          if (this.takenByAnother(item.item.ident, item.span.start, 'value', inTest, true)) break
           if (origin !== undefined && !inTest) this.globalOrigins.set(item.item.ident, origin)
+          if (!inTest && !this.importedGlobals.has(item.item.ident)) this.importedGlobals.set(item.item.ident, item.item.span.start)
           if (isSource && depExports) {
             const exported = depExports.get(item.name)
             if (!exported) {
@@ -1997,13 +2002,24 @@ class CheckContext {
   // import a test declares cannot take the name (12.4), unless it imports
   // the same function of another source module again.
   private readonly importedFuncs = new Map<string, { key: string; at: number }>()
-  private takenByAnother(name: string, offset: number, kind: 'func' | 'value', inTest = false): boolean {
+  // Where the local name of each global the module imports is written, by
+  // that name: a test's function or import of the name is told it (12.4),
+  // as for an imported function's
+  private readonly importedGlobals = new Map<string, number>()
+  // `isImport`: the declaration is an import (in a test, its message says so)
+  private takenByAnother(name: string, offset: number, kind: 'func' | 'value', inTest = false, isImport = false): boolean {
     const first = this.topLevel.get(name)
     if (first === undefined) {
       if (!inTest) this.topLevel.set(name, kind)
       return false
     }
     if (first === 'func' && kind === 'func') return false
+    const global = inTest ? this.importedGlobals.get(name) : undefined
+    if (global !== undefined) {
+      const what = isImport ? 'an import in a test cannot reuse the name of an import of the module' : 'a function declared in a test cannot reuse the name of an import'
+      this.error(offset, `'${name}' is already declared: ${what}${this.firstDeclared(global)}`)
+      return true
+    }
     this.error(offset, `'${name}' is already declared`)
     return true
   }
@@ -3374,7 +3390,12 @@ class CheckContext {
                 this.testFuncNames.set(after, { name: `${id}.${item.ident}`, shown: `${shown}.${item.ident}` })
               }
             }
+            const twice = !!item.ident && named.has(item.ident)
             once(item.ident ?? undefined, item.span.start, from)
+            // Refused as a second of the test's names, it is the name all
+            // the same, so that its calls say nothing more, and a later
+            // clash with the name is told the first (see firstOf)
+            if (twice && before && after && after !== before) this.clashed(after, before, true)
           }
           this.checkFuncBody(item, null, `${id}.${item.ident ?? 'anon'}`)
           break
@@ -10834,12 +10855,17 @@ class CheckContext {
   // Where a nested function of the function being checked, of this name, is
   // declared before `at`: then a variable declared at `at` cannot have the
   // name (N8). What is given is the name's first declaration in the function.
+  // One refused its name leaves the name with what had it, as if it were not
+  // there: a later declaration is told what it would be told without it.
   private nestedNamedBefore(name: string, at: number): OwnName | undefined {
     const frame = this.frame
     if (!frame) return undefined
     const own = this.ownNames(frame).get(name) ?? []
-    return own.some((e) => e.func !== null && e.at < at) ? firstOwnBefore(own, at) : undefined
+    return own.some((e) => e.func !== null && e.at < at && !this.refusedNested.has(e.func)) ? firstOwnBefore(own, at) : undefined
   }
+
+  // The nested functions refused their names (see declareNested)
+  private readonly refusedNested = new WeakSet<AST.FuncDecl>()
 
   // `first`: the name's first declaration in the function, whose place the
   // message says (see ownFirst)
@@ -10870,7 +10896,8 @@ class CheckContext {
     if (sym.kind === 'global' && sym.fromHost) return 'an import'
     const taken = takenName(sym)
     if (taken) return taken
-    if (sym.kind === 'func') return sym.host || this.origins.has(name) ? 'an import' : 'a function of the module'
+    // A test's import from another module is an import too (testOrigins)
+    if (sym.kind === 'func') return sym.host || this.origins.has(name) || this.testOrigins.has(sym) ? 'an import' : 'a function of the module'
     if (sym.kind === 'generic') return 'a generic function'
     return null
   }
@@ -10991,6 +11018,7 @@ class CheckContext {
     const kind = existing ? this.declarationKind(this.firstOf(existing), name) : null
     const own = (this.ownNames(frame).get(name) ?? []).filter((e) => e.func !== decl)
     const ownFirst = kind && existing ? undefined : firstOwnBefore(own, nameAt)
+    if ((kind && existing) || ownFirst) this.refusedNested.add(decl)
     if (kind && existing) {
       this.error(nameAt, `'${name}' is already declared: ${what} cannot reuse the name of ${kind}${this.declaredFirst(name, existing)}`)
     } else if (ownFirst) {
@@ -13353,7 +13381,7 @@ function ownNamesOf(
     if (p.kind === 'binding') add(p.name, p.span?.start ?? at, block)
     else if (p.kind === 'constructor' || p.kind === 'tuple') {
       for (const e of p.elements) {
-        if (e.kind === 'namedShort') add(e.field, at, block)
+        if (e.kind === 'namedShort') add(e.field, e.span?.start ?? at, block)
         else matched(e.pattern, at, block)
       }
     }
@@ -13484,15 +13512,15 @@ function hiddenCaptures(args: readonly ComptimeValue[]): CaptureSets {
 }
 
 // The names a match pattern binds, wherever they are in it, with where each
-// is defined: where the name stands, or for a field written alone, `at`,
-// where its arm starts
+// is defined: where the name stands, a field written alone's too (`at`, where
+// its arm starts, for a pattern made without places)
 function patternBindings(pattern: AST.MatchPattern, at: number): { name: string; at: number }[] {
   switch (pattern.kind) {
     case 'binding':
       return [{ name: pattern.name, at: pattern.span?.start ?? at }]
     case 'constructor':
     case 'tuple':
-      return pattern.elements.flatMap((e) => (e.kind === 'namedShort' ? [{ name: e.field, at }] : patternBindings(e.pattern, at)))
+      return pattern.elements.flatMap((e) => (e.kind === 'namedShort' ? [{ name: e.field, at: e.span?.start ?? at }] : patternBindings(e.pattern, at)))
     default:
       return []
   }

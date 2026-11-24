@@ -4946,6 +4946,29 @@ func g() -> u32 {
 
 <!-- spec:end -->
 
+A nested function refused its name leaves the name with what had it, as if it were not there: a later declaration of the name in its function is told what it is told without it, with the place of the name's first declaration.
+
+<!-- spec:begin compile -->
+
+```ents
+global total: u32 = 0
+
+func h() -> u32 {
+  if true { func total() -> u32 => 1 }
+  for total in 2 { }
+  let total: u32 = 1
+  return total
+}
+```
+
+```errors
+'total' is already declared: a nested function cannot reuse the name of a global (first declared at 1:8)
+'total' is already declared: a loop variable cannot reuse the name of a global (first declared at 1:8)
+'total' is already declared in this scope (first declared at 1:8)
+```
+
+<!-- spec:end -->
+
 Its own parameters, named results and variables take no name of a variable it could use (below), nor of a nested function seen where it is declared, so in its body every name means one thing. They can have the name of a global, a function, an import or a `data` block of the module, which they hide there, as a module function's parameters can. As with a module function's, no parameter or named result of it has a def's name ([3.4](#34-functions)): a `def` of the module, or one its test declares before it, also for a function at the top of a test that uses the test's variables. A name the function around it declares after the nested function is not seen at the nested function, so its own variables may have that name.
 
 <!-- spec:begin compile -->
@@ -11321,7 +11344,7 @@ test "a test sorts with a comparator that captures" {
 <!-- spec:end -->
 
 
-A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)). The error for an import's name ends with where the import's local name is, as [3.3](#33-variables) says. The one exception is a function of another source module imported again under the name the module imports it by, which is that one again ([3.4](#34-functions)). The same host function imported again under the name is refused, whatever its parameters: the functions of a test share no name, and at module level a second import of one name with the same parameter types is refused too ([7.1](#71-imports)). Nor do two functions or imports of one test share a name, whatever their parameters: the functions of a test do not share a name as the module's do. A test nested in it can declare its own of the name, and so can another test.
+A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)). The error for an import's name ends with where the import's local name is, as [3.3](#33-variables) says. The one exception is a function or a global of another source module imported again under the name the module imports it by, which is that one again ([3.4](#34-functions)), also where the two imports spell the file's path differently (`./lib`, `./lib.ents`). The same host function imported again under the name is refused, whatever its parameters: the functions of a test share no name, and at module level a second import of one name with the same parameter types is refused too ([7.1](#71-imports)). Nor do two functions or imports of one test share a name, whatever their parameters: the functions of a test do not share a name as the module's do. A test nested in it can declare its own of the name, and so can another test.
 
 <!-- spec:begin compile -->
 

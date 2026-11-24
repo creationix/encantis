@@ -1880,6 +1880,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return {
       kind: 'namedShort',
       field: ident.sourceString,
+      span: span(ident),
     } as AST.MatchPatternElement
   },
 

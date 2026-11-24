@@ -183,7 +183,9 @@ export func f(n: u32) -> u32 {
         "'v' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 11:19)",
         "'v' is already declared: a nested function cannot reuse the name of a variable in scope (first declared at 11:19)",
         "'helper' is already declared: a nested function cannot reuse the name of a function of the module (first declared at 2:6)",
-        "'helper' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 2:6)",
+        // The nested function refused the name leaves it with the module's
+        // function: the let is told what it is told without it
+        "'helper' is already declared in this scope (first declared at 2:6)",
       ])
     })
 
@@ -2516,7 +2518,8 @@ test "an instance only this test asks for comes after" {
   })
 
   // Each name of a match arm is its own declaration: the later clash with
-  // any of them is told what that one could not take
+  // any of them is told what that one could not take. The nested function
+  // refused each name leaves it with the global, as if it were not there.
   test('a later clash is told the place of what each name of a refused match arm could not take', () => {
     expect(errorsOf(`global a: u32 = 0
 global b: u32 = 0
@@ -2531,10 +2534,10 @@ export func h(x: u32) -> u32 {
   if true { func total() -> u32 => 1 }
   let total: u32 = 1
   return 0
-}`).filter((e) => e.includes("in 'h'"))).toEqual([
-      "'a' is already declared in 'h': a nested function's name is its own in the whole function that declares it (first declared at 1:8)",
-      "'b' is already declared in 'h': a nested function's name is its own in the whole function that declares it (first declared at 2:8)",
-      "'total' is already declared in 'h': a nested function's name is its own in the whole function that declares it (first declared at 3:8)",
+}`).filter((e) => e.includes('in this scope'))).toEqual([
+      "'a' is already declared in this scope (first declared at 1:8)",
+      "'b' is already declared in this scope (first declared at 2:8)",
+      "'total' is already declared in this scope (first declared at 3:8)",
     ])
   })
 
@@ -2571,18 +2574,20 @@ test "t" {
   let d: u32 = 2
   assert z == 1
 }`)).toEqual([
+      // A refused nested function leaves the name with what had it: what is
+      // declared after it is told what it is told without it
       "'total' is already declared: a nested function cannot reuse the name of a global (first declared at 1:8)",
-      "'total' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 1:8)",
-      "'total' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 1:8)",
+      "'total' is already declared in this scope (first declared at 1:8)",
+      "'total' is already declared: a loop variable cannot reuse the name of a global (first declared at 1:8)",
       "'k' is already declared: a nested function cannot reuse the name of a def (first declared at 2:5)",
-      "'k' is already declared in 'g': a nested function's name is its own in the whole function that declares it (first declared at 2:5)",
+      "'k' is already declared in this scope (first declared at 2:5)",
       "'total' is already declared: a match binding cannot reuse the name of a global (first declared at 1:8)",
       "'total' is already declared: a nested function cannot reuse the name of a global (first declared at 1:8)",
-      "'total' is already declared in 'h': a nested function's name is its own in the whole function that declares it (first declared at 1:8)",
+      "'total' is already declared in this scope (first declared at 1:8)",
       "'bytes' is already declared: a nested function cannot reuse the name of a data block (first declared at 3:6)",
-      "'bytes' is already declared in 'h': a nested function's name is its own in the whole function that declares it (first declared at 3:6)",
+      "'bytes' is already declared: a match binding cannot reuse the name of a data block (first declared at 3:6)",
       "'d' is already declared: a nested function cannot reuse the name of a def (first declared at 24:7)",
-      "'d' is already declared in test \"t\": a nested function's name is its own in the whole function that declares it (first declared at 24:7)",
+      "'d' is already declared in this scope (first declared at 24:7)",
     ])
   })
 
@@ -2610,8 +2615,8 @@ func b(x: u32) -> u32 {
       "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 1:5)",
       "'k' is already declared: a named result cannot reuse the name of a def (first declared at 1:5)",
       "'k' is already declared: a nested function cannot reuse the name of a def (first declared at 1:5)",
-      "'k' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 1:5)",
-      "'k' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 1:5)",
+      "'k' is already declared: a loop variable cannot reuse the name of a def (first declared at 1:5)",
+      "'k' is already declared in this scope (first declared at 1:5)",
       "'k' is already declared: a loop variable cannot reuse the name of a def (first declared at 1:5)",
       "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 1:5)",
       "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 1:5)",
@@ -2893,12 +2898,12 @@ test "another" {
   // that one again (3.4), in a test too
   test('a test imports the module\'s function of another source module again', async () => {
     const { ran, failed } = await runProgram({
-      'slib.ents': 'export func g() -> u32 => 3',
-      'main.ents': `import "./slib.ents" ("g" func g() -> u32)
+      'slib.ents': 'export func g() -> u32 => 3\nexport global gl: u32 = 7',
+      'main.ents': `import "./slib.ents" ("g" func g() -> u32 "gl" global sg: u32)
 export func m() -> u32 => g()
 test "again" {
-  import "./slib.ents" ("g" func g() -> u32)
-  assert g() == 3 && m() == 3
+  import "./slib.ents" ("g" func g() -> u32 "gl" global sg: u32)
+  assert g() == 3 && m() == 3 && sg == 7
 }`,
     })
     expect({ ran, failed }).toEqual({ ran: ['again'], failed: [] })
@@ -3064,5 +3069,111 @@ test "two" {
   assert helper() + console() == 5
 }`,
     })).toMatchObject({ ran: ['one', 'two'], failed: [] })
+  })
+
+  // One file imported by two spellings of its path is the one file: its
+  // function imported again under its name is that one again (3.4)
+  test('a module imports one function by two spellings of the file\'s path', async () => {
+    const { exports } = await buildPlain({
+      'lib.ents': 'export func dbl(x: u32) -> u32 => x * 2',
+      'main.ents': `import "./lib" "dbl" func dbl(x: u32) -> u32
+import "./lib.ents" "dbl" func dbl(x: u32) -> u32
+export func m() -> u32 => dbl(1)`,
+    })
+    expect(exports?.m()).toBe(2)
+  })
+
+  // A test's function or import that takes the name of a global the module
+  // imports is told where the import's local name is (12.4, 3.3), as for an
+  // imported function
+  test('a test\'s function or import named like an imported global is told the import\'s place', async () => {
+    expect(errorsOf(`import "env" "g" global hg: u32
+test "t" {
+  func hg() -> u32 => 1
+  import "env" "g2" global hg: u32
+  assert 1 == 1
+}`)).toEqual([
+      "'hg' is already declared: a function declared in a test cannot reuse the name of an import (first declared at 1:25)",
+      "'hg' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 1:25)",
+    ])
+  })
+
+  // A field written alone in a match pattern binds its name where it stands
+  test('a field written alone in a match pattern is defined where its name is', () => {
+    expect(errorsOf(`export func f(x: u32) -> u32 {
+  match x {
+    0 => { }
+    Pt(_, k:) => { }
+    _ => { }
+  }
+  if true { func k() -> u32 => 1 }
+  return 0
+}`)).toEqual(["'k' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 4:11)"])
+  })
+
+  // A refused nested function leaves the name with what had it: a later
+  // declaration is told the place of the name's first declaration, with the
+  // message of that one's kind, also after a match binding of the name
+  test('a let after a refused nested function is told what it is told without it', () => {
+    expect(errorsOf(`func tf() -> u32 => 1
+global gl: u32 = 0
+export func f(x: u32) -> u32 {
+  match x {
+    0 => { }
+    tf => { }
+    _ => { }
+  }
+  if true { func tf() -> u32 => 2 }
+  let tf: u32 = 1
+  return 0
+}
+export func k(x: u32) -> u32 {
+  if true { func gl() -> u32 => 2 }
+  for gl in 2 { }
+  let gl: u32 = 1
+  return 0
+}`)).toEqual([
+      "'tf' is already declared: a nested function cannot reuse the name of a function of the module (first declared at 1:6)",
+      "'tf' is already declared in this scope (first declared at 1:6)",
+      "'gl' is already declared: a nested function cannot reuse the name of a global (first declared at 2:8)",
+      "'gl' is already declared: a loop variable cannot reuse the name of a global (first declared at 2:8)",
+      "'gl' is already declared in this scope (first declared at 2:8)",
+    ])
+  })
+
+  // A test's import from another module is an import, and a group's function
+  // refused the name of its import leaves the name with the import
+  test('a capturing function named like its group\'s import is told the import', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-nested-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), 'export func dbl(x: u32) -> u32 => x * 2')
+      const source = `test "grp" {
+  import "./lib.ents" "dbl" func dbl(x: u32) -> u32
+  func dbl(x: u32) -> u32 => x
+  test "inner" {
+    let v: u32 = 1
+    func dbl(x: u32) -> u32 => x + v
+    assert v == 1
+  }
+}
+test "grp2" {
+  import "./lib.ents" "dbl" func dbl(x: u32) -> u32
+  test "inner" {
+    let v: u32 = 1
+    func dbl(x: u32) -> u32 => x + v
+    assert v == 1
+  }
+}`
+      const path = join(dir, 'main.ents')
+      await writeFile(path, source)
+      const load = await loadModule(path, { includeTests: true })
+      expect(typecheckProgram(load.modules, path, { includeTests: true }).errors.map((e) => e.message)).toEqual([
+        "'dbl' is already declared in this test",
+        "'dbl' is already declared: a function that uses its test's variables cannot reuse the name of an import (first declared at 2:34)",
+        "'dbl' is already declared: a function that uses its test's variables cannot reuse the name of an import (first declared at 11:34)",
+      ])
+    } finally {
+      await rm(dir, { recursive: true })
+    }
   })
 })

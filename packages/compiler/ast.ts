@@ -584,7 +584,8 @@ export type MatchPattern =
 
 export type MatchPatternElement =
   | { kind: 'named'; field: string; pattern: MatchPattern }
-  | { kind: 'namedShort'; field: string }
+  // `span` is where the field's name stands, which it binds
+  | { kind: 'namedShort'; field: string; span: Span }
   | { kind: 'positional'; pattern: MatchPattern }
 
 // (expr, expr) or (name: expr, name: expr)
