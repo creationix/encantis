@@ -1080,7 +1080,7 @@ func bf(x: u64) -> u64 => x
 export func m() -> u32 => gapply(u32, modf, 2) + gapply(u64, bf, 3) as u32
 `
     const shown = hoverIn(typed)(typed.indexOf('gh(y'))
-    expect(shown).toContain('func gh(y:T) -> T')
+    expect(shown).toContain('func gh(y:u32) -> u32')
     expect(shown).toContain('- in `gapply(T = u32, f = modf)`: func(y: u32) -> u32, captures v')
     expect(shown).toContain('- in `gapply(T = u64, f = bf)`: func(y: u64) -> u64, captures v')
   })

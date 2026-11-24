@@ -602,10 +602,7 @@ class MetaBuilder {
     const nested = this.checkResult.nested.get(this.checked(decl))
     if (!nested || !decl.ident) return
     const offset = this.findFuncIdentOffset(decl)
-    // In a generic's body, with the signature the generic writes: what it is
-    // in each instance, hover lists
-    const type = this.copies ? this.writtenSignature(decl.signature) : nested.type
-    const index = this.addSymbol(decl.ident, 'func', type, offset, undefined, decl.inline, nested.path, offset)
+    const index = this.addSymbol(decl.ident, 'func', nested.type, offset, undefined, decl.inline, nested.path, offset)
     this.collectFuncBody(decl, index)
   }
 
