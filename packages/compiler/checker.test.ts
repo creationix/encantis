@@ -3937,6 +3937,19 @@ describe('a program declares its memory once', () => {
     ], '/p/main.ents')).toEqual([])
   })
 
+  test('two modules with one file name are told apart by their paths', () => {
+    expect(programOf([
+      ['/p/x/lib.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
+      ['/p/y/lib.ents', '\nmemory 1\nexport func two() -> u32 => 2\n'],
+      ['/p/main.ents', 'import "./x/lib" ("one" func one() -> u32)\nimport "./y/lib" ("two" func two() -> u32)\nexport func three() -> u32 => one() + two()\n'],
+    ], '/p/main.ents')).toEqual([`lib.ents: ${twice} (first declared at x/lib.ents:1:1)`])
+    // One beside the entry's directory, and one of the entry's name
+    expect(programOf([
+      ['/p/main.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
+      ['/q/main.ents', 'import "../p/main" ("one" func one() -> u32)\nmemory 1\nexport func two() -> u32 => one()\n'],
+    ], '/q/main.ents')).toEqual([`main.ents: ${twice} (first declared at ../p/main.ents:1:1)`])
+  })
+
   test('a module only a test imports counts where the tests are built', () => {
     const files: [string, string][] = [
       ['/p/lib.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
@@ -4402,6 +4415,17 @@ describe('a name declared again says where the first declaration is', () => {
       "'x' is already declared in this scope (first declared at 1:26), in f(T = i32)",
       "'n' is already declared: a loop variable cannot reuse the name of a comptime value parameter (first declared at 5:17), in g(n = 4)",
     ])
+  })
+
+  test('told in another module of a file name another module has too, the place names its path', () => {
+    const [lib, other, main] = [resolve('/p/x/lib.ents'), resolve('/p/y/lib.ents'), resolve('/p/main.ents')]
+    const modules = new Map([
+      [lib, 'export func each(comptime T: type, xs: []T) -> u32 {\n  let t: u32 = 0\n  for x in xs {\n    let t: u32 = 1\n  }\n  return t\n}\n'],
+      [other, 'export func two() -> u32 => 2\n'],
+      [main, 'import "./x/lib" "each" func each(comptime T: type, xs: []T) -> u32\nimport "./y/lib" "two" func two() -> u32\nexport func f(xs: []u8) -> u32 => each(xs) + two()\n'],
+    ].map(([path, src]) => [path, { module: parse(src).module!, source: src }]))
+    expect(typecheckProgram(modules, main).results.get(main)!.errors.map((e) => e.message))
+      .toEqual(["each(T = u8) cannot be instantiated: 't' is already declared in this scope (first declared at x/lib.ents:2:7) (x/lib.ents:4:9)"])
   })
 
   test('told in another module, the place names its file', () => {

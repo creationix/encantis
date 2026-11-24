@@ -635,6 +635,16 @@ export function typecheckProgram(
     for (const { ctx } of checked) settled.set(ctx, ctx.instances.length)
   }
 
+  // How messages name each module: by its file's name, or, where another
+  // module of the program has a file of that name, by its path from the
+  // entry's directory (x/lib.ents).
+  const fileNames = new Map<string, string>()
+  const entryDir = entryPath.replace(/[\\/][^\\/]*$/, '')
+  for (const path of modules.keys()) {
+    const twins = [...modules.keys()].filter((other) => fileName(other) === fileName(path)).length
+    fileNames.set(path, twins > 1 ? pathFrom(entryDir, path) : fileName(path))
+  }
+
   function visit(path: string) {
     if (visited.has(path)) return
     visited.add(path)
@@ -656,6 +666,7 @@ export function typecheckProgram(
     // Each module's own text, which messages quote (see textOf)
     const ctx = contextFor({ ...options, filePath: path, moduleExports, source: loaded.source })
     ctx.program = program
+    ctx.fileNames = fileNames
     const alike = [...program.values()].filter((other) => fileTag(other.filePath) === fileTag(path)).length
     ctx.tag = alike === 0 ? fileTag(path) : `${fileTag(path)}~${alike + 1}`
     program.set(path, ctx)
@@ -665,7 +676,7 @@ export function typecheckProgram(
     const memory = checked.find((earlier) => earlier.ctx.memoryAt !== null)
     if (memory && ctx.memoryAt !== null) {
       const at = memory.ctx.memoryAt as number
-      ctx.error(ctx.memoryAt, `${MEMORY_TWICE}${memory.ctx.firstDeclared(at, fileName(memory.path))}`)
+      ctx.error(ctx.memoryAt, `${MEMORY_TWICE}${memory.ctx.firstDeclared(at, ctx.shownFile(memory.path))}`)
     }
     checked.push({ path, ctx, module: loaded.module })
     const grown = drain()
@@ -686,14 +697,25 @@ export function typecheckProgram(
 const MEMORY_TWICE = 'memory is already declared: a program has one memory declaration at most'
 
 // A message of another module, told in this one: the place it says the
-// first declaration of a name is (see firstDeclared) is that module's.
-function inFile(message: string, path: string | undefined): string {
-  return path ? message.replace(/\(first declared at (\d+:\d+)\)/g, `(first declared at ${fileName(path)}:$1)`) : message
+// first declaration of a name is (see firstDeclared) is that module's,
+// `file` as this one names it (see shownFile).
+function inFile(message: string, file: string | undefined): string {
+  return file ? message.replace(/\(first declared at (\d+:\d+)\)/g, `(first declared at ${file}:$1)`) : message
 }
 
 // A path's last part, the name of the file
 function fileName(path: string): string {
   return path.replace(/^.*[\\/]/, '')
+}
+
+// The path of a file from a directory, both absolute: x/lib.ents from the
+// directory that holds x, ../lib.ents from one beside it.
+function pathFrom(dir: string, path: string): string {
+  const from = dir.split(/[\\/]/)
+  const to = path.split(/[\\/]/)
+  let same = 0
+  while (same < from.length && same < to.length - 1 && from[same] === to[same]) same++
+  return [...from.slice(same).map(() => '..'), ...to.slice(same)].join('/')
 }
 
 // line:column of an offset in a source, both from 1
@@ -991,6 +1013,9 @@ class CheckContext {
   // Multi-module support
   filePath?: string
   moduleExports?: Map<string, Map<string, Symbol>>
+  // How the messages of a program name each of its modules (see
+  // typecheckProgram and shownFile)
+  fileNames?: Map<string, string>
   // Where the module's memory is declared (its first memory declaration):
   // a program has one at most, in any of its modules.
   memoryAt: number | null = null
@@ -1416,9 +1441,15 @@ class CheckContext {
       if (other === this) continue
       const there = other.declaredAt.get(sym) ?? other.localDefs.get(sym) ??
         (other.moduleScope.symbols.get(name) === sym ? other.symbolDefOffsets.get(name) : undefined)
-      if (there !== undefined) return other.firstDeclared(there, fileName(path))
+      if (there !== undefined) return other.firstDeclared(there, this.shownFile(path))
     }
     return ''
+  }
+
+  // How a message names a module of the program: its file's name, or its
+  // path where another module has a file of that name.
+  shownFile(path: string): string {
+    return this.fileNames?.get(path) ?? fileName(path)
   }
 
   // The first declaration of the name a symbol has (see clashedWith)
@@ -9090,8 +9121,9 @@ class CheckContext {
       // Another module that applied it is told too, at its use, as it is
       // of an instance it asked for (reportToRequesters)
       if (owner !== this && bodyError) {
-        const where = owner.source && owner.filePath ? ` (${fileName(owner.filePath)}:${lineAndColumn(owner.source, bodyError.offset)})` : ''
-        this.error(at, `${shown} cannot be applied: ${inFile(bodyError.message, owner.filePath)}${where}`)
+        const file = owner.filePath && this.shownFile(owner.filePath)
+        const where = owner.source && file ? ` (${file}:${lineAndColumn(owner.source, bodyError.offset)})` : ''
+        this.error(at, `${shown} cannot be applied: ${inFile(bodyError.message, file)}${where}`)
       }
       return this.applicationFailed(owner)
     }
@@ -10253,9 +10285,10 @@ class CheckContext {
       if (!found) continue
       const owner = found.inst.owner
       if (owner === this) continue
-      const where = owner.source && owner.filePath ? ` (${fileName(owner.filePath)}:${lineAndColumn(owner.source, found.error.offset)})` : ''
+      const file = owner.filePath && this.shownFile(owner.filePath)
+      const where = owner.source && file ? ` (${file}:${lineAndColumn(owner.source, found.error.offset)})` : ''
       const inner = found.inst === asked ? '' : `, in ${found.inst.label}`
-      this.error(request.at, `${asked.label} cannot be instantiated: ${inFile(found.message, owner.filePath)}${inner}${where}`)
+      this.error(request.at, `${asked.label} cannot be instantiated: ${inFile(found.message, file)}${inner}${where}`)
     }
   }
 
