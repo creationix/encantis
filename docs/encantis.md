@@ -3159,6 +3159,7 @@ type '[65536]u8' is too large: written out in full it has more than 65536 parts
 A function is one wasm function, and every engine takes a wasm function of at most 1000 parameters, 1000 results and 50000 locals, its parameters among them, with a body of at most 7654321 bytes (the limits the WebAssembly JS API sets). What a function holds is counted in registers, the wasm values a value is laid out in: a number, a bool, a pointer or a host reference ([2.13](#213-host-references)) is one, a slice two, a `u128` two `i64`s, and an array held by value or a struct one for each of its elements and fields, `[N]T` N times what `T` is. So:
 
 - The parameters of a function are at most 1000 registers, and so are its results; so are those of an imported function and of a function type wherever it is written. It is said at the parameter or the result that goes over.
+- A nested function's parameters count, after its own, the registers of each variable it captures, and its results, after its own, the registers of each variable it writes ([Nested Functions](#nested-functions)). Going over is said at its name: `the parameters are 1001 registers with the variables 'g' captures, more than the 1000 a wasm function takes — pass a large value by pointer`, and `the results are 1001 registers with the variables 'h' writes, more than the 1000 a wasm function gives back — give a large value back through a pointer`. An instance of a generic given functions that capture counts the same way the variables it takes for them, after its own parameters and results ([8.6](#86-comptime-function-parameters)), and going over is said at the call that asks for the instance: `the parameters are 1001 registers with the variables the functions given capture, more than the 1000 a wasm function takes — pass a large value by pointer, in apply(k = ask.plus)`, and `the results are N registers with the variables the functions given write, more than the 1000 a wasm function gives back — give a large value back through a pointer, in <the instance>`.
 - The value an `if`, an `if let`, a `match` or a `??` gives is at most 1000 registers: it is the results of a wasm block.
 - A function needs at most 50000 registers in all: those of its parameters and of its variables (a named result, and what a `let`, a `for`, an `if let` or a match arm binds), and those of each value its code computes. Each expression counts its registers, one at least, as often as its code is written out: a fill `[x; N]` writes `x` out N times, a deferred expression is written at the end of its block and at each `return`, `break` and `continue` after it, and a `return` without a value gives the named results back, their registers read again each time. A literal is its elements, of which the constant ones are data where the literal is laid out in memory; and a place read only in part, or written, is not computed: `p.*` in `p.*[3]` and `p.* = v`, `rect` and `rect.origin` in `rect.origin.x`. Nor are the name of a function that is called, a type argument and the count of a fill. A value computes about as much code as it has registers, so this keeps the body within its limit as well. Going over is one error, at the value, the variable or the `return` that goes over, and none is said of a function with an error of its own. A test is a function of its own here, and so is each instance of a generic.
 
@@ -3192,6 +3193,38 @@ the results are 1001 registers, more than the 1000 a wasm function gives back �
 function 'copy' needs more than 50000 registers, the most a wasm function has (here [65536]u8 is 65536)
 function 'fill' needs more than 50000 registers, the most a wasm function has (here u8, written out 60000 times, is 60000)
 an if that gives [1001]u8 gives 1001 registers, more than the 1000 a wasm block gives back
+```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func f(n: u32) -> u32 {
+  let big: [1000]u32 = [0; 1000]
+  func g() -> u32 => big[0] + n                  // 1001 parameters
+  func h() {                                     // 1001 parameters, 1001 results
+    big[1] = n
+    n = 1
+  }
+  h()
+  return g()
+}
+
+func apply(comptime k: () -> u32, x: [1000]u32) -> u32 => k() + x[0]
+
+func ask(n: u32) -> u32 {
+  let xs: [1000]u32 = [0; 1000]
+  func plus() -> u32 => n
+  return apply(plus, xs)                         // the instance takes xs and n
+}
+```
+
+```errors
+the parameters are 1001 registers with the variables 'g' captures, more than the 1000 a wasm function takes — pass a large value by pointer
+the parameters are 1001 registers with the variables 'h' captures, more than the 1000 a wasm function takes — pass a large value by pointer
+the results are 1001 registers with the variables 'h' writes, more than the 1000 a wasm function gives back — give a large value back through a pointer
+the parameters are 1001 registers with the variables the functions given capture, more than the 1000 a wasm function takes — pass a large value by pointer, in apply(k = ask.plus)
 ```
 
 <!-- spec:end -->
@@ -5092,7 +5125,7 @@ test "a loop's count is read once" {
 
 <!-- spec:end -->
 
-**In WebAssembly.** A nested function is a function of the module. The nested functions of a function follow it, in source order, each followed by its own nested functions: for `a` declaring `b` and then `d`, and `b` declaring `c`, the order is `a`, `b`, `c`, `d`. Its parameters are its own and then, for each variable it captures, the variable's registers (a struct one for each field, a slice its pointer and length), in the order the functions around it declare those variables, the outermost function's first, and each function's in the order its text declares them (parameters, named results, then the variables of its body); in an instance of a generic, the variables it reaches through a comptime function parameter come after those, in the order of the instance's own extra parameters ([8.6](#86-comptime-function-parameters)). Its results are its own and then the registers of the variables it writes, in the same order. A call passes the variables after the arguments and assigns those written back from the results, last first. Where the call stands in the middle of an expression and writes a variable, that sequence is a `block` whose value is the call's own results. A nested function that captures nothing is exactly the function written at module level. As every WAT name, the name the compiler gives it (`$order.bump`, its function's name, a `.` and its own) does not reach the `.wasm` file.
+**In WebAssembly.** A nested function is a function of the module. The nested functions of a function follow it, in source order, each followed by its own nested functions: for `a` declaring `b` and then `d`, and `b` declaring `c`, the order is `a`, `b`, `c`, `d`. Its parameters are its own and then, for each variable it captures, the variable's registers (a struct one for each field, a slice its pointer and length), in the order the functions around it declare those variables, the outermost function's first, and each function's in the order its text declares them (parameters, named results, then the variables of its body); in an instance of a generic, the variables it reaches through a comptime function parameter come after those, in the order of the instance's own extra parameters ([8.6](#86-comptime-function-parameters)). Its results are its own and then the registers of the variables it writes, in the same order. A call passes the variables after the arguments and assigns those written back from the results, last first. Where the call stands in the middle of an expression and writes a variable, that sequence is a `block` whose value is the call's own results. A nested function that captures nothing is exactly the function written at module level. The registers of the variables it captures count toward the 1000 a wasm function takes as parameters, and those of the variables it writes toward the 1000 it gives back ([2.12](#212-limits)). As every WAT name, the name the compiler gives it (`$order.bump`, its function's name, a `.` and its own) does not reach the `.wasm` file.
 
 ```wat
 (func $order (result i32)
@@ -9703,7 +9736,7 @@ The rules of this chapter refuse these too; they are not features to come:
 
 ### 8.10 How This Is Compile-Time Evaluation
 
-A name bound at compile time is declared at module level (`def n = 64` binds a number, `type Pt = (...)` a type, `func f` a function), or it is a comptime parameter, bound anew by each call of a generic. A compile-time value is a type, a function or a number. The table puts the two kinds of binding side by side; its last column is not in the language ([8.9](#89-not-implemented)):
+A name bound at compile time is declared at module level (`def n = 64` binds a number, `type Pt = (...)` a type, `func f` a function), or it is a nested function, a function declared in a body and seen in the rest of its block ([Nested Functions](#nested-functions)), or it is a comptime parameter, bound anew by each call of a generic. A compile-time value is a type, a function or a number. The table puts the two kinds of binding side by side; its last column is not in the language ([8.9](#89-not-implemented)):
 
 | Bound at compile time | Declared at module level | Given to a generic | Not implemented |
 |---|---|---|---|
@@ -11154,7 +11187,7 @@ A narrower integer key (`u8`, `u16`, `i8`, `i16`) fits several of `set.ents`' ow
 | `is_sorted(comptime T: type, xs: []T, comptime before: (T, T) -> bool) -> bool` | Whether `xs` is sorted |
 | `lower_bound(comptime T: type, xs: []T, x: T, comptime before: (T, T) -> bool) -> u32` | Where `x` goes in sorted `xs`: the first index whose element does not come before `x` |
 
-`before` is a comptime function parameter ([8.6](#86-comptime-function-parameters)): the name of a function declared at module level, in any module. Each comparator is its own copy of `sort`, which calls it directly.
+`before` is a comptime function parameter ([8.6](#86-comptime-function-parameters)): the name of a function declared at module level, in any module, of a nested function seen at the call, also one that uses the variables of the function around it ([Nested Functions](#nested-functions)), or of a function a test declares, given in that test. Each comparator is its own copy of `sort`, which calls it directly; the copy for a nested function that uses variables takes them as extra parameters and gives back the ones it assigns.
 
 Complete programs that use the library are [`examples/aoc/day1.ents`](../examples/aoc/day1.ents), a WASI program for `encantis run`, and [`examples/containers/main.ents`](../examples/containers/main.ents), which uses the Vec, Set, Map and sort with a key type of its own; [`examples/containers/fixed.ents`](../examples/containers/fixed.ents) uses the containers of a fixed capacity.
 

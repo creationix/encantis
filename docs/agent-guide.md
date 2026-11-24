@@ -135,7 +135,7 @@ import "./sha512" (
 - **Mixed-width arithmetic** — `u32 * u64` widens to u64. If you need u32 result, cast explicitly.
 - **Array vs pointer** — `def buf:[N]T` allocates memory. `def ptr:*[N]T = expr` stores a pointer. Different things.
 - **Named returns** — `func foo() -> (result: u32) { result = 42 }` — `result` is a local you assign to. Bare `return` pushes it automatically.
-- **Lifting a helper or writing a lambda** — there are no lambdas, but a function declared in a body shares the variables of the function around it: `func keep(x: u32) -> bool => x > n` then `xs.count_if(keep)`. It costs what the lifted helper with extra parameters would, so no need to pass `n` by hand or move it to a global.
+- **Lifting a helper or writing a lambda** — there are no lambdas, but a function declared in a body shares the variables of the function around it: `func closer(a: i32, b: i32) -> bool => abs(a - c) < abs(b - c)` then `xs.sort(closer)` with lib/sort. It costs what the lifted helper with extra parameters would, so no need to pass `c` by hand or move it to a global.
 
 ## Tools reference
 
