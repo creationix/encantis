@@ -3193,10 +3193,14 @@ export function funcToWat(
   // A parameter for each register of each captured variable, named as the
   // variable's locals are. The body names it as the variable it is; one that
   // reaches it through an instance's comptime parameter has no name there.
+  // Each is its own owner (the variable's identity, N30): a variable of the
+  // same name in the body (a generic's parameter, named result, let or loop
+  // variable, or another function's capture) never shares its register, and
+  // the later claim takes a prefixed name (`$_1_n`).
   ctx.captureRegs = new Map()
   for (const v of captured?.captures ?? []) {
     const wasmTypes = typeToWasm(v.type)
-    const names = claimLocals(ctx, v.name, v.type, null)
+    const names = claimLocals(ctx, v.name, v.type, null, false, `capture${v.id} `)
     for (const [i, n] of names.entries()) params.push(`(param $${n} ${wasmTypes[i]})`)
     ctx.captureRegs.set(v.id, names)
     if (nestedInfo && !nestedInfo.hidden.has(v.id)) ctx.params.set(v.name, names)

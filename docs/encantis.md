@@ -9056,6 +9056,33 @@ test "each instance of a generic has its own nested functions" {
 }
 ```
 
+The variables an instance takes for the functions given are the caller's, and only the function given names them. A parameter, a named result, a `let` or a loop variable of the generic, or a variable a nested function of the generic captures, is another variable even where it has the same name, and the two never share a register: here `count_if`'s result `n` counts, while `grows` adds to the caller's `n`.
+
+```ents
+func count_if(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> (n: u32) {
+  for x in xs {
+    if keep(x) { n += 1 }
+  }
+}
+
+// How many elements end a running sum above 6, and the sum
+export func sums_over(xs: []u32) -> u32 {
+  let n: u32 = 0
+  func grows(x: u32) -> bool {
+    n += x
+    return n > 6
+  }
+  let count = xs.count_if(grows)
+  return count * 10000 + n
+}
+
+data small = [1:u32, 5, 9, 2, 7]
+
+test "the instance's n and the caller's n are two variables" {
+  assert sums_over(small) == 30024
+}
+```
+
 
 **Its type is exactly the declared type**, with the call's type and value arguments put in: the same parameter types and the same result types, in order. Names of parameters and results do not count. A function whose types only convert to the declared ones is refused, so one that takes a `u64` where the parameter says `u32`, or returns a `u8` where it says `u32`, is an error. A range is part of a type here: a `func r8(x: u32#8) -> u32` is refused for `comptime f: (u32) -> u32` (`'r8' is (u32#8) -> u32, but 'apply' needs f: (u32) -> u32`), and so is a `(u32) -> u32#8` for it, and a `(u32) -> u32` for a `(u32#8) -> u32`. The one relaxation: a function that lists a struct's fields as its results, `-> (sum: f64, n: u32)`, is one that returns the struct.
 

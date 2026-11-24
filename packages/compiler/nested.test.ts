@@ -1251,6 +1251,222 @@ export func go(a: u32, b: u32) -> u32 {
     expect(signatureOf(wat, 'pair<go.one|go.two>')).toBe('(func $pair<go.one|go.two> (param $a i32) (param $b i32) (param $c i32) (result i32 i32)')
   })
 
+  describe('a captured variable never shares a register with a variable of the instance of the same name (N30)', () => {
+    test('a named result, a let and a loop variable of the generic', async () => {
+      const source = `data small = [1:u32, 5, 9, 2, 7]
+func count_if(comptime keep: (u32) -> bool, xs: []u32) -> (n: u32) {
+  for x in xs {
+    if keep(x) { n += 1 }
+  }
+}
+export func by_result() -> u32 {
+  let n: u32 = 0
+  func inc(x: u32) -> bool {
+    n += x
+    return n > 6
+  }
+  let a = count_if(inc, small)
+  return a * 10000 + n
+}
+func count_let(comptime keep: (u32) -> bool, xs: []u32) -> u32 {
+  let seen: u32 = 0
+  let c: u32 = 0
+  for x in xs {
+    seen += 1
+    if keep(x) { c += 1 }
+  }
+  return c * 100 + seen
+}
+export func by_let(k: u32) -> u32 {
+  let seen: u32 = 0
+  func keep(x: u32) -> bool {
+    seen += 10
+    return x > k
+  }
+  return count_let(keep, small) * 1000 + seen
+}
+func count_loop(comptime keep: (u32) -> bool, n: u32) -> u32 {
+  let c: u32 = 0
+  for i in n {
+    if keep(i) { c += 1 }
+  }
+  return c
+}
+export func by_loop_variable(k: u32) -> u32 {
+  let i: u32 = 100
+  func keep(x: u32) -> bool {
+    i += 1
+    return x > k
+  }
+  return count_loop(keep, 8) * 1000 + i
+}
+test "results" {
+  assert by_result() == 30024
+  assert by_let(4) == 305050
+  assert by_loop_variable(4) == 3108
+}`
+      const wat = watOfSource(source)
+      expect(signatureOf(wat, 'count_if<by_result.inc>')).toBe('(func $count_if<by_result.inc> (param $xs_ptr i32) (param $xs_len i32) (param $n i32) (result i32 i32)')
+      expect(wat).toContain('(local $_1_n i32)')
+      expect((await runTestsOfSource(source)).failed).toEqual([])
+    })
+
+    test('a parameter of the generic, and the comparator of an argsort that captures xs', async () => {
+      const source = `${SORT}
+data vals = [40:u32, 10, 30, 20]
+data idx = mut [0:u32, 1, 2, 3]
+export func argsort(xs: []u32, order: []mut u32) {
+  func by_value(a: u32, b: u32) -> bool => (xs[a] ?? 0) < (xs[b] ?? 0)
+  order.sort(by_value)
+}
+func count_lim(comptime keep: (u32) -> bool, xs: []u32, limit: u32) -> u32 {
+  let c: u32 = 0
+  for x in xs {
+    if keep(x) && x < limit { c += 1 }
+  }
+  return c
+}
+export func by_param(limit: u32) -> u32 {
+  func keep(x: u32) -> bool => x > limit
+  return count_lim(keep, [1, 5, 9, 2, 7], 8)
+}
+test "sorted" {
+  argsort(vals, idx)
+  assert idx[0] == 1 && idx[1] == 3 && idx[2] == 2 && idx[3] == 0
+  assert by_param(4) == 2
+}`
+      expect(signatureOf(watOfSource(source), 'sort<u32|argsort.by_value>')).toBe('(func $sort<u32|argsort.by_value> (param $xs_ptr i32) (param $xs_len i32) (param $_1_xs_ptr i32) (param $_1_xs_len i32)')
+      expect((await runTestsOfSource(source)).failed).toEqual([])
+    })
+
+    test('a comparator for sort that captures x and i, the names of its locals', async () => {
+      const source = `${SORT}
+export func by_distance(xs: []mut i32, x: i32) -> u32 {
+  let i: u32 = 0
+  func closer(a: i32, b: i32) -> bool {
+    i += 1
+    return abs(a - x) < abs(b - x)
+  }
+  xs.sort(closer)
+  return i
+}
+data nums = mut [5:i32, -1, 8, 3]
+test "sorted" {
+  assert by_distance(nums, 4) == 6
+  assert nums[0] == 5 && nums[1] == 3 && nums[2] == 8 && nums[3] == -1
+}`
+      expect((await runTestsOfSource(source)).failed).toEqual([])
+    })
+
+    test('a nested function of the generic: its own parameter, and a variable it captures, named like a hidden one', async () => {
+      const source = `func each_twice(comptime visit: (u32) -> (), xs: []u32) {
+  func both(x: u32) {
+    visit(x)
+    visit(x)
+  }
+  for v in xs { both(v) }
+}
+export func total_twice(xs: []u32, x: u32) -> u32 {
+  let total: u32 = 0
+  func add(v: u32) { total += v + x }
+  each_twice(add, xs)
+  return total
+}
+func outer_g(comptime f: (u32) -> u32, x: u32) -> u32 {
+  let acc: u32 = 0
+  func step(y: u32) -> u32 {
+    acc += f(y)
+    return acc
+  }
+  return step(x) + step(x)
+}
+export func by_nested(k: u32) -> u32 {
+  let acc: u32 = 1
+  func f(y: u32) -> u32 {
+    acc *= 2
+    return y + acc
+  }
+  return outer_g(f, k) * 100 + acc
+}
+test "t" {
+  assert total_twice([1, 2], 10) == 46
+  assert by_nested(3) == 1704
+}`
+      const wat = watOfSource(source)
+      expect(signatureOf(wat, 'each_twice<total_twice.add>.both')).toBe('(func $each_twice<total_twice.add>.both (param $x i32) (param $_1_x i32) (param $total i32) (result i32)')
+      expect(signatureOf(wat, 'outer_g<by_nested.f>.step')).toBe('(func $outer_g<by_nested.f>.step (param $y i32) (param $acc i32) (param $_1_acc i32) (result i32 i32 i32)')
+      expect((await runTestsOfSource(source)).failed).toEqual([])
+    })
+
+    test('a narrowed index of the generic is not overwritten by the write-back', async () => {
+      const source = `data buf = [1:u32, 2, 3, 4]
+data secret = [77:u32, 88, 99]
+func probe(comptime keep: () -> (), n: u32) -> u32 {
+  let i = n
+  if i < 4 {
+    keep()
+    return buf[i]
+  }
+  return 0
+}
+export func run(k: u32) -> u32 {
+  let i: u32 = 0
+  func keep() { i = k }
+  return probe(keep, 1)
+}
+test "buf[1]" {
+  assert run(5) == 2
+  assert run(100000) == 2
+}`
+      expect((await runTestsOfSource(source)).failed).toEqual([])
+    })
+
+    test('in a test, and across modules', async () => {
+      expect((await runTestsOfSource(`data small = [1:u32, 5, 9, 2, 7]
+func count_if(comptime keep: (u32) -> bool, xs: []u32) -> (n: u32) {
+  for x in xs {
+    if keep(x) { n += 1 }
+  }
+}
+test "clash" {
+  let n: u32 = 0
+  func inc(x: u32) -> bool {
+    n += x
+    return n > 6
+  }
+  let a = count_if(inc, small)
+  assert a == 3
+  assert n == 24
+}`)).failed).toEqual([])
+      const { ran, failed } = await runProgram({
+        'main.ents': `import "./lib" (
+  "count_seen" func count_seen(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> u32
+)
+data small = [1:u32, 5, 9, 2, 7]
+export func run(limit: u32) -> u32 {
+  let seen: u32 = 0
+  func big(x: u32) -> bool {
+    seen += 1
+    return x > limit
+  }
+  return small.count_seen(big) * 100 + seen
+}
+test "t" { assert run(4) == 305005 }`,
+        'lib.ents': `export func count_seen(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> u32 {
+  let seen: u32 = 0
+  let c: u32 = 0
+  for x in xs {
+    seen += 10
+    if keep(x) { c += 1 }
+  }
+  return c * 1000 + seen
+}`,
+      })
+      expect(ran).toEqual(['t'])
+      expect(failed).toEqual([])
+    })
+  })
+
   test('each instance of a generic has its own nested functions (E11)', async () => {
     const source = `func count_if(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> (n: u32) {
   for x in xs {
