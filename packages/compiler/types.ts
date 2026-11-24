@@ -195,6 +195,20 @@ export interface ForwardRefRT {
 export interface ResolvedField {
   name: string | null // null for positional/anonymous
   type: ResolvedType
+  // Where the field's name is written in the struct it is a field of: a type
+  // declared, a function's results, a literal that makes its own struct. A
+  // field copied to another type (concretized, laid out as a parameter) is
+  // the same field and keeps it; one made any other way has none.
+  at?: FieldPlace
+}
+
+// Where a field's name is written where its struct is: the file of the module
+// that writes it ('' for a module checked without one) and the offset in its
+// source, at the field's place in a generic's own source where it is written
+// in the generic's body.
+export interface FieldPlace {
+  file: string
+  offset: number
 }
 
 // === Type Constructors ===

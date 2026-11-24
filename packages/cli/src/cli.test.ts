@@ -209,7 +209,11 @@ export func f(p: Pt, xs: []u32, o: ?*u32) -> u32 {
 
   test('a field named like a global is not the global', async () => {
     expect((await query('hover', 2, 12)).stdout).toBe('No info\n')
-    expect((await query('rename', 2, 12)).stdout).toBe('No symbol found\n')
+    // Renamed, the field is renamed where Pt declares it and where it is read
+    for (const [line, col] of [[2, 12], [4, 13]]) {
+      const field = await query('rename', line, col)
+      expect(field.stdout).toBe(`x: 2 locations\n  ${field.file}:2:12\n  ${field.file}:4:13\n`)
+    }
     expect((await query('hover', 4, 13)).stdout).toBe('field x: i32\n')
     const global = await query('rename', 1, 8)
     expect(global.stdout).toBe(`x: 2 locations\n  ${global.file}:1:8\n  ${global.file}:14:14\n`)

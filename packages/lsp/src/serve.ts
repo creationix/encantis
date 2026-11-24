@@ -966,6 +966,27 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return null;
   }
 
+  // The other module of the workspace (its file's name) that names, through
+  // what it imports, the field this document declares at `declared`, or
+  // null. Only a module with a source import of its own can, and only one
+  // whose text has the field's name in it.
+  async function fieldReadElsewhere(uri: string, declared: number, name: string): Promise<string | null> {
+    const own = pathFor(uri);
+    if (!own) return null;
+    const others = new Set([...documents.all().map((d) => d.uri), ...(await workspaceFiles())]);
+    for (const other of others) {
+      const path = pathFor(other);
+      if (!path || path === own || !sameFileSystem(other, uri)) continue;
+      const text = await textOf(other);
+      if (text === null || !text.includes(name) || !/\bimport\s+"\.\.?\//.test(text)) continue;
+      const fields = (await programOf(other, text))?.checkResult?.fieldNames;
+      for (const named of fields?.values() ?? []) {
+        if (named.some((f) => f.file === own && f.offset === declared)) return path.replace(/^.*[\\/]/, '');
+      }
+    }
+    return null;
+  }
+
   connection.onPrepareRename((params: PrepareRenameParams) => {
     const found = renamePlan(params);
     if (!found) return null;
@@ -982,14 +1003,11 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     if (params.newName === plan.name) return { changes: {} };
     const renamed = applyRename(analysis.text, plan, params.newName);
     const problem = await renameProblem(params.textDocument.uri, analysis, renamed, params.newName);
-    if (problem) {
-      // A named result is also a field of what its function returns, which
-      // is read by its name where the result is taken apart.
-      const at = offsetToPosition(analysis.text, found.start);
-      const hint = analysis.meta.hints[`${at.line}:${at.character}`];
-      const result = hint?.symbol !== undefined && analysis.meta.symbols[hint.symbol]?.kind === 'return';
-      throw refuse(result ? `'${plan.name}' is a named result, a field of what its function returns, read by that name: ${problem}` : problem);
-    }
+    if (problem) throw refuse(problem);
+    // A field is named by the modules that import its struct or the
+    // function whose results it is: rename edits this file only.
+    const reader = plan.field === null ? null : await fieldReadElsewhere(params.textDocument.uri, plan.field, plan.name);
+    if (reader) throw refuse(`'${plan.name}' is a field that ${reader} names too: renamed here, it would no longer find it there`);
     const edits = renamed.edits.map((e) => ({ range: { start: document.positionAt(e.start), end: document.positionAt(e.end) }, newText: e.newText }));
     return { changes: { [params.textDocument.uri]: edits } };
   });

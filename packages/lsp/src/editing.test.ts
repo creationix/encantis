@@ -164,7 +164,7 @@ describe('rename', () => {
     expect(await refused(SHAPES, SHAPES.indexOf('Point ='), 'point')).toContain("is not a type's name")
   })
 
-  test('a local bound by a field of its name keeps the field', async () => {
+  test('a local bound by a field of its name keeps the field, and the field renamed keeps the local', async () => {
     const text = `export func pair(n: u32) -> (count: u32, clipped: bool) {
   count = n + 1
   clipped = n > 5
@@ -173,19 +173,90 @@ export func f(n: u32) -> u32 {
   let (count:, clipped:) = pair(n)
   return if clipped { 0 } else { count }
 }
+export func g(n: u32) -> u32 => pair(n).count
 `
     const out = await renamed(text, text.indexOf('return if clipped') + 10, 'cut')
     expect(out).toContain('let (count:, clipped: cut) = pair(n)')
     expect(out).toContain('return if cut { 0 } else { count }')
-    // The named result itself is a field of what pair returns, read by name.
-    expect(await refused(text, text.indexOf('count = n'), 'total')).toContain("'count' is a named result")
+    // A named result is a field of what pair returns too, named where the
+    // result is taken apart: from its declaration, its uses in pair, or a
+    // read of the field, it is renamed in each, and the local keeps its name.
+    for (const at of [text.indexOf('count: u32'), text.indexOf('count = n'), text.indexOf('.count') + 1]) {
+      expect(await renamed(text, at, 'total')).toBe(`export func pair(n: u32) -> (total: u32, clipped: bool) {
+  total = n + 1
+  clipped = n > 5
+}
+export func f(n: u32) -> u32 {
+  let (total: count, clipped:) = pair(n)
+  return if clipped { 0 } else { count }
+}
+export func g(n: u32) -> u32 => pair(n).total
+`)
+    }
   })
 
-  test('a field and a builtin are no names to rename', async () => {
+  test("a struct's field, where its type declares it and wherever it is named", async () => {
+    // From a use: the type, the reads and the write, and not the x of log
+    const out = await renamed(SHAPES, SHAPES.indexOf('p.x') + 2, 'left')
+    expect(out).toContain('type Point = (left: i32, y: i32)')
+    expect(out).toContain('p.left * p.left + p.y * p.y')
+    expect(out).toContain('  p.left += by')
+    expect(out).toContain('let w = p.left * k')
+    expect(out).toContain('"log" func log(x: i32)')
+    // In a constructor and in a pattern: a shorthand is written out, and the
+    // variable it stands for keeps its name
+    const text = `type Point = (x: i32, y: i32)
+export func f(x: i32) -> i32 {
+  let p = Point(x:, y: 2)
+  let (x: a, y:) = p
+  return a + y + p.x
+}
+`
+    expect(await renamed(text, text.indexOf('x: i32'), 'left')).toBe(text.replace('Point(x:', 'Point(left: x').replace('(x: a', '(left: a').replace('p.x', 'p.left').replace('(x: i32', '(left: i32'))
+    expect(await renamed(text, text.indexOf('y: i32'), 'top')).toBe(text.replace('y: 2', 'top: 2').replace('y:)', 'top: y)').replace('y: i32', 'top: i32'))
+    // A builtin is no name to rename
     const s = server()
     await s.open(uri, SHAPES)
-    expect(s.at('onPrepareRename', uri, SHAPES, SHAPES.indexOf('p.x') + 2)).toBeNull()
     expect(s.at('onPrepareRename', uri, SHAPES, SHAPES.indexOf('i32'))).toBeNull()
+  })
+
+  test('a keyword is no name to rename, also where a declaration starts with it', async () => {
+    // A data a test declares, where another test declares one of its name
+    // too, is defined where its declaration starts, at `data`: the keyword is
+    // not its name.
+    const text = 'export func f() -> u32 => 1\ntest "t" {\n  data b: *[2]u32 = [1, 2]\n  assert b[0] == 1\n}\ntest "u" {\n  data b: *[2]u32 = [3, 4]\n  assert b[1] == 4\n}\n'
+    const s = server()
+    await s.open(uri, text)
+    expect(s.at('onPrepareRename', uri, text, text.indexOf('data b'))).toBeNull()
+    expect(s.at<{ placeholder: string } | null>('onPrepareRename', uri, text, text.indexOf('b: *'))?.placeholder).toBe('b')
+  })
+
+  test('a field is not renamed where its struct is given for another that keeps the name', async () => {
+    const text = `type Point = (x: i32, y: i32)
+type Spot = (x: i32, y: i32)
+export func f(p: Point) -> i32 {
+  let s: Spot = p
+  return s.x
+}
+`
+    expect(await refused(text, text.indexOf('x: i32'), 'left')).toContain("renamed to 'left', the program would not check")
+  })
+
+  test('a field another module of the workspace names is not renamed', async () => {
+    const lib = 'file:///ws/lib.ents'
+    const main = 'file:///ws/main.ents'
+    const libText = 'export func pair(n: u32) -> (count: u32, clipped: bool) => (count: n, clipped: n > 9)\n'
+    const mainText = 'import "./lib" "pair" func pair(n: u32) -> (count: u32, clipped: bool)\nexport func f() -> u32 => pair(3).count\n'
+    const files = new Map([[pathOf(lib) as string, libText], [pathOf(main) as string, mainText]])
+    const s = server({ findFiles: async () => [lib, main], readFile: async (path) => files.get(path) ?? null })
+    await s.open(lib, libText)
+    const rename = (offset: number, newName: string) => s.at<Promise<WorkspaceEdit>>('onRenameRequest', lib, libText, offset, { newName })
+    // main.ents reads count
+    await expect(rename(libText.indexOf('count:'), 'total')).rejects.toThrow("'count' is a field that main.ents names too")
+    // It names clipped only in its import, which is not where it reads it
+    expect(applied(libText, await rename(libText.indexOf('clipped:'), 'cut'), lib)).toBe(
+      'export func pair(n: u32) -> (count: u32, cut: bool) => (count: n, cut: n > 9)\n',
+    )
   })
 })
 

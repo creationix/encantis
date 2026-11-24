@@ -416,7 +416,9 @@ switch (command) {
       if (jsonOutput) {
         const locs = r.locations.map(loc => {
           const p = lineMap.offsetToPosition(loc.offset)
-          return { file: pos.file, line: p.line + 1, col: p.col + 1, length: loc.length }
+          // A field's name (a struct's, a named result's): a shorthand there,
+          // `x:`, is written out so that its variable keeps its name
+          return { file: pos.file, line: p.line + 1, col: p.col + 1, length: loc.length, ...(loc.field ? { field: true } : {}) }
         })
         console.log(JSON.stringify({ oldName: r.oldName, locations: locs }))
       } else {
