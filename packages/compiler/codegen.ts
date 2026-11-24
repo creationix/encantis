@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { argValue, ungroupedType } from './ast'
-import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, testIds, testsToRun, type CapturedVar, type ComptimeValue, type NestedCall, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, testIds, testsToRun, type CapturedVar, type ComptimeValue, type InstanceInfo, type NestedCall, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -3971,38 +3971,27 @@ function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult, le
 }
 
 // The instances of each module (by path) that are left out of the build:
-// those given a function of a test whose tests are not in it (`tested`), a
-// function the test declares or imports from the host, or a nested function
-// of it, named under the test, __test<n> (testIds), and those given a
-// nested function of an instance left out (apply<__test1.add>.g), to a
-// fixed point. A function given from another module is named as it is in
-// that one (externs). Such an instance is called from that test alone, and
-// neither is there: an imported module's tests are checked with the
-// program's and not built (12.4, 12.5).
+// those that only tests outside it asked for (`tested`: the modules whose
+// tests are in it), and the instances only those ask for, however deep. An
+// instance given a function a test declares, or imports, or a nested
+// function of one, is asked for by that test alone, and one given a nested
+// function of an instance by that instance; an imported module's tests are
+// checked with the program's and not built (12.4, 12.5).
 function untestedInstances(checkResults: ReadonlyMap<string, TypeCheckResult>, tested: ReadonlySet<string>): Map<string, Set<string>> {
-  const left = new Map<string, Set<string>>([...checkResults.keys()].map((path) => [path, new Set<string>()]))
-  const untested = (path: string, arg: ComptimeValue): boolean => {
-    if (arg.kind !== 'func') return false
-    const extern = checkResults.get(path)?.externs.get(arg.name)
-    const module = extern?.module ?? path
-    const name = extern?.name ?? arg.name
-    if (tested.has(module)) return false
-    if (/^__test\d/.test(name)) return true
-    for (const inst of left.get(module) ?? []) if (name.startsWith(`${inst}.`)) return true
-    return false
+  const kept = new Set<InstanceInfo>()
+  const queue: InstanceInfo[] = []
+  const keep = (inst: InstanceInfo) => {
+    if (kept.has(inst)) return
+    kept.add(inst)
+    queue.push(inst)
   }
-  for (let grown = true; grown; ) {
-    grown = false
-    for (const [path, result] of checkResults) {
-      const own = left.get(path) as Set<string>
-      for (const inst of result.instances) {
-        if (own.has(inst.name) || !inst.args.some((arg) => untested(path, arg))) continue
-        own.add(inst.name)
-        grown = true
-      }
+  for (const result of checkResults.values()) {
+    for (const inst of result.instances) {
+      if (inst.askedBy.module || [...inst.askedBy.tests].some((path) => tested.has(path))) keep(inst)
     }
   }
-  return left
+  for (let inst = queue.pop(); inst; inst = queue.pop()) for (const next of inst.requests) keep(next)
+  return new Map([...checkResults].map(([path, result]) => [path, new Set(result.instances.filter((inst) => !kept.has(inst)).map((inst) => inst.name))]))
 }
 
 // A generic is never exported to the host: there is no one function to

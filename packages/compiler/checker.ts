@@ -173,6 +173,11 @@ export interface Instance {
   // capture, which it takes as parameters after its own, and those of them
   // they write, which it gives back after its own results (N30)
   hidden: CaptureSets
+  // Who asked for it outside an instance's body: code of a module that is
+  // no test's (`module`), or the tests of these modules, by path. A build
+  // leaves out an instance that only tests it does not build asked for,
+  // with the instances that one asks for (see untestedInstances).
+  askedBy: { module: boolean; tests: Set<string> }
 }
 
 // Everything one call in ordinary code brought into being: the instance it
@@ -482,6 +487,25 @@ export interface InstanceInfo {
   name: string
   label: string
   args: ComptimeValue[]
+  // Who asked for it outside an instance's body, and the instances its body
+  // asks for, of this module or another (see Instance)
+  askedBy: { readonly module: boolean; readonly tests: ReadonlySet<string> }
+  readonly requests: readonly InstanceInfo[]
+}
+
+// One InstanceInfo for each instance, whichever module's result lists it or
+// asks for it
+const instanceInfos = new WeakMap<Instance, InstanceInfo>()
+function instanceInfo(inst: Instance): InstanceInfo {
+  let info = instanceInfos.get(inst)
+  if (!info) {
+    info = {
+      of: inst.of, decl: inst.decl, name: inst.name, label: inst.label, args: inst.args, askedBy: inst.askedBy,
+      get requests() { return inst.requests.map(instanceInfo) },
+    }
+    instanceInfos.set(inst, info)
+  }
+  return info
 }
 
 export interface Application {
@@ -672,7 +696,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     symbolDefOffsets: ctx.symbolDefOffsets,
     fieldNames: ctx.fieldNames(),
     literals: ctx.pendingLiterals,
-    instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl, name: i.name, label: i.label, args: i.args })),
+    instances: ctx.instances.map(instanceInfo),
     applications: ctx.applications,
     calls: ctx.calls,
     fieldOrder: ctx.fieldOrder,
@@ -10217,6 +10241,7 @@ class CheckContext {
     if (existing) {
       requester?.requests.push(existing)
       if (!requester && !this.asked.has(existing)) this.asked.set(existing, { at, told: false })
+      if (!requester) this.askedFor(existing)
       return existing
     }
 
@@ -10277,9 +10302,13 @@ class CheckContext {
       lookedUp: new Map(),
       requests: [],
       hidden: hiddenCaptures(held),
+      askedBy: { module: false, tests: new Set() },
     }
     requester?.requests.push(inst)
-    if (!requester) this.asked.set(inst, { at, told: false })
+    if (!requester) {
+      this.asked.set(inst, { at, told: false })
+      this.askedFor(inst)
+    }
     sym.instances.set(copyKey ?? key, inst)
     owner.instances.push(inst)
     if (!sym.signatureOnly) owner.instanceQueue.push(inst)
@@ -10295,6 +10324,13 @@ class CheckContext {
       owner.signatureNames = before
     }
     return inst
+  }
+
+  // An instance asked for by this module's code, outside an instance's
+  // body: by a test of it, or by the module's own code
+  private askedFor(inst: Instance): void {
+    if (this.openTests.length > 0) inst.askedBy.tests.add(this.filePath ?? '')
+    else inst.askedBy.module = true
   }
 
   // The name this module's code calls a function of `from` by, where the

@@ -2451,6 +2451,29 @@ export func later() -> u32 => apply(tri)`)
     }
   })
 
+  // lib's own test imports ./s and gives its function to lib's generic: the
+  // instance is asked for by that test alone, which main's test build does
+  // not build (12.4, 12.5)
+  test('an importer\'s test build leaves out an instance only the imported module\'s tests ask for', async () => {
+    const lib = `export func apply(comptime k: () -> u32) -> u32 => k()
+export func one() -> u32 => 1
+test "lib test imports s.x" {
+  import "./s.ents" ("x" func sx() -> u32)
+  assert apply(sx) == 7
+}`
+    const s = 'export func x() -> u32 => 7'
+    const main = `import "./lib.ents" ("apply" func apply(comptime k: () -> u32) -> u32 "one" func one() -> u32)
+export func m() -> u32 => apply(one)
+test "main" { assert m() == 1 }`
+    const { ran, failed, wat } = await runProgram({ 'main.ents': main, 'lib.ents': lib, 's.ents': s })
+    expect({ ran, failed }).toEqual({ ran: ['main'], failed: [] })
+    expect(wat.match(/\(func \$lib\$apply<[^ ]*/g)).toEqual(['(func $lib$apply<one>'])
+    // lib's own test build has it
+    const own = await runProgram({ 'main.ents': lib, 's.ents': s })
+    expect(own).toMatchObject({ ran: ['lib test imports s.x'], failed: [] })
+    expect(own.wat).toContain('(func $apply<x@s>')
+  })
+
   // The module's function, given after a test took its name over, is a use
   // of the module's function: renamed with it, defined at it
   test('the editor finds the module\'s function where a comptime argument gives it after a test took its name', () => {
