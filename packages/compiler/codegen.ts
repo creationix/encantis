@@ -3197,7 +3197,8 @@ export function funcToWat(
   // and an instance given functions that capture take captured variables
   // after their parameters and give back those they write (N21, N22, N30).
   const nestedInfo = checkResult.nested.get(decl)
-  const funcType = nestedInfo ? nestedInfo.sym : checkResult.symbols.get(name)
+  // A function is the one it declares, not the last of its name (funcSyms)
+  const funcType = nestedInfo ? nestedInfo.sym : checkResult.funcSyms?.get(decl) ?? checkResult.symbols.get(name)
   if (!funcType || funcType.kind !== 'func') {
     throw new Error(`Function ${name} not found in symbols`)
   }

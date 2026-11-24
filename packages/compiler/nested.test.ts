@@ -3071,6 +3071,27 @@ test "two" {
     })).toMatchObject({ ran: ['one', 'two'], failed: [] })
   })
 
+  // Each function is emitted with the type of its own declaration, not with
+  // that of the last one of its name (12.4: another test can declare its own
+  // of the name)
+  test('two tests and the module each declare a function of one name, with other parameters', async () => {
+    expect(await runProgram({
+      'main.ents': `type P = (x: u32, y: u32)
+export func f(s: []u8) -> u32 => s.len
+export func m() -> u32 => f("abc")
+test "a" {
+  func f(p: P) -> u32 => p.x + p.y
+  let q: P = (x: 1, y: 2)
+  assert f(q) == 3 && m() == 3
+}
+test "b" {
+  func f(x: u32) -> (u32, u32) => (x, x + 1)
+  let (a, b) = f(4)
+  assert a + b == 9 && m() == 3
+}`,
+    })).toMatchObject({ ran: ['a', 'b'], failed: [] })
+  })
+
   // One file imported by two spellings of its path is the one file: its
   // function imported again under its name is that one again (3.4)
   test('a module imports one function by two spellings of the file\'s path', async () => {

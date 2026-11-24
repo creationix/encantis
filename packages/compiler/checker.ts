@@ -475,6 +475,11 @@ export interface TypeCheckResult {
   // what the name is there and outside the test, which the symbols by name
   // no longer say (see seenAs)
   takenOver: Map<number, Symbol>
+  // What each function the module or a test declares or imports is, by its
+  // declaration: by name, a test's function of a module function's name, or
+  // of another test's, would be the last one declared (#74), and the output
+  // would give each of them that one's signature
+  funcSyms: Map<AST.FuncDecl | AST.ImportFunc, Symbol>
 }
 
 // A call in an instance of another module's generic, at its place in the
@@ -724,6 +729,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     nestedCalls: ctx.nestedCalls,
     instanceHidden: new Map(ctx.instances.filter((i) => i.hidden.captures.length > 0).map((i) => [i.name, i.hidden])),
     takenOver: ctx.takenOver,
+    funcSyms: ctx.funcSyms,
   }
 }
 
@@ -1284,6 +1290,8 @@ class CheckContext {
   private replacedByTest = new WeakMap<Symbol, Symbol | undefined>()
   // What each of those replaced, by where it was declared (TypeCheckResult)
   takenOver = new Map<number, Symbol>()
+  // What each function declaration is (TypeCheckResult)
+  funcSyms = new Map<AST.FuncDecl | AST.ImportFunc, Symbol>()
   private openTests: AST.TestDecl[] = []
   // The name the output gives each function a test declares at its top, or
   // imports from the host, by its symbol: what an instance given it calls
@@ -2084,6 +2092,7 @@ class CheckContext {
   // and the name it is exported under. Importing one function twice is no
   // second function: the import is the same one again, as it always was.
   private declareFunc(decl: AST.FuncDecl | AST.ImportFunc, name: string, sym: Symbol & { kind: 'func' }, inTest: boolean, origin?: string): void {
+    this.funcSyms.set(decl, sym)
     if (origin !== undefined && inTest) this.testOrigins.set(sym, origin)
     if (inTest && this.sharedByModule(name, decl.span.start)) {
       // Its own test goes on calling it by the name, and says nothing more.
