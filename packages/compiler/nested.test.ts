@@ -2702,4 +2702,15 @@ test "the same import again" {
   assert f() == f()
 }`)).toEqual(["'e' is already declared", "'e' is already declared"])
   })
+
+  // The test runner lists every named test without nested tests
+  test('a named test that holds only declarations is built, and passes', async () => {
+    expect(await runTestsOfSource(`test "only a declaration" {
+  func helper() -> u32 => 1
+}
+test "empty" { }
+test "with a statement" {
+  assert 1 == 1
+}`)).toEqual({ ran: ['only a declaration', 'empty', 'with a statement'], failed: [] })
+  })
 })

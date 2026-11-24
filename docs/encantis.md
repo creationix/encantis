@@ -11480,7 +11480,19 @@ cannot assign bool to u32
 
 <!-- spec:end -->
 
-A test that holds neither statements nor tests, `test "todo" {}` or one that only declares, fails (`fn is not a function`), and a test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives: both are known bugs.
+A test that holds neither statements nor tests, `test "todo" {}` or one that only declares, passes: nothing in it fails. A test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives (a known bug).
+
+<!-- spec:begin compile -->
+
+```ents
+test "todo" {}
+
+test "only declares" {
+  func helper() -> u32 => 1
+}
+```
+
+<!-- spec:end -->
 
 ---
 

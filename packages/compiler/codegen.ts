@@ -4171,8 +4171,9 @@ function emitTestDecl(
         emitTestDecl(item, ctx, checkResult, literalRefs, names, parts)
       }
     }
-  } else if (stmts.length > 0 && decl.name) {
-    // Leaf test: emit as a function
+  } else if (decl.name) {
+    // Leaf test: emit as a function, which the test runner calls, also one
+    // that holds only declarations (testsToRun lists every named leaf test)
     ctx.testMode = true
     // Its locals are its own, named as a function's are (claimLocals).
     ctx.locals = new Map()
