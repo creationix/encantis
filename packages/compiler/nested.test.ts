@@ -1842,6 +1842,33 @@ test "a test sorts with a comparator that captures" {
     expect(failed).toEqual([])
   })
 
+  // An instance given a function a test imports calls the import by its
+  // name in the test build: $__test<n>.<name> from the host, the other
+  // module's name for a function of a source module.
+  test('functions a test imports are given too, from the host or another module', async () => {
+    const source = `func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+test "gives a host import" {
+  import "env" "f" func f(x: u32) -> u32
+  let k: u32 = 0
+  if k == 1 { assert apply(f, 2) == 3 }
+}
+test "gives a source import" {
+  import "./slib.ents" ("g" func tri(x: u32) -> u32)
+  assert apply(tri, 2) == 6
+}
+test "gives a nested function that calls one" {
+  import "./slib.ents" ("g" func tri(x: u32) -> u32)
+  let k: u32 = 1
+  func plus(x: u32) -> u32 => tri(x) + k
+  assert apply(plus, 2) == 7
+}`
+    const { ran, failed, wat } = await runProgram({ 'main.ents': source, 'slib.ents': 'export func g(x: u32) -> u32 => x * 3' })
+    expect(wat).toContain('(call $__test1.f (local.get $x))')
+    expect(wat).toContain('(call $slib$g (local.get $x))')
+    expect(ran).toEqual(['gives a host import', 'gives a source import', 'gives a nested function that calls one'])
+    expect(failed).toEqual([])
+  })
+
   test('narrowing sees a write made through a comptime argument', () => {
     expect(errorsOf(`data buf = [1:u32, 2, 3, 4]
 func apply(comptime f: () -> ()) { f() }

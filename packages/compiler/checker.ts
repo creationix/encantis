@@ -3202,7 +3202,12 @@ class CheckContext {
           this.collectImport(item, true)
           for (const [name, sym] of this.moduleScope.symbols) {
             if (!known.has(name)) this.testOnly.add(name)
-            if (known.get(name) !== sym) this.declaredInTest.set(sym, decl)
+            if (known.get(name) === sym) continue
+            this.declaredInTest.set(sym, decl)
+            // An imported function is named under the test as one the test
+            // declares is: what an instance given it calls (N37), which the
+            // test build maps to the import (programToWat)
+            if (sym.kind === 'func') this.testFuncNames.set(sym, `${id}.${name}`)
           }
           for (const imported of item.items) {
             if (imported.item.kind === 'ImportFunc') once(imported.item.ident ?? imported.name, imported.span.start, from)
