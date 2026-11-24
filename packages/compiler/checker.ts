@@ -1725,22 +1725,24 @@ class CheckContext {
   }
 
   // A parameter and a named result are variables of the body, where a def's
-  // name is read as the def (3.1): neither may take one. Said at the name,
-  // as a let is (a comptime value parameter has its own message).
+  // name is read as the def (3.1): neither may take one, nor may a comptime
+  // function parameter, which the body calls by its name. Said at the name,
+  // as a let is (a comptime value parameter has its own message, and a type
+  // parameter is a type's name).
   private defNamedFields(decl: AST.FuncDecl): { at: number; message: string }[] {
     const found: { at: number; message: string }[] = []
     const sides: [AST.Type, string][] = [[decl.signature.input, 'a parameter'], [decl.signature.output, 'a named result']]
     for (const [type, what] of sides) {
       if (type.kind !== 'CompositeType') continue
       for (const field of type.fields) {
-        if (!field.ident || field.comptime) continue
+        if (!field.ident || (field.comptime && !this.namesFuncType(field.type))) continue
         const sym = this.lookup(field.ident)
         const ofTest = sym !== undefined && takenName(sym) === 'a def'
         if (!ofTest && !this.defNames.has(field.ident)) continue
         // A def of the module declared after the function is not in scope
         // yet: it is found by its declaration.
         const where = ofTest ? this.declaredFirst(field.ident, sym) : this.firstDeclared(this.defDecls.get(field.ident)?.span.start ?? 0)
-        found.push({ at: field.span.start, message: `'${field.ident}' is already declared: ${what} cannot reuse the name of a def${where}` })
+        found.push({ at: field.identSpan?.start ?? field.span.start, message: `'${field.ident}' is already declared: ${what} cannot reuse the name of a def${where}` })
       }
     }
     return found

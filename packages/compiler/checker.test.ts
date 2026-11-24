@@ -4285,6 +4285,16 @@ describe('a parameter or a named result cannot have a def\'s name', () => {
     expect(errs('def k = 3\nfunc h(comptime T: type, x: T) -> (k: T) => x\nfunc use() -> u32 => h(u32, 5) + h(u32, 6)')).toEqual([result('k')])
     // A comptime value parameter has its own message.
     expect(errs('def n = 3\nfunc h(comptime n: u32, x: u32) -> u32 => x')).toEqual(["comptime parameter 'n' has the name of a def declared in this module"])
+    // A comptime function parameter, which the body calls by its name: at
+    // the name, once, called or not, its type written out or an alias.
+    const pick = 'func pick(comptime less: (u32, u32) -> bool, a: u32, b: u32) -> u32 => if less(a, b) { a } else { b }'
+    const lt = 'func lt(a: u32, b: u32) -> bool => a < b'
+    const src = `def less = 3\n${lt}\n${pick}\nexport func use() -> u32 => pick(lt, 1, 2) + pick(lt, 3, 4)`
+    const found = checkModule(src).errors
+    expect(found.map(e => e.message)).toEqual([param('less')])
+    expect(found[0].offset).toBe(src.indexOf('less: ('))
+    expect(errs(`def less = 3\n${pick}`)).toEqual([param('less')])
+    expect(errs('def less = 3\ntype Cmp = (u32, u32) -> bool\nfunc pick(comptime less: Cmp, a: u32) -> u32 => a')).toEqual([param('less')])
   })
 
   test('in a test, the test\'s defs as well', () => {
