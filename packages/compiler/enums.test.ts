@@ -4,7 +4,7 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: this is a test, it's fine */
 import { describe, expect, test } from 'bun:test'
 import { typecheck, type TypeCheckResult } from './checker'
-import { moduleToWat } from './codegen'
+import { moduleToWat, type NestingLimitError } from './codegen'
 import { buildMeta } from './meta'
 import { documentSymbols, findReferences, gotoDefinition, hover, hoverText, rename } from './queries'
 import { parse } from './parser'
@@ -1167,11 +1167,93 @@ export memory 1
       + `export func pick(a: A, b: B, c: C) -> u32 => ${match('a', 0, match('b', 100, match('c', 200, '999').replace(/V(\d+) =>/g, 'X$1 =>')).replace(/V(\d+) =>/g, 'W$1 =>'))}\n`
     const text = watOf(source, '(func $pick')
     // The innermost is nested; each around it would put it more than 100
-    // deep, and is flat
-    expect(text.split('(block $__tests').length - 1).toBe(2)
+    // deep, and is flat, the middle one's ifs in the block of the outer one,
+    // whose _ arm it is all of
+    expect(text.split('(block $__tests').length - 1).toBe(1)
     const exports = await instance(source)
     const pick = exports.pick as (a: number, b: number, c: number) => number
     expect([pick(3, 0, 0), pick(57, 5, 0), pick(57, 58, 55), pick(59, 59, 59)]).toEqual([3, 105, 255, 999])
+  })
+
+  // The deepest some WAT nests: ifs, blocks and loops
+  const depthOf = (wat: string) => {
+    let depth = 0
+    let max = 0
+    const open: boolean[] = []
+    for (let i = 0; i < wat.length; i++) {
+      if (wat[i] === '(') {
+        const control = /^(?:if|block|loop)\b/.test(wat.slice(i + 1, i + 7))
+        open.push(control)
+        if (control) max = Math.max(max, ++depth)
+      } else if (wat[i] === ')' && open.pop()) depth--
+    }
+    return max
+  }
+  const numbered = (n: number, value: (k: number) => string) => Array.from({ length: n }, (_, k) => `${k} => ${value(k)}`).join(' ')
+
+  test('a long chain stays nested where that nests less: its deep code is in its first arm', async () => {
+    // A match of 65 arms whose first holds a match of 64: nested, 1 + 64
+    // deep; flat, its first arm would be 2 deep (its block and its if)
+    const outer = (inner: string) => `match x { 0 => ${inner} ${numbered(64, (k) => `${1000 + k}`).replace(/^0 => 1000 /, '')} 64 => 7 _ => 8 }`
+    const inner = `match y { ${numbered(64, (k) => `${k + 1}`)} _ => 9999 }`
+    const one = `export func run(x: u32, y: u32) -> u32 => ${outer(inner)}\n`
+    const text = watOf(one, '(func $run')
+    expect(text.includes('(block $__tests')).toBe(false)
+    expect(depthOf(text)).toBe(65)
+    // 45 of them, each in the first arm of the one before (the module of
+    // #263's base, which assembles there), put the function more than 100
+    // deep: it is written with each match in the form that nests less
+    let body = inner
+    for (let i = 0; i < 45; i++) body = outer(body)
+    const source = `export func run(x: u32, y: u32) -> u32 => ${body}\n`
+    expect(depthOf(watOf(source, '(func $run'))).toBeLessThanOrEqual(100)
+    const run = (await instance(source)).run as (x: number, y: number) => number
+    expect([run(0, 0), run(0, 63), run(0, 64), run(1, 0), run(64, 0), run(65, 0)]).toEqual([1, 64, 9999, 1001, 7, 8])
+  })
+
+  test('a match all of whose _ arm is a flat match puts its ifs in the same block', async () => {
+    // 120 matches of 60 arms, each the _ arm of the one before: nested, 7200
+    // ifs deep; each a block of its own, 120 blocks deep
+    let body = '5000'
+    for (let i = 119; i >= 0; i--) body = `match x { ${numbered(60, (k) => `${i * 100 + k}`).replace(/(\d+) =>/g, (_, k) => `${+k + i} =>`)} _ => ${body} }`
+    const source = `export func run(x: u32) -> u32 => ${body}\n`
+    const text = watOf(source, '(func $run')
+    expect(text.split('(block $__tests').length - 1).toBe(1)
+    expect(depthOf(text)).toBeLessThan(70)
+    const run = (await instance(source)).run as (x: number) => number
+    expect([run(0), run(59), run(60), run(178), run(179)]).toEqual([0, 59, 159, 11959, 5000])
+  })
+
+  test('a function whose code nests too deep is written again with each chain in the form that nests less', async () => {
+    // A match of 64 arms inside 30 loops: nested, 30 * 3 + 64 deep; the
+    // match alone nests 64, no more than a chain may, but in the function it
+    // is flat
+    let body = `acc += match x { ${numbered(64, (k) => `${k * 2}`)} _ => 1 }`
+    for (let i = 29; i >= 0; i--) body = `for i${i} in 1 {\n${body}\n}`
+    const source = `global acc: u32 = 0\nexport func run(x: u32) -> u32 {\nacc = 0\n${body}\nreturn acc\n}\n`
+    const text = watOf(source, '(func $run')
+    expect(text.split('(block $__tests').length - 1).toBe(1)
+    expect(depthOf(text)).toBeLessThanOrEqual(30 * 3 + 2)
+    const run = (await instance(source)).run as (x: number) => number
+    expect([run(0), run(63), run(64)]).toEqual([0, 126, 1])
+  })
+
+  test('code nested deeper than wasm text tools read is one error, at its function', () => {
+    // 75 whiles one inside another are 150 blocks and loops: wabt fails on
+    // them, or never finishes
+    let body = 'acc += 1'
+    for (let i = 74; i >= 0; i--) body = `let w${i}: u32 = 0\nwhile w${i} < 1 {\nw${i} += 1\n${body}\n}`
+    const source = `export func run() -> u32 {\nlet acc: u32 = 0\n${body}\nreturn acc\n}\n`
+    expect(() => wat(source)).toThrow("function 'run' nests its code 7620 deep in wasm, more than the 7000 that wasm text tools read")
+    try {
+      wat(source)
+    } catch (e) {
+      expect((e as NestingLimitError).offset).toBe(source.indexOf('func run'))
+    }
+    // 60 of them, 120 deep, are read
+    let shallow = 'acc += 1'
+    for (let i = 59; i >= 0; i--) shallow = `let w${i}: u32 = 0\nwhile w${i} < 1 {\nw${i} += 1\n${shallow}\n}`
+    expect(() => wat(`export func run() -> u32 {\nlet acc: u32 = 0\n${shallow}\nreturn acc\n}\n`)).not.toThrow()
   })
 })
 

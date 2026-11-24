@@ -4,7 +4,7 @@ import { parse } from '@encantis/compiler/parser'
 import { typecheck, typecheckProgram, type ProgramCheckResult, type TypeCheckResult } from '@encantis/compiler/checker'
 import type { Module } from '@encantis/compiler/ast'
 import { buildMeta } from '@encantis/compiler/meta'
-import { moduleToWat, programToWat, programToWatWithTests } from '@encantis/compiler/codegen'
+import { moduleToWat, NestingLimitError, programToWat, programToWatWithTests } from '@encantis/compiler/codegen'
 import { getSourceImports, loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
 import { formatEncantis } from '@encantis/compiler/formatter'
@@ -285,7 +285,8 @@ switch (command) {
       process.exit(1)
     }
 
-    const wat = programToWat(load.modules, check.results, entryPath)
+    const wat = orNestingError(() => programToWat(load.modules, check.results, entryPath), load.modules, entryPath)
+    if (wat === null) process.exit(1)
 
     if (command === 'wasm') {
       let unoptimized: Uint8Array
@@ -502,7 +503,8 @@ switch (command) {
         printCheckErrors(check, load.modules)
         process.exit(1)
       }
-      const wat = programToWat(load.modules, check.results, entryPath)
+      const wat = orNestingError(() => programToWat(load.modules, check.results, entryPath), load.modules, entryPath)
+      if (wat === null) process.exit(1)
       const w = await wabt()
       const wasmModule = w.parseWat(inputFile, wat, { simd: true, multi_value: true, bulk_memory: true })
       try {
@@ -588,7 +590,12 @@ switch (command) {
       const hasTests = entryMod?.module.decls.some(d => d.kind === 'TestDecl')
       if (!hasTests) continue
 
-      const { wat, testExports, testTitles, standIns } = programToWatWithTests(load.modules, check.results, entryPath)
+      const program = orNestingError(() => programToWatWithTests(load.modules, check.results, entryPath), load.modules, entryPath)
+      if (program === null) {
+        totalFailed++
+        continue
+      }
+      const { wat, testExports, testTitles, standIns } = program
       if (testExports.length === 0) continue
 
       const w = await wabt()
@@ -721,6 +728,21 @@ function checkDiagnostics(check: ProgramCheckResult, modules: Map<string, { sour
     }
   }
   return diagnostics
+}
+
+// What `write` compiles, or null where a function's code nests deeper than
+// wasm text tools read (reference 2.12): that error is printed as a check
+// error is, at the function.
+function orNestingError<T>(write: () => T, modules: Map<string, { source: string }>, entryPath: string): T | null {
+  try {
+    return write()
+  } catch (e) {
+    if (!(e instanceof NestingLimitError)) throw e
+    const file = e.path ?? entryPath
+    const loc = offsetToLineCol(modules.get(file)?.source ?? '', e.offset)
+    console.error(`${file}:${loc.line}:${loc.column}: ${e.message}`)
+    return null
+  }
 }
 
 // file:line:col: message, and under an error inside an instance of a generic

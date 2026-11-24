@@ -42,6 +42,11 @@ describe('compileToWat', () => {
     expect(typeError).toEqual({ error: expect.stringContaining(';; Type errors:') })
     const missing = await compileToWat(path, async p => (p === path ? 'import "./gone" ("g" func g())\n' : null), false)
     expect(missing).toEqual({ error: expect.stringContaining('Module not found') })
+    // Nested deeper than wabt reads (reference 2.12): 75 whiles
+    let body = 'acc += 1'
+    for (let i = 74; i >= 0; i--) body = `let w${i}: u32 = 0\nwhile w${i} < 1 {\nw${i} += 1\n${body}\n}`
+    const deep = await compileToWat(path, async () => `export func run() -> u32 {\nlet acc: u32 = 0\n${body}\nreturn acc\n}\n`, false)
+    expect(deep).toEqual({ error: expect.stringContaining(";; function 'run' nests its code 7620 deep in wasm") })
   })
 
   test('includes the tests only when asked', async () => {

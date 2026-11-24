@@ -94,6 +94,10 @@ export interface CodegenContext {
   // The locals of each name a variant pattern binds, by where it is written
   // (see collectLocals)
   patternLocals?: Map<number, string[]>
+  // Set while a function whose code, as written first, nests more than
+  // MAX_NESTED_DEPTH deep is written again: each chain of tests then takes
+  // the form that nests less (see testChain, funcToWat).
+  shallow?: boolean
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -647,9 +651,9 @@ function scratchLocal(ctx: CodegenContext, wasmType: string): string {
 // another), so a longer chain is written flat: in one block, each if leaving
 // it with its value.
 const MAX_NESTED_TESTS = 64
-// So is a chain that, nested, would put what it holds deeper than this: a
-// match in the `_` arm of a match in the `_` arm of another adds the depth
-// of each, and one in an arm adds the arms before it.
+// So is a chain that, nested, would put what it holds deeper than this, and a
+// function whose code would nest deeper than this is written again with each
+// chain in the form that nests less (see funcToWat).
 const MAX_NESTED_DEPTH = 100
 
 // How many ifs, blocks and loops of some WAT are inside one another, at most.
@@ -676,18 +680,135 @@ function controlDepth(wat: string): number {
   return max
 }
 
+// The deepest a function's code can nest. wabt, which the command line
+// assembles with, reads nested code on a stack of its own, and code nested
+// deeper than it holds makes wabt fail, or never finish. Each instruction on
+// the way to the deepest one counts what wabt's stack was seen to take for it
+// at most, with a little to spare: a block or a loop 50, an if 46 (wabt
+// reads one if inside another 154 deep, a block 141 deep where its label is
+// used), any other instruction 30 (243 deep). A function nested deeper is one
+// error (NestingLimitError): 140 blocks or loops, 152 ifs or 233 other
+// instructions, or a mix of them.
+export const MAX_NESTING = 7000
+
+// How deep some WAT nests, as MAX_NESTING counts it.
+export function nestingOf(wat: string): number {
+  const open: number[] = []
+  let depth = 0
+  let max = 0
+  for (let i = 0; i < wat.length; i++) {
+    const c = wat[i]
+    if (c === '"') {
+      for (i++; i < wat.length && wat[i] !== '"'; i++) if (wat[i] === '\\') i++
+    } else if (c === ';' && wat[i + 1] === ';') {
+      while (i < wat.length && wat[i] !== '\n') i++
+    } else if (c === '(') {
+      const word = /^[\w.]*/.exec(wat.slice(i + 1, i + 24))?.[0] ?? ''
+      const weight = word === 'block' || word === 'loop' ? 50 : word === 'if' ? 46 : /^(?:func|then|else|result|param|local|type)$/.test(word) ? 0 : 30
+      open.push(weight)
+      depth += weight
+      if (depth > max) max = depth
+    } else if (c === ')') {
+      depth -= open.pop() ?? 0
+    }
+  }
+  return max
+}
+
+// A function, or a test, whose code nests deeper than MAX_NESTING: at the
+// function's name (or the test's), in the module at `path`.
+export class NestingLimitError extends Error {
+  path?: string
+  constructor(message: string, readonly offset: number) {
+    super(message)
+  }
+}
+
+function checkNesting(wat: string, what: string, offset: number): void {
+  const nesting = nestingOf(wat)
+  if (nesting <= MAX_NESTING) return
+  throw new NestingLimitError(
+    `${what} nests its code ${nesting} deep in wasm, more than the ${MAX_NESTING} that wasm text tools read (a block or a loop counts 50, an if 46, any other instruction 30): keep fewer loops, ifs and matches one inside another`,
+    offset,
+  )
+}
+
+// Codegen of the module at `path`, which a NestingLimitError says it is in.
+function inModule<T>(path: string, write: () => T): T {
+  try {
+    return write()
+  } catch (e) {
+    if (e instanceof NestingLimitError && e.path === undefined) e.path = path
+    throw e
+  }
+}
+
+// Where the last instruction of some WAT starts, at its top level, when the
+// WAT ends with it; -1 when it ends with no instruction of its own.
+function lastInstructionAt(wat: string): number {
+  let depth = 0
+  let start = -1
+  let end = -1
+  for (let i = 0; i < wat.length; i++) {
+    const c = wat[i]
+    if (c === '"') {
+      for (i++; i < wat.length && wat[i] !== '"'; i++) if (wat[i] === '\\') i++
+    } else if (c === ';' && wat[i + 1] === ';') {
+      while (i < wat.length && wat[i] !== '\n') i++
+    } else if (c === '(') {
+      if (depth++ === 0) start = i
+    } else if (c === ')') {
+      if (--depth === 0) end = i
+    } else if (depth === 0 && !/\s/.test(c)) {
+      return -1
+    }
+  }
+  return depth === 0 && end === wat.trimEnd().length - 1 ? start : -1
+}
+
+// A flat chain that is the last thing `otherwise` does, as a match in the `_`
+// arm of a match is: its block's instructions, which can go in the block of
+// the chain it is the otherwise of, after what comes before it. Its ifs then
+// leave that block, with the same values, at the same place, so a match in
+// the `_` arm of a match in the `_` arm of another is no deeper than one.
+function flatTail(otherwise: string, resultStr: string): { before: string; inside: string } | null {
+  const at = lastInstructionAt(otherwise)
+  if (at < 0) return null
+  const head = `(block $__tests ${resultStr}\n`
+  if (!otherwise.startsWith(head, at)) return null
+  return { before: otherwise.slice(0, at).trim(), inside: otherwise.trimEnd().slice(at + head.length, -1) }
+}
+
 // Tests tried in turn, each `[test, then]` in order, the first that holds
 // giving its `then`, and `otherwise` where none does; `nested` writes the
 // chain as ifs each in the else of the one before. More than
 // MAX_NESTED_TESTS, or a chain that nested would hold code deeper than
-// MAX_NESTED_DEPTH, are flat: a block of ifs, each `then` followed by a br out
-// of it with its value, then `otherwise`. A label inside a `then` is its own
-// block's (a label shadows the one outside it).
-function testChain(tests: [string, string][], otherwise: string, resultStr: string, nested: (test: string, then: string, rest: string) => string): string {
-  const deepest = () => Math.max(tests.length + controlDepth(otherwise), ...tests.map(([test, then], k) => k + 1 + Math.max(controlDepth(test), controlDepth(then))))
-  if (tests.length <= MAX_NESTED_TESTS && deepest() <= MAX_NESTED_DEPTH) return tests.reduceRight((rest, [test, then]) => nested(test, then, rest), otherwise)
+// MAX_NESTED_DEPTH, are flat where that nests less: a block of ifs, each
+// `then` followed by a br out of it with its value, then `otherwise` (the
+// instructions of a flat chain it ends with put in the block itself). A
+// label inside a `then` is its own block's (a label shadows the one outside
+// it). In a function written again to nest less (ctx.shallow), each chain is
+// in the form that nests less.
+function testChain(
+  tests: [string, string][],
+  otherwise: string,
+  resultStr: string,
+  nested: (test: string, then: string, rest: string) => string,
+  ctx: CodegenContext,
+): string {
+  if (tests.length === 0) return otherwise
+  const holds = tests.map(([test, then]) => Math.max(controlDepth(test), controlDepth(then)))
+  const asNested = Math.max(tests.length + controlDepth(otherwise), ...holds.map((d, k) => k + 1 + d))
+  const tail = flatTail(otherwise, resultStr)
+  const last = tail ? Math.max(controlDepth(tail.before), controlDepth(tail.inside)) : controlDepth(otherwise)
+  const asFlat = 1 + Math.max(last, ...holds.map((d) => 1 + d))
+  const nest = ctx.shallow
+    ? asNested <= asFlat
+    : (tests.length <= MAX_NESTED_TESTS && asNested <= MAX_NESTED_DEPTH) || asNested < asFlat
+  if (nest) return tests.reduceRight((rest, [test, then]) => nested(test, then, rest), otherwise)
   const ifs = tests.map(([test, then]) => `(if ${test} (then ${then} (br $__tests)))`)
-  return `(block $__tests ${resultStr}\n${[...ifs, otherwise].filter((x) => x !== '').join('\n')})`
+  const rest = tail ? [tail.before, tail.inside] : [otherwise]
+  return `(block $__tests ${resultStr}\n${[...ifs, ...rest].filter((x) => x !== '').join('\n')})`
 }
 
 // A local or a constant: free to repeat, and nothing that runs in between
@@ -940,7 +1061,7 @@ function loadEnumAt(e: RT.EnumRT, addr: () => string, offset: number, ctx: Codeg
     branches.push([k, values.join(' ')])
   })
   const tests = branches.map(([k, values]): [string, string] => [`(i32.eq (local.get ${tag}) (i32.const ${k}))`, values])
-  const chain = testChain(tests, slots.map(zeroOf).join(' '), result, (test, then, rest) => `(if ${result} ${test}\n(then ${then})\n(else ${rest}))`)
+  const chain = testChain(tests, slots.map(zeroOf).join(' '), result, (test, then, rest) => `(if ${result} ${test}\n(then ${then})\n(else ${rest}))`, ctx)
   return `(local.tee ${tag} ${tagLoad})\n${chain}`
 }
 
@@ -1011,7 +1132,7 @@ function storeRegsAt(type: ResolvedType, base: string, offset: number, regs: str
       branches.push([k, stores.filter((x) => x !== '').join(' ')])
     })
     const tests = branches.map(([k, stores]): [string, string] => [`(i32.eq ${tag} (i32.const ${k}))`, stores])
-    const chain = testChain(tests, '', '', (test, then, rest) => `(if ${test}\n(then ${then})${rest ? `\n(else ${rest})` : ''})`)
+    const chain = testChain(tests, '', '', (test, then, rest) => `(if ${test}\n(then ${then})${rest ? `\n(else ${rest})` : ''})`, ctx)
     if (chain) out.push(chain)
     return out.join('\n')
   }
@@ -2945,7 +3066,7 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
     }
   }
 
-  return setup + testChain(tested, otherwise, resultStr, (test, then, rest) => `(if ${resultStr} ${test} (then ${then}) (else ${rest}))`)
+  return setup + testChain(tested, otherwise, resultStr, (test, then, rest) => `(if ${resultStr} ${test} (then ${then}) (else ${rest}))`, ctx)
 }
 
 // A value of an enum as registers that can be read more than once (a
@@ -3054,7 +3175,7 @@ function matchEnumToWat(expr: AST.MatchExpr, e: RT.EnumRT, ctx: CodegenContext):
     const body = only ? withPatternBindings(only, ctx, () => bodyOf(arm)) : bodyOf(arm)
     tested.unshift([cond, [...sets, body].join(' ')])
   }
-  const result = testChain(tested, otherwise, resultStr, (test, then, rest) => `(if ${resultStr} ${test}\n(then ${then})\n(else ${rest}))`)
+  const result = testChain(tested, otherwise, resultStr, (test, then, rest) => `(if ${resultStr} ${test}\n(then ${then})\n(else ${rest}))`, ctx)
   return setup ? `${setup}\n${result}` : result
 }
 
@@ -3616,7 +3737,30 @@ export function funcToWat(
   // checked as it comes in.
   exported = false,
 ): string {
+  const write = (shallow: boolean) => funcToWatOnce(decl, checkResult, literalRefs, nameMap, watName, extraSymbols, dataSectionSize, exported, shallow)
+  // Code nested deeper than MAX_NESTED_DEPTH, as chains of tests in loops
+  // or in one another's arms can be, is written again with each chain in the
+  // form that nests less: the depth that counts is the function's.
+  let wat = write(false)
+  if (controlDepth(wat) > MAX_NESTED_DEPTH) wat = write(true)
+  const name = checkResult.funcNames.get(decl) ?? decl.ident ?? 'anonymous'
+  checkNesting(wat, `function '${name}'`, scratchId(decl.span.start))
+  return wat
+}
+
+function funcToWatOnce(
+  decl: AST.FuncDecl,
+  checkResult: TypeCheckResult,
+  literalRefs: Map<number, { ptr: number; len: number }>,
+  nameMap: Map<string, string> | undefined,
+  watName: string | undefined,
+  extraSymbols: Map<string, CheckSymbol> | undefined,
+  dataSectionSize: number | undefined,
+  exported: boolean,
+  shallow: boolean,
+): string {
   const ctx = createContext(checkResult, literalRefs, nameMap, dataSectionSize)
+  ctx.shallow = shallow
   if (extraSymbols) {
     for (const [k, v] of extraSymbols) ctx.symbols.set(k, v)
   }
@@ -4536,11 +4680,19 @@ function emitTestDecl(
     // Collect locals first: codegen looks up how multi-value locals flatten.
     const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const testBody: AST.Block = { kind: 'Block', stmts, span: decl.span }
-    ctx.scratch = []
-    const body = bodyToWat(testBody, ctx)
+    const write = (shallow: boolean) => {
+      ctx.scratch = []
+      ctx.shallow = shallow
+      return bodyToWat(testBody, ctx)
+    }
+    // As funcToWat does: code nested too deep is written again to nest less.
+    let body = write(false)
+    if (controlDepth(body) > MAX_NESTED_DEPTH) body = write(true)
+    ctx.shallow = false
+    checkNesting(body, `test ${JSON.stringify(decl.name)}`, decl.span.start)
     ctx.testMode = false
     const seen = new Set<string>()
-    const locals = [...rawLocals, ...ctx.scratch].filter(l => {
+    const locals = [...rawLocals, ...(ctx.scratch ?? [])].filter(l => {
       if (seen.has(l.name)) return false
       seen.add(l.name)
       return true
@@ -5025,10 +5177,10 @@ export function programToWat(
       const known = result.funcNames.get(fn) ?? fn.ident
       const watName = modNameMap.get(known) ?? known
       if (entryExports.has(fn)) {
-        const entry = hostEntry(fn, result, watName, parts.length, () => funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize))
+        const entry = hostEntry(fn, result, watName, parts.length, () => inModule(path, () => funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize)))
         if (entry) hostEntries.push(entry)
       }
-      parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize, entryExports.has(fn)))
+      parts.push(inModule(path, () => funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize, entryExports.has(fn))))
     }
     globalChecks.push(...hostGlobalChecks(loaded.module, createContext(result, refsOf(path), modNameMap, dataSection.totalSize), tested.has(path) ? testNames.imports : undefined))
   }
@@ -5073,7 +5225,7 @@ export function programToWat(
       const ctx = createContext(testResult, refsOf(testFilePath), buildFullNameMap(testFilePath), dataSection.totalSize)
       for (const decl of testModule.module.decls) {
         if (decl.kind !== 'TestDecl') continue
-        emitTestDecl(decl, ctx, testResult, refsOf(testFilePath), testNames, parts)
+        inModule(testFilePath, () => emitTestDecl(decl, ctx, testResult, refsOf(testFilePath), testNames, parts))
       }
     }
   }

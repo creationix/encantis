@@ -180,6 +180,34 @@ describe('two memory declarations in a program', () => {
   }
 })
 
+// Code nested deeper than wabt reads (reference 2.12) is one error, at its
+// function, where the module is written out; wabt is not given it, since on
+// such code it fails, or never finishes.
+describe('code nested deeper than wasm text tools read', () => {
+  let body = 'acc += 1'
+  for (let i = 74; i >= 0; i--) body = `let w${i}: u32 = 0\nwhile w${i} < 1 {\nw${i} += 1\n${body}\n}`
+  const DEEP = `export func run() -> u32 {\nlet acc: u32 = 0\n${body}\nreturn acc\n}\ntest "runs" { assert run() == 1 }\n`
+  for (const command of ['compile', 'wasm', 'test']) {
+    test(`${command} reports it at the function and writes nothing`, async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+      try {
+        const file = join(dir, 'deep.ents')
+        await writeFile(file, DEEP)
+        const out = join(dir, 'out')
+        const run = Bun.spawnSync([process.execPath, CLI, command, file, ...(command === 'test' ? [] : ['-o', out])], { timeout: 60000 })
+        expect(run.exitCode).toBe(1)
+        expect(existsSync(out)).toBe(false)
+        const stderr = run.stderr.toString()
+        expect(stderr).toContain(`${file}:1:8: function 'run' nests its code 7620 deep in wasm, more than the 7000 that wasm text tools read`)
+        expect(stderr).not.toContain('WAT error')
+        expect(stderr).not.toContain('    at ')
+      } finally {
+        await rm(dir, { recursive: true })
+      }
+    })
+  }
+})
+
 // The queries answer for the name where it stands: a local where it is
 // defined, the binding of an if let at its name, each name of a for, and a
 // field as a field. Before, each was looked up by name, and a rename from one
