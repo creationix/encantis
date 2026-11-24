@@ -886,10 +886,9 @@ test "group" {
     expect(errorsOf(source)).toEqual([
       "'helper' is already declared: a function that uses its test's variables cannot reuse the name of a function of the module (first declared at 19:8)",
     ])
-    // Run without the host import, which the test host does not give
-    const fine = source.slice(0, source.indexOf('test "group"')).replace(/test "imports" \{[^]*?\n\}\n/, '').replace(/\n {2}func ask[^\n]*|\n {2}assert ask[^\n]*/g, '')
-    expect(fine).not.toContain('ask')
-    expect(await runTestsOfSource(fine)).toEqual({ ran: ['plain', 'capturing'], failed: [] })
+    const fine = source.slice(0, source.indexOf('test "group"'))
+    expect(errorsOf(fine)).toEqual([])
+    expect(await runTestsOfSource(fine)).toEqual({ ran: ['plain', 'imports', 'capturing'], failed: [] })
   })
 
   test('a group\'s variables: not at its top, not in its nested tests', () => {
