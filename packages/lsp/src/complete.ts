@@ -96,25 +96,32 @@ function sourceFor(text: string, offset: number, current: Source | null, parsed:
   return current ? { source: current, func: null, slack: 0 } : null;
 }
 
-// What a local is seen in: the innermost block, for, if let or match arm it
-// is declared in. Where it ends, in the function's source
+// What a local is seen in, from where it is declared to the end of the
+// innermost block, for, if or match arm it is declared in. The name an if let
+// binds, in the branch's head, is seen in its branch alone: not in an elif or
+// else after it.
 const SCOPES = new Set(['Block', 'ForStmt', 'IfExpr', 'MatchArm']);
 
-function scopeEnd(func: FuncDecl, at: number): number {
-  let end = func.span.end;
+function scopeOf(func: FuncDecl, at: number): { start: number; end: number } {
+  const scope = { start: at, end: func.span.end };
   const visit = (node: unknown): void => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) {
       for (const each of node) visit(each);
       return;
     }
-    const { kind, span } = node as { kind?: string; span?: { start: number; end: number } };
-    if (span && (at < span.start || at >= span.end)) return;
-    if (span && kind && SCOPES.has(kind) && span.end < end) end = span.end;
+    const n = node as { kind?: string; span?: { start: number; end: number }; pattern?: unknown; thenBranch?: { span: { start: number; end: number } } };
+    if (n.span && (at < n.span.start || at >= n.span.end)) return;
+    if ((n.kind === 'IfExpr' || n.kind === 'ElifBranch') && n.pattern && n.thenBranch && at < n.thenBranch.span.start) {
+      scope.start = n.thenBranch.span.start;
+      scope.end = n.thenBranch.span.end;
+      return;
+    }
+    if (n.span && n.kind && SCOPES.has(n.kind) && n.span.end < scope.end) scope.end = n.span.end;
     for (const [key, value] of Object.entries(node)) if (key !== 'span') visit(value);
   };
   visit(func.body);
-  return end;
+  return scope;
 }
 
 // The parameters and locals declared in a function before an offset and
@@ -126,7 +133,10 @@ function ownNames(source: Source, func: FuncDecl | null, offset: number, slack =
     if (!OWN_KINDS.includes(symbol.kind)) continue;
     const at = offsetOf(source.text, symbol.def);
     if (at < func.span.start || at >= offset) continue;
-    if (symbol.kind === 'local' && scopeEnd(func, at) + slack <= offset) continue;
+    if (symbol.kind === 'local') {
+      const scope = scopeOf(func, at);
+      if (offset < scope.start || scope.end + slack <= offset) continue;
+    }
     const known = names.get(symbol.name);
     if (!known || known.at < at) names.set(symbol.name, { symbol, at });
   }

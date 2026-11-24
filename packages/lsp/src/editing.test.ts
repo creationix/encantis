@@ -418,6 +418,26 @@ export func f(n: u32, t: (i32, i32), q: *mut A) -> u32 {
     expect(within.map((i) => i.label)).toContain('inner')
   })
 
+  test('the name an if let binds is offered in its branch, and not in the branches after it', async () => {
+    const base = `export func f(o: ?*u32, n: u32) -> u32 {
+  if let found = o {
+    return found.*
+  } elif n > 2 {
+    return 1
+  } else {
+    return 0
+  }
+}
+`
+    const at = (line: string) => completeIn(base, base.replace(line, `    let z = |\n${line}`)).then((items) => items.map((i) => i.label))
+    expect(await at('    return found.*')).toContain('found')
+    for (const line of ['    return 1', '    return 0']) {
+      const labels = await at(line)
+      expect(labels).toContain('n')
+      expect(labels).not.toContain('found')
+    }
+  })
+
   test('after a point: unnamed fields by position, .* and the type puns of a pointer', async () => {
     const tuple = await completeIn(GENERIC, GENERIC.replace('  return second', '  let z = t.|\n  return second'))
     expect(tuple.map((i) => [i.label, i.detail]).slice(0, 2)).toEqual([['0', 'i32'], ['1', 'i32']])
