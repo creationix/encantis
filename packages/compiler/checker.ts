@@ -10774,9 +10774,12 @@ class CheckContext {
     // types this is read off the syntax: a name the generic itself declares
     // (a parameter, a let, a loop variable) is taken to be that one.
     const { names, locals } = namesIn(decl)
+    // The body's own nested functions are names of its own too
+    const nestedNames = new Set(nestedDeclsIn(decl.body).flatMap((nested) => (nested.ident ? [nested.ident] : [])))
     for (const { name, offset, called } of names) {
       if (locals.has(name)) continue
       if (!this.moduleScope.symbols.has(name)) {
+        if (nestedNames.has(name)) continue
         this.namedNothing.push({ at: offset, name })
         continue
       }

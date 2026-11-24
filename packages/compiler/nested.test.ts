@@ -3634,6 +3634,24 @@ export func e() -> u32 => gen(u32)
     }
   })
 
+  // A nested function of a generic's body is the body's own name, also where
+  // a test declares a function of the name below
+  test('a generic\'s nested function named like a test\'s function is the generic\'s', () => {
+    const source = `func wrap(comptime T: type, x: T) -> T {
+  func helper(a: T) -> T => a
+  return helper(x)
+}
+export func one() -> u32 => wrap(1:u32)
+test "t" {
+  func helper(a: u32) -> u32 => a + 1
+  assert wrap(3:u32) == 3 && helper(1) == 2
+}
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    expect(hoverText(hover(source, parsed.module!, result, source.indexOf('helper(x)'))!)).toBe('func helper: func(a: u32) -> u32 — nested in wrap(T = u32)')
+  })
+
   // Two functions of one name from two files of one name, given to a
   // generic, are told apart by the files' paths (8.4)
   test('functions of two files of one name are named by the files\' paths', async () => {
