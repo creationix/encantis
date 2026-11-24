@@ -150,27 +150,45 @@ function oz(binaryen: Binaryen, wasm: Uint8Array): Uint8Array {
   }
 }
 
-// The smallest of: -Oz, and -O3 then -Oz, each repeated at -Oz while the
-// module keeps shrinking (as wasm-opt --converge does), and the module as it
-// came, since binaryen's rewriting of multi-value code can make a module
-// larger than it was. Ties go to the first.
+// The smallest of: -Oz, -O3 then -Oz, and binaryen's rse pass once then -Oz,
+// each repeated at -Oz while the module keeps shrinking (as wasm-opt
+// --converge does), and the module as it came, since binaryen's rewriting of
+// multi-value code can make a module larger than it was. Ties go to the
+// first.
 //
 // Measured when this was added, over the 93 programs then in examples/ and
 // lib/ (57192 bytes at -O), it took 3.5% off -O: repeating 0.7%, keeping a
 // module as it came 2.6%, the -O3 try 0.2%. ed25519's point.ents is a module
 // kept as it came: -Oz grows it from 7162 bytes to 8090.
+// The rse try was added later (#172): -Oz runs coalesce-locals before rse,
+// which can leave a store of a counter's zero that rse run first removes. Over
+// the 96 programs then (59474 bytes) it took 45 bytes off, in 10 of them. It is
+// a try of its own, never in place of another: before the loop lowerings of
+// that change, rse run first in both tries grew generics/sort.ents from 341
+// bytes to 357.
 // Stripping custom sections would take nothing off: wabt writes none, and
 // binaryen without debug info adds none.
 function release(binaryen: Binaryen, wasm: Uint8Array): Uint8Array {
-  const tries = [converge(binaryen, wasm, [[2, 2]]), converge(binaryen, wasm, [[3, 0], [2, 2]]), wasm]
+  const tries = [
+    converge(binaryen, wasm, [[2, 2]]),
+    converge(binaryen, wasm, [[3, 0], [2, 2]]),
+    converge(binaryen, wasm, [[2, 2]], ['rse']),
+    wasm,
+  ]
   return tries.reduce((best, next) => (next.length < best.length ? next : best))
 }
 
 const MAX_ROUNDS = 10
 
-function converge(binaryen: Binaryen, wasm: Uint8Array, levels: [number, number][]): Uint8Array {
+// The module after binaryen's passes `passes`, if any, once, and then its
+// default pipeline at each of `levels`, repeated at -Oz while it shrinks.
+function converge(binaryen: Binaryen, wasm: Uint8Array, levels: [number, number][], passes: string[] = []): Uint8Array {
   const module = read(binaryen, wasm)
   try {
+    if (passes.length > 0) {
+      settings(binaryen, 2, 2)
+      module.runPasses(passes)
+    }
     for (const [optimizeLevel, shrinkLevel] of levels) {
       settings(binaryen, optimizeLevel, shrinkLevel)
       module.optimize()
