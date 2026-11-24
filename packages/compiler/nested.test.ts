@@ -173,6 +173,34 @@ export func f() -> u32 {
 }`)).toEqual([])
     })
 
+    test('a parameter or a named result takes no def\'s name (3.4), also at the top of a test or in a generic', () => {
+      expect(errorsOf(`
+def k = 3
+export func f(a: u32) -> u32 {
+  func g(k: u32) -> u32 => k + 1
+  func h(x: u32) -> (k: u32) { k = x }
+  return g(a) + h(a)
+}
+func over(comptime T: type, x: T) -> T {
+  func see(k: T) -> T => k
+  return see(x)
+}
+export func use(x: u32) -> u32 => over(x)
+test "t" {
+  def d = 7
+  let z: u32 = 1
+  func top(d: u32) -> u32 => d + z
+  func plain(d: u32) -> u32 => d
+  assert top(1) + plain(1) == 3
+}`)).toEqual([
+        "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 2:5)",
+        "'k' is already declared: a named result cannot reuse the name of a def (first declared at 2:5)",
+        "'d' is already declared: a parameter cannot reuse the name of a def (first declared at 14:7)",
+        "'d' is already declared: a parameter cannot reuse the name of a def (first declared at 14:7)",
+        "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 2:5), in over(T = u32)",
+      ])
+    })
+
     test('a name declared after it is free for its own variables', () => {
       expect(errorsOf(`
 export func f() -> u32 {

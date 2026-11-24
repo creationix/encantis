@@ -4344,7 +4344,7 @@ test "a value is copied, a pointer is shared" {
 
 <!-- spec:end -->
 
-A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. Neither a parameter nor a named result may have a def's name: the name of a `def` of the module, or, for a function declared in a test, of a `def` the test declares before it. Each is an error at the name (`'k' is already declared: a parameter cannot reuse the name of a def`, `'limit' is already declared: a named result cannot reuse the name of a def`), in a generic function too, where it is reported once, with the declarations, whether or not anything calls it. So is a comptime function parameter ([8.6](#86-comptime-function-parameters)), which the body calls by its name: `comptime less: (u32, u32) -> bool` beside a `def less` is that error. (A comptime value parameter's is `comptime parameter 'n' has the name of a def declared in this module`, [8.7](#87-comptime-value-parameters).) The parameter names an import writes are no variables, and are not checked.
+A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. Neither a parameter nor a named result may have a def's name: the name of a `def` of the module, or, for a function declared in a test, of a `def` the test declares before it. The same holds for a nested function's ([Nested Functions](#nested-functions)). Each is an error at the name (`'k' is already declared: a parameter cannot reuse the name of a def`, `'limit' is already declared: a named result cannot reuse the name of a def`), in a generic function too, where it is reported once, with the declarations, whether or not anything calls it. So is a comptime function parameter ([8.6](#86-comptime-function-parameters)), which the body calls by its name: `comptime less: (u32, u32) -> bool` beside a `def less` is that error. (A comptime value parameter's is `comptime parameter 'n' has the name of a def declared in this module`, [8.7](#87-comptime-value-parameters).) The parameter names an import writes are no variables, and are not checked.
 
 <!-- spec:begin compile -->
 
@@ -4946,7 +4946,7 @@ func g() -> u32 {
 
 <!-- spec:end -->
 
-Its own parameters, named results and variables take no name of a variable it could use (below), nor of a nested function seen where it is declared, so in its body every name means one thing. They can have the name of a global, a function, an import or a `data` block of the module, which they hide there, as a module function's parameters can. A name the function around it declares after the nested function is not seen at the nested function, so its own variables may have that name.
+Its own parameters, named results and variables take no name of a variable it could use (below), nor of a nested function seen where it is declared, so in its body every name means one thing. They can have the name of a global, a function, an import or a `data` block of the module, which they hide there, as a module function's parameters can. As with a module function's, no parameter or named result of it has a def's name ([3.4](#34-functions)): a `def` of the module, or one its test declares before it, also for a function at the top of a test that uses the test's variables. A name the function around it declares after the nested function is not seen at the nested function, so its own variables may have that name.
 
 <!-- spec:begin compile -->
 
@@ -4959,6 +4959,29 @@ func f(x: u32) -> u32 {
 
 ```errors
 a parameter of a nested function cannot reuse the name of a parameter
+```
+
+```ents
+def k = 3
+
+func f(a: u32) -> u32 {
+  func g(k: u32) -> u32 => k + 1
+  func h(x: u32) -> (k: u32) { k = x }
+  return g(a) + h(a)
+}
+
+test "a def of the test" {
+  def d = 7
+  let z: u32 = 1
+  func top(d: u32) -> u32 => d + z
+  assert top(1) == 2
+}
+```
+
+```errors
+'k' is already declared: a parameter cannot reuse the name of a def (first declared at 1:5)
+'k' is already declared: a named result cannot reuse the name of a def (first declared at 1:5)
+'d' is already declared: a parameter cannot reuse the name of a def (first declared at 10:7)
 ```
 
 <!-- spec:end -->

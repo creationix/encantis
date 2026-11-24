@@ -10737,6 +10737,10 @@ class CheckContext {
     } else if (!existing && BUILTIN_NAMES.has(name)) {
       this.warn(nameAt, `'${name}' replaces the builtin ${name} in the body of ${frame.shown}`)
     }
+    // Its parameters and named results take no def's name, as a function
+    // of the module's do not (3.4): the defs seen where it is declared, a
+    // test's own included
+    for (const { at, message } of this.defNamedFields(decl)) this.error(at, message)
     const type = this.resolveSignature(decl.signature)
     const sym: Symbol & { kind: 'func' } = { kind: 'func', type, inline: decl.inline }
     const nested: NestedFunc = {
