@@ -57,8 +57,9 @@ export interface HoverResult {
   // instances, is nested in the generic, its type written in the generic's
   // terms, and has in each instance that one's signature and captures what
   // that one's functions capture: listed per instance, those alike together
-  // (the instance labels, and the signature and captures)
-  capturesIn?: PerInstance[]
+  // (the instance labels, what they capture, and their signature where it
+  // is not the one the generic writes)
+  capturesIn?: (PerInstance & { signature?: string })[]
   // A variable a nested function uses, where it is used there: the function
   // that declares it
   capturedFrom?: string
@@ -71,7 +72,7 @@ export function hoverText(r: HoverResult): string {
   const parts = [
     ...(r.nestedIn !== undefined ? [`nested in ${r.nestedIn}`] : []),
     ...(r.captures !== undefined ? [`captures ${r.captures}`] : []),
-    ...(r.capturesIn ?? []).map((i) => `in ${i.in.join(', ')}: ${i.type}`),
+    ...(r.capturesIn ?? []).map((i) => `in ${i.in.join(', ')}: ${i.signature ? `${i.signature}, ` : ''}captures ${i.type}`),
     ...(r.capturedFrom !== undefined ? [`captured from ${r.capturedFrom}`] : []),
     ...(r.as !== undefined ? [r.as] : []),
     ...(r.calls !== undefined ? [`calls ${r.calls}`] : []),
@@ -362,12 +363,16 @@ function nestedHover(module: AST.Module, checkResult: TypeCheckResult, defined: 
   const results = output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${source.slice(at(output.span.start), at(output.span.end))}`
   const type = `func${source.slice(at(input.span.start), at(input.span.end))}${results}`
   const signed = copies.some((n) => typeToString(n.type) !== type)
-  const groups = new Map<string, string[]>()
+  const groups = new Map<string, { in: string[]; type: string; signature?: string }>()
   for (const n of copies) {
-    const text = `${signed ? `${typeToString(n.type)}, ` : ''}captures ${capturesText(n) ?? 'nothing'}`
-    groups.set(text, [...(groups.get(text) ?? []), labelOf(n)])
+    const captures = capturesText(n) ?? 'nothing'
+    const signature = signed ? typeToString(n.type) : undefined
+    const key = `${signature ?? ''}\n${captures}`
+    const group = groups.get(key) ?? { in: [], type: captures, ...(signature ? { signature } : {}) }
+    group.in.push(labelOf(n))
+    groups.set(key, group)
   }
-  return { type, nestedIn, capturesIn: [...groups].map(([text, labels]) => ({ in: labels, type: text })) }
+  return { type, nestedIn, capturesIn: [...groups.values()] }
 }
 
 // The innermost nested function whose declaration holds `offset`, of those
@@ -450,7 +455,10 @@ export function hover(
   const defined = checkResult.symbolRefs.get(start) ?? (checkResult.references.has(start) ? start : undefined)
   // A nested function, where it is declared, called or given
   const nested = defined === undefined ? undefined : nestedDefinedAt(checkResult, defined)
-  if (nested && defined !== undefined) return { name, kind: 'func', ...nestedHover(module, checkResult, defined, nested, source) }
+  if (nested && defined !== undefined) {
+    const { type, ...shown } = nestedHover(module, checkResult, defined, nested, source)
+    return { name, type, kind: 'func', ...shown }
+  }
   // A function whose name a test took over (#74), where it is the one
   // meant: a comptime argument outside the test
   const replaced = defined === undefined ? undefined : checkResult.takenOver.get(defined)
