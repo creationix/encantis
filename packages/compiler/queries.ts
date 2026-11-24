@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, isRefusedType, readAsModuleName } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, refusedBindingAt } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, type ResolvedField, byteSize, unwrap, isValueArray, enumText } from './types'
 import { typeToWasm } from './codegen'
@@ -349,8 +349,9 @@ export function hover(
   const defined = checkResult.symbolRefs.get(start) ?? (checkResult.references.has(start) ? start : undefined)
   if (defined !== undefined && localDefinedAt(checkResult, defined)) {
     // A name of a refused pattern is a refused value: it has no type to show
+    if (refusedBindingAt(checkResult, defined)) return null
     const type = localType(checkResult, start) ?? localType(checkResult, defined)
-    return type && !isRefusedType(type) ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
+    return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
   }
 
   // A field of an enum's payload, where it is declared or named (a named

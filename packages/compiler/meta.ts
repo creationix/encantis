@@ -2,7 +2,7 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
-import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, isRefusedType, readAsModuleName, type TypeCheckResult } from './checker'
+import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, refusedBindingAt, type TypeCheckResult } from './checker'
 import { ownName, callOf, memberIn, instancesListed, applicationsListed, genericAround, type GenericInfo } from './instances'
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow, enumText } from './types'
 import { LineMap } from './position'
@@ -1222,7 +1222,7 @@ class MetaBuilder {
       if (at === null || name === null) continue
       // A name of a refused pattern is a refused value: it has no type to show
       const type = this.bindingType(at, 'Binding')
-      if (!type || isRefusedType(type)) continue
+      if (!type || refusedBindingAt(this.checkResult, at)) continue
       const symbolIndex = this.symbolIndexByDef.get(at) ?? this.addSymbol(name, 'local', type, at)
       this.addHint(at, name.length, this.typeRegistry.register(type), symbolIndex)
     }
@@ -1253,8 +1253,9 @@ class MetaBuilder {
 
     switch (expr.kind) {
       case 'IdentExpr': {
-        // A refused value (a name of a refused pattern) has no type to show
-        if (isRefusedType(type)) break
+        // A use of a name of a refused pattern, a refused value, has no type to show
+        const bound = this.checkResult.symbolRefs.get(expr.span.start)
+        if (bound !== undefined && refusedBindingAt(this.checkResult, bound)) break
         const symbolIndex = this.usedSymbol(expr)
         // Check for builtin functions when no symbol is found
         const effectiveType = type ?? BUILTIN_SIGNATURES[expr.name]

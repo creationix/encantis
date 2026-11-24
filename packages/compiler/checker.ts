@@ -218,9 +218,10 @@ const MAX_APPLY_DEPTH = 1000
 // identity, so that what the expression is used for stays silent about it.
 const RECOVERY: ResolvedType = primitive('i32')
 
-// Whether a type is that of something refused (RECOVERY): a name of a refused
-// pattern is one. The editor shows it with no type.
-export const isRefusedType = (type: ResolvedType | undefined): boolean => type === RECOVERY
+// Whether the binding of a pattern declared at `offset` (a match arm's, an if
+// let's) is a refused value: a name of a refused pattern. The editor shows it
+// with no type, where it is bound and where it is used.
+export const refusedBindingAt = (check: TypeCheckResult, offset: number): boolean => check.types.get(typeKey(offset, 'Binding')) === RECOVERY
 
 export interface Scope {
   parent: Scope | null
@@ -453,6 +454,9 @@ type ModuleSizeUse = { at: number; n: number; shown: string | null; host?: numbe
 // The advice where host references take a count over its limit: they have no
 // memory to go to.
 const HOLD_FEWER = 'a host reference is held only in registers, never in memory: hold fewer at once'
+// An enum's value is held whole in registers wherever it is used: a load, a
+// store and a match take all of it, so a large payload goes behind a pointer.
+const ENUM_HELD_WHOLE = 'an enum is held whole in registers wherever its value is used (a load, a store, a match): keep a large payload behind a pointer (a field *[N]T, not [N]T)'
 
 function checkModuleSize(modules: readonly { ctx: CheckContext; module: AST.Module; entry: boolean }[]): void {
   const counted = modules.map(({ ctx, module, entry }) => ({ ctx, uses: ctx.moduleSizeUses(module, entry) }))
@@ -4882,14 +4886,16 @@ class CheckContext {
     const memo = new Map<ResolvedType, number>()
     const registers = (type: ResolvedType | undefined) => (type ? typeRegisters(type, memo) : 1)
     // What adds to the count, where, and what to say of it if it goes over there
-    // `host`: of those, the registers of host references, which no memory holds
-    type Use = { at: number; n: number; shown: () => string | null; host?: number }
+    // `host`: of those, the registers of host references, which no memory holds;
+    // `holdsEnum`: whether the value holds an enum, which is held whole in
+    // registers wherever it is used, also where it is copied in memory
+    type Use = { at: number; n: number; shown: () => string | null; host?: number; holdsEnum?: boolean }
     const uses: Use[] = []
     // A signature over its own limits has its error (checkSignatureSize).
     const signature = { param: 0, return: 0 }
     for (const [at, { name, type, of }] of this.variables ?? []) {
       const n = registers(type)
-      uses.push({ at, n, shown: () => (n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null), host: hostRegisters(type) })
+      uses.push({ at, n, shown: () => (n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null), host: hostRegisters(type), holdsEnum: enumIn(type) !== null })
       if (of) signature[of] = Math.min(signature[of] + n, Number.MAX_SAFE_INTEGER)
     }
     const times = (a: number, b: number) => Math.min(a * b, Number.MAX_SAFE_INTEGER)
@@ -4903,7 +4909,7 @@ class CheckContext {
       const type = this.exprTypes.get(expr)
       const own = times(n, copies)
       const shown = () => ((n > 1 || copies > 1) && type ? `${typeToString(type)}${copies > 1 ? `, written out ${copies} times,` : ''} is ${own}` : null)
-      uses.push({ at: site, n: own, shown, host: type ? times(hostRegisters(type), copies) : 0 })
+      uses.push({ at: site, n: own, shown, host: type ? times(hostRegisters(type), copies) : 0, holdsEnum: type !== undefined && enumIn(type) !== null })
     }
     // A block's value, which a wasm block gives back
     const blockValue = (expr: AST.Expr, what: string) => {
@@ -5166,6 +5172,7 @@ class CheckContext {
       const shown = use.shown()
       const here = shown ? ` (here ${shown})` : ''
       const fix = total - host <= MAX_FUNCTION_REGISTERS ? HOLD_FEWER
+        : use.holdsEnum ? ENUM_HELD_WHOLE
         : 'keep large values in memory, behind a pointer: copy one with a range copy (p[..] = q[..]) and fill one with a range fill (p[..] = 0)'
       this.error(use.at, `${owner} needs more than ${MAX_FUNCTION_REGISTERS} registers, the most a wasm function has${here} — ${fix}`)
       return
@@ -6970,8 +6977,9 @@ class CheckContext {
   ): ResolvedType {
     const accepts = kind === 'float' ? isFloat : kind === 'integer' ? isInteger : isNumeric
     const wanted = kind === 'float' ? 'a float type' : kind === 'integer' ? 'an integer type' : 'a numeric type'
-    // What checking goes on with after an operand of the wrong kind.
-    const fallback = primitive(kind === 'float' ? 'f64' : 'i32')
+    // What checking goes on with after an operand of the wrong kind: a refused
+    // value, which what the call is used for says nothing more of
+    const fallback = RECOVERY
     const types = args.map((arg) => this.inferExpr(arg.value))
     // Inference types an `if` or a `match` from all of its arms, and leaves it
     // without a type when one of them has no value. Checking it against the
@@ -7092,8 +7100,11 @@ class CheckContext {
     }
 
     if (!isScalar(left) || !isScalar(right)) {
+      // An operator refused on a struct, an enum or an address is a refused
+      // value: what it is used for says nothing more. A comparison is a bool.
+      const before = this.errorsReported
       this.checkAddressOperands(expr, leftType, rightType)
-      return fallback
+      return this.errorsReported > before && !comparison ? RECOVERY : fallback
     }
 
     const problem = operandProblem(op, leftType) ?? operandProblem(op, rightType)
@@ -7673,7 +7684,9 @@ class CheckContext {
         if (operand.kind === 'comptime_int') return comptimeInt(-operand.value)
         if (operand.kind === 'comptime_float') return comptimeFloat(-operand.value)
         if (!isNumeric(operand)) {
+          // A refused value: what it is used for says nothing more
           this.error(expr.span.start, `'-' needs a number, not ${typeToString(operandType)}`)
+          return RECOVERY
         }
         // The operand's range doesn't survive: -x of a u32#8 isn't below 8.
         return stripMax(operandType)
@@ -7682,6 +7695,7 @@ class CheckContext {
         if (operand.kind === 'comptime_int') return comptimeInt(~operand.value, true)
         if (!isInteger(operand)) {
           this.error(expr.span.start, `'~' needs an integer, not ${typeToString(operandType)}`)
+          return RECOVERY
         }
         return stripMax(operandType)
       case '&': {

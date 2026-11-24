@@ -297,7 +297,7 @@ These words are reserved: none of them is a name, so none can name a variable, a
 | Values and operators | `true` `false` `mut` `as` `sizeof` |
 | Types of constants | `int` `float` |
 
-A keyword is a whole word: followed by a letter, a digit, `_` or `-` it is part of a longer name (`if-x`, `format`, `memory-size`). `int` and `float` are the types of constants that have no type yet, as messages show them: `cannot assign int(300) to u8` ([2.10](#comptime-literal-promotion)). `enum` is reserved for enum types, which are not implemented ([2.9](#29-enum-types-algebraic-data-types)).
+A keyword is a whole word: followed by a letter, a digit, `_` or `-` it is part of a longer name (`if-x`, `format`, `memory-size`). `int` and `float` are the types of constants that have no type yet, as messages show them: `cannot assign int(300) to u8` ([2.10](#comptime-literal-promotion)). `enum` declares an enum type ([2.9](#29-enum-types-algebraic-data-types)).
 
 Three words have a meaning only where they stand, and are names everywhere else: `assert` at the start of a statement, `test` at the start of a declaration (a test block), and `host` as the whole right side of a type declaration, `type Canvas = host` ([2.13](#213-host-references)).
 
@@ -2471,7 +2471,7 @@ test "a let without a value holds the zero when the function is entered" {
 
 #### Operators, casts and sizeof
 
-`==` and `!=` compare two values of one enum **whose every variant is a unit variant**, by their tags. On an enum with a payload variant, `==` is `'==' cannot be applied to Color and Color: an enum with a payload is compared with match or if let`. No other operator takes an enum, and no builtin does: an enum of unit variants is one `i32` in wasm, and no integer to the checker. Refused as for a struct: arithmetic, bitwise and shift operators (`'+' cannot be applied to Dir and int(1)`), `<` and the other orderings (`'<' cannot be applied to Dir and Dir`), unary operators, compound assignment, builtins (`min requires a numeric type, got Dir`), an index, a loop count (`cannot iterate over Dir: ...`) and a condition (`condition must be bool, not Dir`).
+`==` and `!=` compare two values of one enum **whose every variant is a unit variant**, by their tags. On an enum with a payload variant, `==` is `'==' cannot be applied to Color and Color: an enum with a payload is compared with match or if let`. No other operator takes an enum, and no builtin does: an enum of unit variants is one `i32` in wasm, and no integer to the checker. Refused as for a struct: arithmetic, bitwise and shift operators (`'+' cannot be applied to Dir and int(1)`), `<` and the other orderings (`'<' cannot be applied to Dir and Dir`), unary operators (`'-' needs a number, not Dir`), compound assignment, builtins (`min requires a numeric type, got Dir`), an index, a loop count (`cannot iterate over Dir: ...`), a condition (`condition must be bool, not Dir`) and a template element, which is the element type of the template's bytes (`` `at ${d}` `` is `cannot assign Dir to u8`). A refused operator or builtin is a refused value: where its result is used, as `d & 1` returned for a `u32`, nothing more is said.
 
 No cast takes or gives an enum value, but a cast to its own type: `c as u32` is `cannot cast Color to u32: an enum is no number; match on it`, and `3 as Dir` is `cannot cast int(3) to Dir: an enum value is made by naming its variant`. A pointer to an enum casts as any pointer does ([Explicit Casts](#explicit-casts)): `p as *u8` reads its tag's byte. Such a cast, `memcpy`, `memset` and a host that writes memory are the ways a tag no variant has gets into memory.
 
@@ -2509,6 +2509,10 @@ func f(d: Dir) { for i in d { } }
 func g(d: Dir) -> u32 => if d { 1 } else { 0 }
 func h(c: Color) -> u32 => c as u32
 func i() -> Dir => 3 as Dir
+func j(d: Dir) -> u32 => d & 1
+func k(d: Dir) -> u32 => -d
+func l(d: Dir) -> Dir => min(d, East)
+func m(d: Dir) -> []u8 => `at ${d}`
 ```
 
 ```errors
@@ -2520,11 +2524,71 @@ cannot iterate over Dir: use a count, a slice, or a pointer to a fixed-size arra
 condition must be bool, not Dir
 cannot cast Color to u32: an enum is no number; match on it
 cannot cast int(3) to Dir: an enum value is made by naming its variant
+'&' cannot be applied to Dir and int(1)
+'-' needs a number, not Dir
+min requires a numeric type, got Dir
+cannot assign Dir to u8
 ```
 
 <!-- spec:end -->
 
-In the limits of [2.12](#212-limits) an enum counts 1, each variant 1, and each payload field what its type counts: `Dir` is 5 parts and `Color` 17. So an enum has at most 65535 unit variants, and its tag in memory is a `u8` or a `u16`. Held by value, an enum is 1 + its slots registers ([Stack Representation](#stack-representation)), counted toward the registers of a function as a struct's fields are; a variant written into memory, `p.* = Small(0)`, counts only its fields' values, as it is stored as the struct of its tag and fields. A match on an enum in memory loads it whole first, so it counts whole.
+In the limits of [2.12](#212-limits) an enum counts 1, each variant 1, and each payload field what its type counts: `Dir` is 5 parts and `Color` 17. So an enum has at most 65535 unit variants, and its tag in memory is a `u8` or a `u16`. Held by value, an enum is 1 + its slots registers ([Stack Representation](#stack-representation)), counted toward the registers of a function as a struct's fields are; a variant written into memory, `p.* = Small(0)`, counts only its fields' values, as it is stored as the struct of its tag and fields. A match on an enum in memory loads it whole first, so it counts whole. Where an enum's value goes over the limit, the error says to keep its large payload behind a pointer, since the enum is held whole wherever its value is used: `Big(bytes: *[60000]u8)`, not `Big(bytes: [60000]u8)`.
+
+`D13` below is 32767 parts (a struct is 1 and its fields what they count, `D0` 3), so `H` is 1 + 1 + 2 × 32767 = 65536 parts, the limit, and `I`, one variant more, is over it.
+
+<!-- spec:begin compile -->
+
+```ents
+type D0 = (a: u8, b: u8)
+type D1 = (a: D0, b: D0)
+type D2 = (a: D1, b: D1)
+type D3 = (a: D2, b: D2)
+type D4 = (a: D3, b: D3)
+type D5 = (a: D4, b: D4)
+type D6 = (a: D5, b: D5)
+type D7 = (a: D6, b: D6)
+type D8 = (a: D7, b: D7)
+type D9 = (a: D8, b: D8)
+type D10 = (a: D9, b: D9)
+type D11 = (a: D10, b: D10)
+type D12 = (a: D11, b: D11)
+type D13 = (a: D12, b: D12)
+enum H { A(D13, D13) }
+```
+
+```ents
+type D0 = (a: u8, b: u8)
+type D1 = (a: D0, b: D0)
+type D2 = (a: D1, b: D1)
+type D3 = (a: D2, b: D2)
+type D4 = (a: D3, b: D3)
+type D5 = (a: D4, b: D4)
+type D6 = (a: D5, b: D5)
+type D7 = (a: D6, b: D6)
+type D8 = (a: D7, b: D7)
+type D9 = (a: D8, b: D8)
+type D10 = (a: D9, b: D9)
+type D11 = (a: D10, b: D10)
+type D12 = (a: D11, b: D11)
+type D13 = (a: D12, b: D12)
+enum I { A(D13, D13), B }
+```
+
+```errors
+type 'I' is too large: written out in full it has more than 65536 parts
+```
+
+```ents
+enum Blob { Small(u32), Big(bytes: [60000]u8) }
+
+func copy(p: *mut Blob, q: *Blob) { p.* = q.* }
+```
+
+```errors
+function 'copy' needs more than 50000 registers, the most a wasm function has (here Blob is 60001) — an enum is held whole in registers wherever its value is used (a load, a store, a match): keep a large payload behind a pointer (a field *[N]T, not [N]T)
+```
+
+<!-- spec:end -->
 
 #### Enum Representations
 
@@ -2636,6 +2700,34 @@ In memory an enum is byte-packed, with no alignment, as everything in memory is 
 1. **The tag**, the smallest unsigned integer that counts the variants: `u8` for up to 256 variants, `u16` for up to 65536, else `u32` (which the limit of 65535 variants keeps from arising).
 2. **The payload** of the variant the tag names, right after it, its fields packed as a struct's are.
 3. **Padding** up to the largest payload: the size is the tag's bytes plus the largest payload's bytes, whichever variant it holds.
+
+The tag's width changes at 257 variants: `Byte` below has 256 and a `u8` tag, `Wide` has 257 and a `u16` tag, stored little-endian as every integer is.
+
+<!-- spec:begin compile -->
+
+```ents
+enum Byte { A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15, A16, A17, A18, A19, A20, A21, A22, A23, A24, A25, A26, A27, A28, A29, A30, A31, A32, A33, A34, A35, A36, A37, A38, A39, A40, A41, A42, A43, A44, A45, A46, A47, A48, A49, A50, A51, A52, A53, A54, A55, A56, A57, A58, A59, A60, A61, A62, A63, A64, A65, A66, A67, A68, A69, A70, A71, A72, A73, A74, A75, A76, A77, A78, A79, A80, A81, A82, A83, A84, A85, A86, A87, A88, A89, A90, A91, A92, A93, A94, A95, A96, A97, A98, A99, A100, A101, A102, A103, A104, A105, A106, A107, A108, A109, A110, A111, A112, A113, A114, A115, A116, A117, A118, A119, A120, A121, A122, A123, A124, A125, A126, A127, A128, A129, A130, A131, A132, A133, A134, A135, A136, A137, A138, A139, A140, A141, A142, A143, A144, A145, A146, A147, A148, A149, A150, A151, A152, A153, A154, A155, A156, A157, A158, A159, A160, A161, A162, A163, A164, A165, A166, A167, A168, A169, A170, A171, A172, A173, A174, A175, A176, A177, A178, A179, A180, A181, A182, A183, A184, A185, A186, A187, A188, A189, A190, A191, A192, A193, A194, A195, A196, A197, A198, A199, A200, A201, A202, A203, A204, A205, A206, A207, A208, A209, A210, A211, A212, A213, A214, A215, A216, A217, A218, A219, A220, A221, A222, A223, A224, A225, A226, A227, A228, A229, A230, A231, A232, A233, A234, A235, A236, A237, A238, A239, A240, A241, A242, A243, A244, A245, A246, A247, A248, A249, A250, A251, A252, A253, A254, A255 }
+enum Wide { B0, B1, B2, B3, B4, B5, B6, B7, B8, B9, B10, B11, B12, B13, B14, B15, B16, B17, B18, B19, B20, B21, B22, B23, B24, B25, B26, B27, B28, B29, B30, B31, B32, B33, B34, B35, B36, B37, B38, B39, B40, B41, B42, B43, B44, B45, B46, B47, B48, B49, B50, B51, B52, B53, B54, B55, B56, B57, B58, B59, B60, B61, B62, B63, B64, B65, B66, B67, B68, B69, B70, B71, B72, B73, B74, B75, B76, B77, B78, B79, B80, B81, B82, B83, B84, B85, B86, B87, B88, B89, B90, B91, B92, B93, B94, B95, B96, B97, B98, B99, B100, B101, B102, B103, B104, B105, B106, B107, B108, B109, B110, B111, B112, B113, B114, B115, B116, B117, B118, B119, B120, B121, B122, B123, B124, B125, B126, B127, B128, B129, B130, B131, B132, B133, B134, B135, B136, B137, B138, B139, B140, B141, B142, B143, B144, B145, B146, B147, B148, B149, B150, B151, B152, B153, B154, B155, B156, B157, B158, B159, B160, B161, B162, B163, B164, B165, B166, B167, B168, B169, B170, B171, B172, B173, B174, B175, B176, B177, B178, B179, B180, B181, B182, B183, B184, B185, B186, B187, B188, B189, B190, B191, B192, B193, B194, B195, B196, B197, B198, B199, B200, B201, B202, B203, B204, B205, B206, B207, B208, B209, B210, B211, B212, B213, B214, B215, B216, B217, B218, B219, B220, B221, B222, B223, B224, B225, B226, B227, B228, B229, B230, B231, B232, B233, B234, B235, B236, B237, B238, B239, B240, B241, B242, B243, B244, B245, B246, B247, B248, B249, B250, B251, B252, B253, B254, B255, B256 }
+
+data bytes = mut [A255, A0]
+data wides = mut [B256, B1]
+
+func is-last(p: *Wide) -> bool => match p.* {
+  B256 => true
+  _ => false
+}
+
+test "a tag is a u8 up to 256 variants, then a u16" {
+  assert sizeof(Byte) == 1 && sizeof(Wide) == 2
+  let b = bytes as [*]u8
+  assert b[0] == 255 && b[1] == 0
+  let w = wides as [*]u8
+  assert w[0] == 0 && w[1] == 1 && w[2] == 1 && w[3] == 0
+  assert is-last(&wides[0]) && !is-last(&wides[1])
+}
+```
+
+<!-- spec:end -->
 
 ```
 Color (5 bytes)                 Json (9 bytes)
