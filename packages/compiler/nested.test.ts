@@ -2576,6 +2576,67 @@ func g(comptime T: type, x: T) -> T {
     expect(errorsOf(generic)).toEqual([])
   })
 
+  test('a group\'s variable is told with the group named as the runner names it', () => {
+    expect(testErrorsOf(`test "out" {
+  test "in \\"x\\"" {
+    let base: u32 = 1
+    test "t" {
+      assert base == 1
+    }
+    func top() -> u32 => base
+  }
+  test {
+    let b2: u32 = 1
+    test "u" {
+      assert b2 == 1
+    }
+  }
+}`)).toEqual([
+      '\'base\' is a variable of the group "out > in \\"x\\"", whose statements are never run (12.3): a test nested in it cannot use it',
+      '\'base\' is a variable of the group "out > in \\"x\\"", whose statements are never run (12.3): a function declared at its top cannot use it',
+      '\'b2\' is a variable of a group without a name in "out", whose statements are never run (12.3): a test nested in it cannot use it',
+    ])
+  })
+
+  // Hover names the function a captured variable is declared in as the
+  // checker names it, and a test's name is written as an Encantis string is
+  test('captured from names the test as nested in does, escaped as a string is', () => {
+    const src = `func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+test "say \\"hi\\"\\x01" {
+  let z: u32 = 1
+  func plus(x: u32) -> u32 => x + z
+  func plain(x: u32) -> u32 {
+    func inner(y: u32) -> u32 => y + x
+    return inner(1)
+  }
+  assert apply(plus, 1) + apply(plain, 1) == 4
+}
+test "g" {
+  test "inner > b" {
+    let z: u32 = 2
+    func plus(x: u32) -> u32 => x + z
+    assert apply(plus, 1) == 3
+  }
+}
+test {
+  let z: u32 = 4
+  func plus(x: u32) -> u32 => x + z
+  assert apply(plus, 1) == 5
+}`
+    const { module, result } = checkWithTests(src)
+    expect(result.errors).toEqual([])
+    const at = (text: string, nth = 0) => {
+      let i = -1
+      for (let k = 0; k <= nth; k++) i = src.indexOf(text, i + 1)
+      return i
+    }
+    expect(hoverText(hover(src, module, result, at('z\n', 0))!)).toBe('local z: u32 — captured from test "say \\"hi\\"\\u{1}"')
+    expect(hoverText(hover(src, module, result, at('y + x') + 4)!)).toBe('local x: u32 — captured from test "say \\"hi\\"\\u{1}".plain')
+    expect(hoverText(hover(src, module, result, at('z\n', 1))!)).toBe('local z: u32 — captured from test "g > inner > b"')
+    expect(hoverText(hover(src, module, result, at('z\n', 2))!)).toBe('local z: u32 — captured from test')
+    expect(hoverText(hover(src, module, result, at('plus(x', 1))!)).toBe('func plus: func(x: u32) -> u32 — nested in test "g > inner > b"; captures z')
+  })
+
   // The module's function, given after a test took its name over, is a use
   // of the module's function: renamed with it, defined at it
   test('the editor finds the module\'s function where a comptime argument gives it after a test took its name', () => {

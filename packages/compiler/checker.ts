@@ -231,7 +231,8 @@ export interface Scope {
   // function (see letScope).
   bindings?: true
   // The scope of a test nested in a group: the group's variables, which its
-  // statements never give a value (12.3), are left out of it (N36)
+  // statements never give a value (12.3), are left out of it (N36). `group`:
+  // the group as messages name it (see groupShown)
   cut?: { group: string; names: Set<string> }
 }
 
@@ -459,6 +460,11 @@ export interface TypeCheckResult {
   // or test's own, in the order they are declared (reference 3.4)
   nested: Map<AST.FuncDecl, NestedFunc>
   nestedOf: Map<AST.FuncDecl | AST.TestDecl, AST.FuncDecl[]>
+  // The function or test that declares each variable, by where the
+  // variable is declared, as messages name it (by_distance, test "t".helper):
+  // what hover says a nested function captures it from. Code outside a
+  // generic's body only.
+  varFrames: Map<number, string>
   // The calls of nested functions, and of instances that take captured
   // variables, by the call that is compiled (see NestedCall)
   nestedCalls: Map<AST.CallExpr, NestedCall>
@@ -709,6 +715,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     tag: ctx.moduleTag(),
     nested: ctx.nestedFuncs,
     nestedOf: ctx.nestedOf,
+    varFrames: ctx.varFrames,
     nestedCalls: ctx.nestedCalls,
     instanceHidden: new Map(ctx.instances.filter((i) => i.hidden.captures.length > 0).map((i) => [i.name, i.hidden])),
   }
@@ -1239,6 +1246,9 @@ class CheckContext {
   // where it is no longer seen (ownNameError) is told the place of that one:
   // the place, as a later clash with the name is told it (see pinFirst)
   private firstText = new WeakMap<Symbol, string>()
+  // The shown path of the frame that declares each variable (see
+  // TypeCheckResult)
+  varFrames = new Map<number, string>()
   // Each variable of a function, by where it is declared (registerVar), and
   // for a match arm's name refused, which binds nothing, what had the name
   private varAt = new Map<number, Symbol>()
@@ -3207,7 +3217,7 @@ class CheckContext {
     // written as a string is: test "t".helper, test "g > t".helper, and
     // `test` alone for one without a name (12.5), not by __test<n>
     const title = [...this.openTests, decl].flatMap((t) => (t.name ? [t.name] : [])).join(' > ')
-    const shown = title ? `test ${JSON.stringify(title)}` : 'test'
+    const shown = title ? `test ${spellString(title)}` : 'test'
     const frame = {
       kind: 'test' as const, shown, path: id, shownPath: shown,
       owner: decl, signature: null, body: decl.children, nested: null, instance: null, inTest: true,
@@ -3247,7 +3257,7 @@ class CheckContext {
     for (const item of decl.children) {
       switch (item.kind) {
         case 'TestDecl':
-          this.checkTestDecl(item, { name: decl.name ?? '', scope: testScope, vars: groupVars() })
+          this.checkTestDecl(item, { name: this.groupShown(decl), scope: testScope, vars: groupVars() })
           break
         case 'ImportDecl': {
           const from = this.errors.length
@@ -3308,7 +3318,7 @@ class CheckContext {
             if (sets.captures.length > 0) {
               for (const v of sets.captures) {
                 for (const at of sets.named.get(v.id) ?? []) {
-                  this.error(at, `'${v.name}' is a variable of the group "${decl.name ?? ''}", whose statements are never run (12.3): a function declared at its top cannot use it`)
+                  this.error(at, `'${v.name}' is a variable of ${this.groupShown(decl)}, whose statements are never run (12.3): a function declared at its top cannot use it`)
                 }
               }
             }
@@ -3354,6 +3364,16 @@ class CheckContext {
           break
       }
     }
+  }
+
+  // A group as messages name it, being checked (the last of openTests): by
+  // its groups' names and its own, as the test runner names a test and
+  // written as a string is, `the group "shapes > rectangles"`, or as a group
+  // without a name, in the groups around it
+  private groupShown(decl: AST.TestDecl): string {
+    const title = this.openTests.flatMap((t) => (t.name ? [t.name] : [])).join(' > ')
+    if (decl.name) return `the group ${spellString(title)}`
+    return title ? `a group without a name in ${spellString(title)}` : 'a group without a name'
   }
 
   // A symbol a test put in module scope under `name`, in place of `before`
@@ -10737,6 +10757,7 @@ class CheckContext {
     this.varInfo.set(sym, info)
     this.varById.set(info.v.id, info)
     this.varAt.set(at, sym)
+    if (at < INSTANCE_STRIDE && !this.varFrames.has(at)) this.varFrames.set(at, info.frame.shownPath)
   }
 
   // Where a function's name is written: after `func`, or `inline func`
@@ -11049,7 +11070,7 @@ class CheckContext {
   private unseenName(name: string, at: number): string | null {
     for (let scope: Scope | null = this.currentScope; scope; scope = scope.parent) {
       if (scope.cut?.names.has(name)) {
-        return `'${name}' is a variable of the group "${scope.cut.group}", whose statements are never run (12.3): a test nested in it cannot use it`
+        return `'${name}' is a variable of ${scope.cut.group}, whose statements are never run (12.3): a test nested in it cannot use it`
       }
     }
     for (let f = this.frame; f; f = f.parent) {
@@ -13524,6 +13545,12 @@ function oneCharacter(bytes: Uint8Array): number | null {
   }
   const codepoints = [...text]
   return codepoints.length === 1 ? codepoints[0].codePointAt(0)! : null
+}
+
+// Text written as a string literal is, between double quotes and escaped
+// where it has to be (1.x): how messages and the editor show a test's name
+export function spellString(text: string): string {
+  return spellCodepoints([...text].map((c) => c.codePointAt(0) as number), '"')
 }
 
 // Codepoints written between quotes, each escaped where it has to be.

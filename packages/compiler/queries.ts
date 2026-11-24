@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { NestedFunc, TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, INSTANCE_STRIDE } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, spellString, INSTANCE_STRIDE } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap, isValueArray } from './types'
 import { typeToWasm } from './codegen'
@@ -346,7 +346,8 @@ function capturesText(nested: NestedFunc): string | undefined {
   return nested.writes.length > 0 ? `${names} (writes ${nested.writes.map((v) => v.name).join(', ')})` : names
 }
 
-// The function or test whose code holds `offset`, as messages name it
+// The function or test whose code holds `offset`, where the checker has not
+// said which declares a variable there (varFrames)
 function functionAround(module: AST.Module, checkResult: TypeCheckResult, offset: number): string | undefined {
   const nested = nestedAround(checkResult, offset)
   if (nested) return nested.shown
@@ -355,7 +356,7 @@ function functionAround(module: AST.Module, checkResult: TypeCheckResult, offset
       const decl = item.kind === 'ExportDecl' ? item.item : item
       if (offset < decl.span.start || offset >= decl.span.end) continue
       if (decl.kind === 'FuncDecl') return decl.ident ?? undefined
-      if (decl.kind === 'TestDecl') return find(decl.children) ?? `test "${decl.name ?? ''}"`
+      if (decl.kind === 'TestDecl') return find(decl.children) ?? (decl.name ? `test ${spellString(decl.name)}` : 'test')
     }
     return undefined
   }
@@ -405,7 +406,7 @@ export function hover(
     const type = localType(checkResult, start) ?? localType(checkResult, defined)
     // Used in a nested function that does not declare it: captured
     const user = nestedAround(checkResult, start)
-    const from = user && (defined < user.decl.span.start || defined >= user.decl.span.end) ? functionAround(module, checkResult, defined) : undefined
+    const from = user && (defined < user.decl.span.start || defined >= user.decl.span.end) ? checkResult.varFrames.get(defined) ?? functionAround(module, checkResult, defined) : undefined
     return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local', ...(from ? { capturedFrom: from } : {}) } : null
   }
 
