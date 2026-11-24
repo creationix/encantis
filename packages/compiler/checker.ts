@@ -1239,7 +1239,8 @@ class CheckContext {
   // where it is no longer seen (ownNameError) is told the place of that one:
   // the place, as a later clash with the name is told it (see pinFirst)
   private firstText = new WeakMap<Symbol, string>()
-  // Each variable of a function, by where it is declared (registerVar)
+  // Each variable of a function, by where it is declared (registerVar), and
+  // for a match arm's name refused, which binds nothing, what had the name
   private varAt = new Map<number, Symbol>()
   // The functions being checked, innermost last (see FuncFrame), the
   // variable each variable symbol is, and the nested functions, their
@@ -1993,17 +1994,23 @@ class CheckContext {
     for (const [type, what] of sides) {
       if (type.kind !== 'CompositeType') continue
       for (const field of type.fields) {
-        if (!field.ident || (field.comptime && !this.namesFuncType(field.type))) continue
-        const sym = this.lookup(field.ident)
-        const ofTest = sym !== undefined && takenName(sym) === 'a def'
-        if (!ofTest && !this.defNames.has(field.ident)) continue
-        // A def of the module declared after the function is not in scope
-        // yet: it is found by its declaration.
-        const where = ofTest ? this.declaredFirst(field.ident, sym) : this.firstDeclared(this.defDecls.get(field.ident)?.span.start ?? 0)
-        found.push({ at: field.identSpan?.start ?? field.span.start, message: `'${field.ident}' is already declared: ${what} cannot reuse the name of a def${where}` })
+        const def = this.defNamedField(field)
+        if (def) found.push({ at: field.identSpan?.start ?? field.span.start, message: `'${field.ident}' is already declared: ${what} cannot reuse the name of a def${def.where}` })
       }
     }
     return found
+  }
+
+  // The def whose name a parameter or a named result has, where it is seen
+  // there (`sym`), and where its declaration is (`where`, as a message says it)
+  private defNamedField(field: AST.Field): { sym?: Symbol; where: string } | null {
+    if (!field.ident || (field.comptime && !this.namesFuncType(field.type))) return null
+    const sym = this.lookup(field.ident)
+    if (sym !== undefined && takenName(sym) === 'a def') return { sym, where: this.declaredFirst(field.ident, sym) }
+    // A def of the module declared after the function is not in scope
+    // yet: it is found by its declaration.
+    if (!this.defNames.has(field.ident)) return null
+    return { where: this.firstDeclared(this.defDecls.get(field.ident)?.span.start ?? 0) }
   }
 
   // Enters a function of the module, declared or imported, under its name.
@@ -3606,12 +3613,19 @@ class CheckContext {
         // reference has none of.
         const missing = kind === 'return' && param?.kind !== 'param' ? noDefault(resolvedType) : null
         if (missing) this.error(field.span.start, `result '${field.ident}' cannot start with a default: ${missing}; return the value instead`)
+        // Refused a def's name (defNamedFields), it is what the def is for a
+        // later clash with the name, which is told the def's place (3.3)
+        const def = param?.kind === 'param' ? null : this.defNamedField(field)
+        if (def?.sym) this.clashed(sym, def.sym, true)
+        else if (def) this.firstText.set(sym, def.where)
         // A nested function's own names hide nothing it could use (N9):
-        // what is looked up here is what is seen where it is declared.
-        if (this.frame?.kind === 'nested' && param?.kind !== 'param') {
+        // what is looked up here is what is seen where it is declared. One
+        // refused a def's name, there or in a function around it, is told
+        // that once.
+        if (this.frame?.kind === 'nested' && param?.kind !== 'param' && !def) {
           const outer = this.lookup(field.ident)
           const taken = outer && this.capturableKind(outer)
-          if (taken && outer) this.error(field.span.start, `'${field.ident}' is already declared: a ${kind === 'param' ? 'parameter' : 'result'} of a nested function cannot reuse the name of ${taken}${this.declaredFirst(field.ident, outer)}`)
+          if (taken && outer && taken !== 'a def') this.error(field.span.start, `'${field.ident}' is already declared: a ${kind === 'param' ? 'parameter' : 'result'} of a nested function cannot reuse the name of ${taken}${this.declaredFirst(field.ident, outer)}`)
         }
         scope.symbols.set(field.ident, sym)
         this.registerVar(sym, field.ident, field.span.start, param?.kind === 'param' ? param : undefined)
@@ -4205,7 +4219,12 @@ class CheckContext {
       const what = kind === 'loop' ? 'a loop variable' : kind === 'if let' ? 'an if let binding' : 'a match binding'
       this.error(at, `'${name}' is already declared: ${what} cannot reuse the name of ${taken}${this.declaredFirst(name, existing)}`)
     }
-    if (!type) return
+    if (!type) {
+      // Nothing is bound (a match arm's name): refused, it is still no first
+      // of the name for a later clash, which is told what had the name
+      if (taken && existing) this.varAt.set(defAt, existing)
+      return
+    }
     const sym: Symbol = { kind: 'local', type, binding: kind }
     // Its body's scope is new each time it is checked: what it is refused
     // for is the same each time.
@@ -10938,8 +10957,12 @@ class CheckContext {
     if (results <= MAX_RESULT_REGISTERS && given > MAX_RESULT_REGISTERS) {
       this.error(nameAt, `the results are ${given} registers with the variables '${name}' writes, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — give a large value back through a pointer`)
     }
-    if (kind && existing?.kind !== 'func') nested.unbound = true
-    else {
+    if (kind && existing?.kind !== 'func') {
+      // The name stays what had it, which a later clash with the name, in
+      // the function's own names, is told the place of (see ownFirst)
+      nested.unbound = true
+      this.clashed(sym, existing, true)
+    } else {
       // Refused for a function's name, it is the name all the same, so that
       // its calls say nothing more; a later clash with the name is told the
       // place of the first declaration of it (see firstOf)
@@ -12933,7 +12956,9 @@ function holdsSlice(t: ResolvedType, seen = new Set<ResolvedType>()): boolean {
 // names rather than use them.
 const NOT_CODE = new Set(['span', 'type', 'signature', 'pattern', 'patterns', 'binding'])
 
-// The functions declared in a body, at any depth, and those nested in them
+// The functions declared in a body, at any depth, and those nested in them,
+// that are checked as nested functions: not one without a name or a generic
+// one, which is refused before its signature is read (checkNestedDecl)
 function nestedDeclsIn(body: unknown): AST.FuncDecl[] {
   const found: AST.FuncDecl[] = []
   const walk = (node: unknown): void => {
@@ -12942,7 +12967,11 @@ function nestedDeclsIn(body: unknown): AST.FuncDecl[] {
       return
     }
     if (!node || typeof node !== 'object') return
-    if ((node as { kind?: string }).kind === 'FuncDecl') found.push(node as AST.FuncDecl)
+    if ((node as { kind?: string }).kind === 'FuncDecl') {
+      const decl = node as AST.FuncDecl
+      if (!decl.ident || isGenericDecl(decl)) return
+      found.push(decl)
+    }
     for (const child of codeEntries(node)) walk(child)
   }
   walk(body)

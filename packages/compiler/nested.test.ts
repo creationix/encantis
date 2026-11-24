@@ -2474,6 +2474,108 @@ test "main" { assert m() == 1 }`
     expect(own.wat).toContain('(func $apply<x@s>')
   })
 
+  // The third declaration of a name is told the first place (3.3): where a
+  // nested function was refused a global's, def's or data block's name, or
+  // a match arm a global's, the place of what had the name
+  test('a later clash is told the place of what a refused nested function or match arm could not take', () => {
+    expect(testErrorsOf(`global total: u32 = 0
+def k = 3
+data bytes = [1:u8, 2]
+func f(xs: []u32) -> u32 {
+  if true { func total() -> u32 => 1 }
+  let total: u32 = 1
+  for total in 2 { }
+  return 0
+}
+func g() -> u32 {
+  if true { func k() -> u32 => 1 }
+  let k: u32 = 1
+  return 0
+}
+func h(xs: []u32) -> u32 {
+  match xs.len { total => { } }
+  if true { func total() -> u32 => 1 }
+  let total: u32 = 1
+  if true { func bytes() -> u32 => 1 }
+  match xs.len { bytes => { } }
+  return 0
+}
+test "t" {
+  def d = 4
+  let z: u32 = 1
+  if true { func d() -> u32 => z }
+  let d: u32 = 2
+  assert z == 1
+}`)).toEqual([
+      "'total' is already declared: a nested function cannot reuse the name of a global (first declared at 1:8)",
+      "'total' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 1:8)",
+      "'total' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 1:8)",
+      "'k' is already declared: a nested function cannot reuse the name of a def (first declared at 2:5)",
+      "'k' is already declared in 'g': a nested function's name is its own in the whole function that declares it (first declared at 2:5)",
+      "'total' is already declared: a match binding cannot reuse the name of a global (first declared at 1:8)",
+      "'total' is already declared: a nested function cannot reuse the name of a global (first declared at 1:8)",
+      "'total' is already declared in 'h': a nested function's name is its own in the whole function that declares it (first declared at 1:8)",
+      "'bytes' is already declared: a nested function cannot reuse the name of a data block (first declared at 3:6)",
+      "'bytes' is already declared in 'h': a nested function's name is its own in the whole function that declares it (first declared at 3:6)",
+      "'d' is already declared: a nested function cannot reuse the name of a def (first declared at 24:7)",
+      "'d' is already declared in test \"t\": a nested function's name is its own in the whole function that declares it (first declared at 24:7)",
+    ])
+  })
+
+  // Refused for a def's name (#38), a parameter or a named result is what
+  // the def is for a later declaration of the name, as a refused let is
+  test('a later clash with a parameter refused a def\'s name is told the def\'s place', () => {
+    expect(errorsOf(`def k = 3
+func f(k: u32) -> u32 {
+  if true { func k() -> u32 => 1 }
+  for k in 3 { }
+  let k: u32 = 4
+  return 0
+}
+func g(x: u32) -> (k: u32) {
+  for k in 3 { }
+  k = 1
+}
+func b(x: u32) -> u32 {
+  func c(k: u32) -> u32 {
+    func d(k: u32) -> u32 => k
+    return d(k)
+  }
+  return c(x)
+}`)).toEqual([
+      "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 1:5)",
+      "'k' is already declared: a named result cannot reuse the name of a def (first declared at 1:5)",
+      "'k' is already declared: a nested function cannot reuse the name of a def (first declared at 1:5)",
+      "'k' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 1:5)",
+      "'k' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 1:5)",
+      "'k' is already declared: a loop variable cannot reuse the name of a def (first declared at 1:5)",
+      "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 1:5)",
+      "'k' is already declared: a parameter cannot reuse the name of a def (first declared at 1:5)",
+    ])
+  })
+
+  // A function without a name, or a generic one, is refused before its
+  // parameters are read, in a generic's body as in a plain one
+  test('in a generic\'s body a nameless or generic nested function gets no def-named parameter error', () => {
+    const plain = `def k = 3
+func f(x: u32) -> u32 {
+  func(k: u32) -> u32 => k
+  func pick(comptime T: type, k: T) -> T => k
+  return x
+}`
+    const generic = `def k = 3
+func g(comptime T: type, x: T) -> T {
+  func(k: u32) -> u32 => k
+  func pick(comptime U: type, k: U) -> U => k
+  return x
+}`
+    expect(errorsOf(plain)).toEqual([
+      'a function declared in a function body needs a name: func name(x: T) -> R => ...',
+      'a generic function is declared at module level, not inside a function',
+    ])
+    expect(errorsOf(generic)).toEqual([])
+  })
+
   // The module's function, given after a test took its name over, is a use
   // of the module's function: renamed with it, defined at it
   test('the editor finds the module\'s function where a comptime argument gives it after a test took its name', () => {
