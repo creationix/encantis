@@ -721,6 +721,37 @@ test "laid over a struct of the same shape, and over the type itself" {
     ])
   })
 
+  // An allocation that does not fit traps, and leaves the stack as it was:
+  // also one whose size would wrap the top past 2^32, which was checked
+  // after it was added (#39) and handed out the stack itself. A reset to an
+  // address outside the stack traps too, so the top is never past the end,
+  // which the check of the room left counts on.
+  test('lib/stack traps on what does not fit, a size near 2^32 too', async () => {
+    const { instance } = await WebAssembly.instantiate(await compileToWasm(join(lib, 'stack.ents')), {})
+    const { mark, reset, alloc, extend, zeroed } = instance.exports as Record<string, (n?: number) => number>
+    const capacity = 262144
+    const base = mark()
+    expect(alloc(16)).toBe(base)
+    for (const call of [() => alloc(0xfffffff0), () => extend(0xfffffff8), () => zeroed(0xffffffff), () => alloc(capacity - 15), () => extend(capacity - 15)]) {
+      expect(call).toThrow(/unreachable/)
+      expect(mark()).toBe(base + 16)
+    }
+    // What is left fits exactly, and then nothing more does.
+    expect(extend(capacity - 17)).toBe(base + 16)
+    expect(extend(1)).toBe(base + capacity - 1)
+    expect(() => extend(1)).toThrow(/unreachable/)
+    expect(() => alloc(1)).toThrow(/unreachable/)
+    expect(extend(0)).toBe(base + capacity)
+    expect(alloc(0)).toBe(base + capacity)
+    for (const m of [base - 1, base + capacity + 1, 0]) {
+      expect(() => reset(m)).toThrow(/unreachable/)
+      expect(mark()).toBe(base + capacity)
+    }
+    reset(base + capacity)
+    reset(base)
+    expect(alloc(capacity)).toBe(base)
+  })
+
   test('a library file compiled alone emits no generic, and exports none', async () => {
     for (const name of ['stack', 'vec', 'set', 'map', 'sort']) {
       const wat = await watOf(join(lib, `${name}.ents`))

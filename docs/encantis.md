@@ -10194,12 +10194,14 @@ A stack of 256 KiB in the module's memory. Allocating moves its top up; nothing 
 | Function | What it does |
 |---|---|
 | `mark() -> u32` | The top of the stack, as an address |
-| `reset(m: u32)` | Frees everything allocated since the mark `m` was taken |
-| `alloc(n: u32) -> u32` | The address of `n` bytes, aligned to 8. Traps when the stack is full, but an `n` near 2^32 wraps its check and is not caught (a known bug). The 8 is counted from the start of the stack, not from address 0, so the address is a multiple of 8 only when the stack starts at one, which data laid out before it, such as a `*[!]T` anywhere in the program, can prevent (a known bug) |
+| `reset(m: u32)` | Frees everything allocated since the mark `m` was taken. Traps for an address outside the stack, below it or past its end, which no mark is |
+| `alloc(n: u32) -> u32` | The address of `n` bytes, aligned to 8. Traps when they do not fit in the room left, for any `n`: an `n` near 2^32 traps too, and the stack is left as it was, but for the padding to 8. The 8 is counted from the start of the stack, not from address 0, so the address is a multiple of 8 only when the stack starts at one, which data laid out before it, such as a `*[!]T` anywhere in the program, can prevent (a known bug) |
 | `zeroed(n: u32) -> u32` | The same, the bytes set to zero |
-| `extend(n: u32) -> u32` | `n` more bytes right after the top, not aligned: grows the topmost allocation in place |
+| `extend(n: u32) -> u32` | `n` more bytes right after the top, not aligned: grows the topmost allocation in place. Traps when they do not fit, as `alloc` does |
 
-An address is cast to the pointer it is used as: `alloc(sizeof(Pt) * 4) as [*]mut Pt`. A program that needs a larger stack copies the file and makes its `capacity` and `space` larger.
+An address is cast to the pointer it is used as: `alloc(sizeof(Pt) * 4) as [*]mut Pt`. A program that needs a larger stack copies the file and makes its `space` larger, keeping its length a multiple of 8.
+
+`n` is checked against the room left, the length of the stack less its top, which does not wrap, since the top is never past the end; the top plus `n` could. A size that a caller works out, such as a count times `sizeof(T)`, can wrap before `alloc` sees it: `alloc` then gets the wrapped size, which fits, so it is for the caller to check the count. The containers of the library do not (a known bug): `vec(u64, 0x20000000)` asks for 2^32 bytes, which is 0 bytes, and its first `push` writes where the next allocation goes; a set or a map with 2^`bits` slots whose size wraps is the same.
 
 ### 13.5 `vec`: A Growable Array
 

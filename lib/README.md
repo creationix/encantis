@@ -33,9 +33,9 @@ A bump stack of 256 KiB. Nothing is freed one by one: a scope takes a mark and r
 
 | Function | What it does |
 | --- | --- |
-| `mark() -> u32`, `reset(m: u32)` | The top of the stack, and freeing everything allocated since |
-| `alloc(n: u32) -> u32`, `zeroed(n: u32) -> u32` | `n` bytes, 8-byte aligned (zeroed: all zero). Traps when the stack is full |
-| `extend(n: u32) -> u32` | `n` more bytes right after the top |
+| `mark() -> u32`, `reset(m: u32)` | The top of the stack, and freeing everything allocated since (reset traps for an address outside the stack) |
+| `alloc(n: u32) -> u32`, `zeroed(n: u32) -> u32` | `n` bytes, 8-byte aligned (zeroed: all zero). Traps when they do not fit, for any `n` |
+| `extend(n: u32) -> u32` | `n` more bytes right after the top. Traps when they do not fit |
 
 ## vec.ents
 
