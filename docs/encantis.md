@@ -8632,7 +8632,7 @@ When a file is checked without the files it imports (the editor's web worker, a 
 
 `export` before a declaration gives it a name outside the module. What can be exported is a function (`func`, also `inline func`), a global, the memory ([7.3](#73-memory-declarations)), and a generic function or generic type, which other source modules can then import. `data`, `def`, `type` and an import cannot be exported (a syntax error): a module shares data through a function or a global that holds its address.
 
-The export name is the declaration's own name, and `"memory"` for the memory. `export "name"` before the declaration gives another name, any string (a name with a double quote, a backslash or a character outside ASCII is written into the module unescaped and does not assemble, a known bug that holds for the names an import writes too); the declaration keeps its own name in the module. Each export name is used once in a module. Any two exports of one name are refused at the second, whether two functions share the name or `export "f"` gives a function another one's name (``export name 'f' is used twice: give one an explicit name, as in export "f_u32" func k(...)``), so functions that share a name are exported under names of their own:
+The export name is the declaration's own name, and `"memory"` for the memory. `export "name"` before the declaration gives another name, any string, also one with a double quote, a backslash or a character outside ASCII (so can the names an import writes); the declaration keeps its own name in the module. Each export name is used once in a module. Any two exports of one name are refused at the second, whether two functions share the name or `export "f"` gives a function another one's name (``export name 'f' is used twice: give one an explicit name, as in export "f_u32" func k(...)``), so functions that share a name are exported under names of their own:
 
 <!-- spec:begin compile -->
 
@@ -8642,6 +8642,9 @@ export func add(a: i32, b: i32) -> i32 => a + b
 
 // Exported as "area"; in the module it is still rect_area
 export "area" func rect_area(w: u32, h: u32) -> u32 => w * h
+
+// Any string, as "größe \"w\""
+export "größe \"w\"" func width() -> u32 => 640
 
 // Functions that share a name are exported under names of their own
 export "hash_u32" func hash(k: u32) -> u32 => k * 0x9e3779b1

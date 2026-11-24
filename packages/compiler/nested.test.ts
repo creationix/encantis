@@ -3600,4 +3600,83 @@ test "t" {
   assert f() == 14
 }`)).toEqual([])
   })
+
+  // A name only a test declares is no name outside the test, also where the
+  // use is checked before the test: module code above it, and a generic's
+  // body declared above it (12.4)
+  test('a name only a test declares is none outside it, above the test too', () => {
+    for (const source of [
+      `func apply(comptime k: () -> u32) -> u32 => k()
+export func above() -> u32 => apply(tf)
+test "declares tf" {
+  func tf() -> u32 => 2
+  assert apply(tf) == 2
+}
+`,
+      `func apply(comptime k: () -> u32) -> u32 => k()
+func gen(comptime T: type) -> u32 => apply(tf)
+test "declares tf" {
+  func tf() -> u32 => 2
+  assert apply(tf) == 2
+}
+export func e() -> u32 => gen(u32)
+`,
+    ]) {
+      const parsed = parse(source, { filePath: 'test.ents' })
+      const result = typecheck(parsed.module!, { source })
+      const use = source.indexOf('apply(tf)') + 6
+      expect(hover(source, parsed.module!, result, use)).toBeNull()
+      expect(gotoDefinition(source, parsed.module!, result, use)).toBeNull()
+      expect(findReferences(source, parsed.module!, result, use)).toBeNull()
+      // The test's own use is the test's function
+      const own = source.lastIndexOf('apply(tf)') + 6
+      expect(gotoDefinition(source, parsed.module!, result, own)).not.toBeNull()
+    }
+  })
+
+  // Two functions of one name from two files of one name, given to a
+  // generic, are told apart by the files' paths (8.4)
+  test('functions of two files of one name are named by the files\' paths', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-nested-'))
+    try {
+      await mkdir(join(dir, 'a'))
+      await mkdir(join(dir, 'b'))
+      await writeFile(join(dir, 'a/lib.ents'), 'export func g(x: u32) -> u32 => x + 1')
+      await writeFile(join(dir, 'b/lib.ents'), 'export func g(x: u32) -> u32 => x + 2')
+      const source = `import "./a/lib" "g" func g(x: u32) -> u32
+import "./b/lib" "g" func h(x: u32) -> u32
+func local(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+export func m() -> u32 => local(g, 1) + local(h, 2)
+`
+      const path = join(dir, 'main.ents')
+      await writeFile(path, source)
+      const load = await loadModule(path, { includeTests: true })
+      const result = typecheckProgram(load.modules, path, { includeTests: true }).results.get(path)!
+      const module = load.modules.get(path)!.module
+      expect(hover(source, module, result, source.indexOf('f(x)'))?.instances).toEqual([
+        { in: ['local(f = g (a/lib.ents))'], type: 'g (a/lib.ents)(x: u32) -> u32' },
+        { in: ['local(f = g (b/lib.ents))'], type: 'g (b/lib.ents)(x: u32) -> u32' },
+      ])
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+
+  // An import's and an export's names are any text: written as WAT strings,
+  // escaped (7.1, 7.2)
+  test('names of imports and exports with quotes, backslashes or other letters build', async () => {
+    const wat = watOfSource(`import "e\\"nv" ("a\\"b" func ab(x: u32) "u\\\\v" func(x: u32) "é" func(x: u32))
+export "größe \\"w\\"" func m() -> u32 {
+  ab(1)
+  return 1
+}`)
+    const module = await WebAssembly.compile(await wasmOfWat(wat))
+    expect(WebAssembly.Module.imports(module).map((i) => `${i.module}/${i.name}`)).toEqual(['e"nv/a"b', 'e"nv/u\\v', 'e"nv/é'])
+    expect(WebAssembly.Module.exports(module).map((e) => e.name)).toEqual(['größe "w"'])
+    const built = { wat }
+    expect(built.wat).toContain('(import "e\\22nv" "a\\22b" (func $ab ')
+    expect(built.wat).toContain('(import "e\\22nv" "u\\5cv" ')
+    expect(built.wat).toContain('(import "e\\22nv" "\\c3\\a9" ')
+    expect(built.wat).toContain('(export "gr\\c3\\b6\\c3\\9fe \\22w\\22" (func $m))')
+  })
 })

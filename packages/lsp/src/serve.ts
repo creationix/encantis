@@ -130,6 +130,14 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
   }
 }
 
+// A type as hover shows it, formatted, but for the name a function of another
+// module given for a comptime parameter starts with, which names its file as
+// it is (g (x/lib.ents)(x: u32) -> u32): formatted, it would read as a call
+function formatShown(text: string): string {
+  const named = /^([^\s()]+ \([^()]*\.ents\))(\(.*)$/s.exec(text);
+  return named ? `${named[1]}${formatLine(named[2])}` : formatLine(text);
+}
+
 // What a hint says beyond its type, below it: for x.f(a) the call it is, the
 // function a call calls (an instance of a generic), and what the name is in
 // each instance (each application, for a generic type).
@@ -141,7 +149,7 @@ function hintDetails(hint: MetaHint, meta: MetaOutput): string {
   if (hint.calls !== undefined) parts.push(call ? `${call}, which calls ${codeSpan(hint.calls)}` : `calls ${codeSpan(hint.calls)}`);
   else if (call) parts.push(call);
   const listed = (hint.instances ?? []).map(i => {
-    const type = formatLine(meta.types[i.type]?.type ?? 'unknown');
+    const type = formatShown(meta.types[i.type]?.type ?? 'unknown');
     return `- in ${i.in.map(n => codeSpan(n)).join(', ')}: ${codeSpan(type)}`;
   });
   if (hint.more !== undefined) listed.push(`- and ${hint.more} more instance${hint.more === 1 ? '' : 's'}`);
@@ -159,8 +167,9 @@ function nestedDetails(analysis: Analysis, offset: number): string {
     ...(found?.captures !== undefined ? [`captures ${found.captures}`] : []),
     ...(found?.capturedFrom !== undefined ? [`captured from ${codeSpan(found.capturedFrom)}`] : []),
   ];
-  // One in a generic's body: what it captures in each instance
-  const listed = (found?.capturesIn ?? []).map((i) => `- in ${i.in.map((n) => codeSpan(n)).join(', ')}: captures ${i.type}`);
+  // One in a generic's body: its signature and what it captures in each
+  // instance
+  const listed = (found?.capturesIn ?? []).map((i) => `- in ${i.in.map((n) => codeSpan(n)).join(', ')}: ${i.type}`);
   return (parts.length > 0 ? `\n\n${parts.join('; ')}` : '') + (listed.length > 0 ? `\n\n${listed.join('\n')}` : '');
 }
 

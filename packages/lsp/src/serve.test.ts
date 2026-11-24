@@ -324,6 +324,20 @@ describe('a document with source imports', () => {
     expect(hover(MAIN.lastIndexOf('bucket('))).toBe('```encantis\nfunc bucket(k:u32, n:u32) -> u32\n```\n\ncalls `bucket(K = u32)`')
   })
 
+  // One function imported again, by another spelling of its file's path, is
+  // the first import's: one definition, with both imports among its places
+  // (sixth review)
+  test('a function imported twice is one name in the editor', async () => {
+    const twice = 'import "./lib" "dbl" func dbl(x: u32) -> u32\nimport "./lib.ents" "dbl" func dbl(x: u32) -> u32\nexport func m() -> u32 => dbl(1)\n'
+    const files = new Map([[pathOf(libUri), 'export func dbl(x: u32) -> u32 => x * 2\n']])
+    const { diagnostics, at, handlers } = await open([[mainUri, twice]], async (path) => files.get(path) ?? null)
+    expect(diagnostics).toEqual([])
+    const refs = (offset: number) => (handlers.get('onReferences')?.({ ...at(offset), context: { includeDeclaration: true } }) as Location[]).map((l) => l.range.start.line)
+    expect(refs(twice.indexOf('dbl(x'))).toEqual([0, 1, 2])
+    expect(refs(twice.lastIndexOf('dbl(x'))).toEqual([0, 1, 2])
+    expect((handlers.get('onDefinition')?.(at(twice.indexOf('dbl(1'))) as Location).range.start.line).toBe(0)
+  })
+
   test('an import that is open, with no disk to read', async () => {
     const { diagnostics } = await open([[libUri, LIB], [mainUri, MAIN]])
     expect(diagnostics.map((d) => d.message)).toEqual([failed])
@@ -1001,5 +1015,73 @@ export func below() -> u32 => buf[2] as u32 + k
     expect(hover(named.indexOf('buf[2]'))).toContain('*[3]u8')
     expect(refs(named.indexOf('buf ='))).toEqual([0, line(named.indexOf('buf[2]'))])
     expect(refs(named.indexOf('buf = [9'))).toEqual([line(named.indexOf('buf = [9')), line(named.indexOf('buf[1]'))])
+  })
+
+  // A test's function refused the name of the module's (several functions
+  // share it) or of an import leaves the module's declaration its own
+  // definition and references (sixth review)
+  test('the module\'s declaration keeps its own references where a test\'s of the name is refused', () => {
+    const refused = `func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+import "env" "log" func log(x: u32)
+test "declares names it cannot" {
+  func hash(k: f64) -> f64 => k
+  import "env" "warn" func log(x: f32, y: f32)
+  assert hash(1.0) == 1.0
+}
+export func m() -> u32 {
+  log(1)
+  return hash(2:u32)
+}
+`
+    const ask = serverFor(refused)
+    const hover = hoverIn(refused)
+    const line = (offset: number) => refused.slice(0, offset).split('\n').length - 1
+    const def = (offset: number) => (ask('onDefinition', offset) as Location | null)?.range.start.line
+    const refs = (offset: number) => (ask('onReferences', offset, { context: { includeDeclaration: true } }) as Location[] | null)?.map((l) => l.range.start.line)
+    expect(def(refused.indexOf('hash(k: u32)'))).toBe(0)
+    expect(refs(refused.indexOf('hash(k: u32)'))).toEqual([0, line(refused.indexOf('hash(2'))])
+    expect(refs(refused.indexOf('log(x: u32)'))).toEqual([2, line(refused.indexOf('log(1)'))])
+    expect(hover(refused.indexOf('hash(k: f64)'))).toContain('func hash(k:f64) -> f64')
+  })
+
+  // A data block or a def only tests declare is no name of module code
+  // after them, in the language server as in the CLI (sixth review)
+  test('module code finds no test\'s data or def by its name', () => {
+    const data = `test "one" {
+  data buf = [9:u16, 9]
+  def k = 5
+  assert buf[1] == 9 && k == 5
+}
+test "two" {
+  data buf = [7:u8, 7, 7]
+  def k = 6
+  assert buf[2] == 7 && k == 6
+}
+export func below() -> u32 => buf[0] as u32 + k
+`
+    const ask = serverFor(data)
+    expect(ask('onDefinition', data.indexOf('buf[0]'))).toBeNull()
+    expect(ask('onDefinition', data.lastIndexOf('k\n'))).toBeNull()
+    expect(ask('onReferences', data.indexOf('buf[0]'), { context: { includeDeclaration: true } })).toBeNull()
+    expect((ask('onDefinition', data.indexOf('buf[2]')) as Location | null)?.range.start.line).toBe(6)
+  })
+
+  // A nested function in a generic's body is shown in the generic's terms,
+  // with its signature in each instance where that is another (sixth review)
+  test('hover at a nested function of a generic lists its signature in each instance', () => {
+    const typed = `func gapply(comptime T: type, comptime f: (T) -> T, x: T) -> T {
+  let v: T = x
+  func gh(y: T) -> T => f(y) + v
+  return gh(x)
+}
+func modf(x: u32) -> u32 => x + 1
+func bf(x: u64) -> u64 => x
+export func m() -> u32 => gapply(u32, modf, 2) + gapply(u64, bf, 3) as u32
+`
+    const shown = hoverIn(typed)(typed.indexOf('gh(y'))
+    expect(shown).toContain('func gh(y:T) -> T')
+    expect(shown).toContain('- in `gapply(T = u32, f = modf)`: func(y: u32) -> u32, captures v')
+    expect(shown).toContain('- in `gapply(T = u64, f = bf)`: func(y: u64) -> u64, captures v')
   })
 })

@@ -493,6 +493,9 @@ export interface TypeCheckResult {
   // of another test's, would be the last one declared (#74), and the output
   // would give each of them that one's signature
   funcSyms: Map<AST.FuncDecl | AST.ImportFunc, Symbol>
+  // How the program names each of its modules, by path: by its file's name,
+  // or its path where two files share a name (see typecheckProgram)
+  fileNames?: ReadonlyMap<string, string>
 }
 
 // A call in an instance of another module's generic, at its place in the
@@ -634,6 +637,7 @@ function contextFor(options?: TypecheckOptions): CheckContext {
 // afresh each time.
 function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
   const opts = { ...DEFAULT_OPTIONS, ...ctx.options }
+  ctx.settleUnseen()
   // A type a finalize made is concrete, and making it again gives the same:
   // a module finalized after each module that adds instances to it would
   // otherwise make all of its types again each time.
@@ -681,7 +685,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
   }
   for (const [name, defOffset] of ctx.symbolDefOffsets) {
     if (exportedNames.has(name) || ctx.calledFromInstances.has(name)) continue
-    const refs = ctx.references.get(defOffset)
+    const refs = ctx.references.get(defOffset)?.filter((at) => !ctx.importedAgain.has(at))
     if (refs && refs.length === 0) {
       const sym = ctx.moduleScope.symbols.get(name)
       if (sym && (sym.kind === 'func' || sym.kind === 'generic' || sym.kind === 'def' || sym.kind === 'global')) {
@@ -744,6 +748,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     takenOver: ctx.takenOver,
     unseen: ctx.unseen,
     funcSyms: ctx.funcSyms,
+    fileNames: ctx.fileNames,
   }
 }
 
@@ -1373,6 +1378,20 @@ class CheckContext {
   takenOver = new Map<number, Symbol>()
   // Where a name is used that is none there (TypeCheckResult)
   unseen = new Set<number>()
+  // A comptime argument, or a name in a generic's body, that named nothing
+  // where it was checked: above the test that declares the name, or in an
+  // instance, which no test's name reaches (see settleUnseen)
+  private readonly namedNothing: { at: number; name: string }[] = []
+
+  // Each of those whose name only a test declares, which a lookup by name
+  // would find in the end, is no name there (unseen): only the module's own
+  // of the name would be one, and the module has none (seenAs)
+  settleUnseen(): void {
+    for (const { at, name } of this.namedNothing) {
+      const sym = this.moduleScope.symbols.get(name)
+      if (sym && this.declaredInTest.has(sym) && !this.seenAs(sym)) this.unseen.add(at)
+    }
+  }
   // What each function declaration is (TypeCheckResult)
   funcSyms = new Map<AST.FuncDecl | AST.ImportFunc, Symbol>()
   private openTests: AST.TestDecl[] = []
@@ -2111,6 +2130,16 @@ class CheckContext {
   private readonly importedGlobals = new Map<string, number>()
   // The globals the module or a test imports, by their symbols
   private readonly importedGlobalSyms = new WeakSet<Symbol>()
+  // Where the local names of functions imported again are (declareFunc):
+  // places of the first import's name, which are no uses of it
+  readonly importedAgain = new Set<number>()
+
+  // Where an import's local name is written: after `func`
+  private localNameAt(decl: AST.ImportFunc): number | undefined {
+    if (!this.source || !decl.ident) return undefined
+    const keyword = /^func\s+/.exec(this.source.slice(decl.span.start, decl.span.start + 64))
+    return keyword && this.source.startsWith(decl.ident, decl.span.start + keyword[0].length) ? decl.span.start + keyword[0].length : undefined
+  }
   // `isImport`: the declaration is an import (in a test, its message says so)
   private takenByAnother(name: string, offset: number, kind: 'func' | 'value', inTest = false, isImport = false): boolean {
     const first = this.topLevel.get(name)
@@ -2203,9 +2232,16 @@ class CheckContext {
       const members = this.overloads.get(name) ?? [name]
       const again = origin === undefined ? undefined : members.find((m) => this.origins.get(m) === origin)
       if (again !== undefined) {
+        // The first import's function is what the name is: the second's local
+        // name is one more place of it, which the editor finds with its uses
         if (again !== name) this.funcNames.set(decl, again)
-        this.moduleScope.symbols.set(again, sym)
-        this.recordDefinition(again, decl.span.start)
+        const first = this.moduleScope.symbols.get(again)
+        if (first?.kind === 'func') this.funcSyms.set(decl, first)
+        const at = decl.kind === 'ImportFunc' ? this.localNameAt(decl) : undefined
+        if (at !== undefined) {
+          this.recordReference(again, at, false)
+          this.importedAgain.add(at)
+        }
         return
       }
       const key = paramsKey(sym.type)
@@ -10371,6 +10407,9 @@ class CheckContext {
       const moduleLevel = !!found && arg.kind === 'IdentExpr' && found === this.moduleScope.symbols.get(arg.name)
       const target = moduleLevel ? this.seenAs(found) : found
       if (moduleLevel && !target) this.unseen.add(arg.span.start % INSTANCE_STRIDE)
+      // Checked above the test, or in an instance, it names nothing: what it
+      // names in the end is settled with the module (settleUnseen)
+      if (!found && arg.kind === 'IdentExpr') this.namedNothing.push({ at: arg.span.start % INSTANCE_STRIDE, name: arg.name })
       if (arg.kind !== 'IdentExpr' || target?.kind !== 'func') {
         this.error(arg.span.start, `${place} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter`)
         return null
@@ -10493,7 +10532,7 @@ class CheckContext {
     // inc (b.ents), not by the name the generic's module calls it.
     const funcText = (name: string) => {
       const extern = owner.externs.get(name)
-      return extern ? `${extern.name} (${fileName(extern.module)})` : name
+      return extern ? `${extern.name} (${this.shownFile(extern.module)})` : name
     }
     const shown = comptimeParams.map((p, i) => {
       const value = held[i]
@@ -10736,7 +10775,11 @@ class CheckContext {
     // (a parameter, a let, a loop variable) is taken to be that one.
     const { names, locals } = namesIn(decl)
     for (const { name, offset, called } of names) {
-      if (locals.has(name) || !this.moduleScope.symbols.has(name)) continue
+      if (locals.has(name)) continue
+      if (!this.moduleScope.symbols.has(name)) {
+        this.namedNothing.push({ at: offset, name })
+        continue
+      }
       // Which of the functions that share a name a call means is known only
       // in an instance: all of them count as used, until the instances say
       // which they call (see settleGuesses).

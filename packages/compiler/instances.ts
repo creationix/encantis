@@ -463,10 +463,12 @@ export function ownName(
       // A nested function, or a function of a test, by the name its source
       // gives it (by_low_bits, by_distance.closer), not its WAT name, and a
       // function of another module by its name there and its file, as the
-      // instance's label names it: inc (b.ents), not inc@b
+      // instance's label names it: inc (b.ents), not inc@b, and x/b.ents
+      // where two files of the program share the name
       if (value?.kind !== 'func') return undefined
       const extern = value.shown === undefined ? check.externs.get(value.name) : undefined
-      const shown = value.shown ?? (extern ? `${extern.name} (${extern.module.replace(/^.*[\\/]/, '')})` : declaredName(value.name))
+      const file = extern && (check.fileNames?.get(extern.module) ?? extern.module.replace(/^.*[\\/]/, ''))
+      const shown = value.shown ?? (extern ? `${extern.name} (${file})` : declaredName(value.name))
       return signed(shown, value.type)
     })
     return { kind: 'comptime parameter', type: source.slice(param.type.span.start, param.type.span.end), ...listed(list) }

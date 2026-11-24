@@ -3913,7 +3913,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
     const max = memDecl?.max ?? null
     const maxStr = max !== null ? ` ${max}` : ''
     if (memDecl?.exportName) {
-      parts.push(`  (memory (export "${memDecl.exportName}") ${min}${maxStr})`)
+      parts.push(`  (memory (export ${watString(memDecl.exportName)}) ${min}${maxStr})`)
     } else {
       parts.push(`  (memory ${min}${maxStr})`)
     }
@@ -4369,7 +4369,7 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const paramsStr = params.join(' ')
     const resultsStr = results.length > 0 ? `(result ${results.join(' ')})` : ''
 
-    return `  (import "${moduleName}" "${item.name}" (func $${watName ?? ctx.nameMap.get(name) ?? name} ${paramsStr} ${resultsStr}))`
+    return `  (import ${watString(moduleName)} ${watString(item.name)} (func $${watName ?? ctx.nameMap.get(name) ?? name} ${paramsStr} ${resultsStr}))`
   }
 
   if (imp.kind === 'ImportGlobal') {
@@ -4379,7 +4379,7 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const wasmTypes = typeToWasm(type)
     const names = globalNames(imp.ident, type, ctx, watName)
     return flatSuffixes(type)
-      .map((suffix, i) => `  (import "${moduleName}" "${item.name}${suffix}" (global $${names[i]} ${wasmTypes[i]}))`)
+      .map((suffix, i) => `  (import ${watString(moduleName)} ${watString(`${item.name}${suffix}`)} (global $${names[i]} ${wasmTypes[i]}))`)
       .join('\n')
   }
 
@@ -4436,7 +4436,7 @@ function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {
   if (item.kind === 'FuncDecl') {
     const funcName = ctx.funcNames.get(item) ?? item.ident ?? 'anonymous'
     const watName = ctx.nameMap.get(funcName) ?? funcName
-    return `  (export "${name}" (func $${watName}))`
+    return `  (export ${watString(name)} (func $${watName}))`
   }
 
   if (item.kind === 'GlobalDecl') {
@@ -4447,11 +4447,11 @@ function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {
     const suffixes = type ? flatSuffixes(type) : ['']
     const watName = ctx.nameMap.get(globalName) ?? globalName
     const names = type ? globalNames(globalName, type, ctx) : [watName]
-    return suffixes.map((suffix, i) => `  (export "${name}${suffix}" (global $${names[i]}))`).join('\n')
+    return suffixes.map((suffix, i) => `  (export ${watString(`${name}${suffix}`)} (global $${names[i]}))`).join('\n')
   }
 
   if (item.kind === 'MemoryDecl') {
-    return `  (export "${name}" (memory 0))`
+    return `  (export ${watString(name)} (memory 0))`
   }
 
   return ''
@@ -4537,6 +4537,17 @@ import { basename } from 'path'
 
 function modulePrefix(filePath: string): string {
   return basename(filePath, '.ents').replace(/[^a-zA-Z0-9_]/g, '_')
+}
+
+// A name an import or an export gives, as a WAT string: printable ASCII as it
+// is, and a quote, a backslash and each byte of anything else as \hh, so
+// that any text the source spells is the name in the module (7.1, 7.2)
+function watString(text: string): string {
+  let out = ''
+  for (const byte of new TextEncoder().encode(text)) {
+    out += byte >= 0x20 && byte < 0x7f && byte !== 0x22 && byte !== 0x5c ? String.fromCharCode(byte) : `\\${byte.toString(16).padStart(2, '0')}`
+  }
+  return `"${out}"`
 }
 
 // The WAT name of a function import without a local name, given the name the
@@ -4822,7 +4833,7 @@ export function programToWat(
     const max = memDecl?.max ?? null
     const maxStr = max !== null ? ` ${max}` : ''
     if (memDecl?.exportName) {
-      parts.push(`  (memory (export "${memDecl.exportName}") ${min}${maxStr})`)
+      parts.push(`  (memory (export ${watString(memDecl.exportName)}) ${min}${maxStr})`)
     } else {
       parts.push(`  (memory ${min}${maxStr})`)
     }
