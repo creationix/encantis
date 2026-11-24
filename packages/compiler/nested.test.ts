@@ -4,6 +4,7 @@
 import { describe, expect, test } from 'bun:test'
 import { typecheck, type TypeCheckResult } from './checker'
 import { parse } from './parser'
+import { runTestsOfSource, wasmOfWat, watOfSource } from './test-utils'
 
 function check(source: string): TypeCheckResult {
   const parsed = parse(source, { filePath: 'test.ents' })
@@ -695,4 +696,419 @@ test "blocks" {
     expect(result.errors.map((e) => e.message)).toEqual(['a generic function is declared at module level, not inside a test'])
     expect(setsOf(result, 'test_blocks.add')).toEqual({ captures: ['n', 'i'], writes: ['n'] })
   })
+})
+
+// How a nested function compiles (N20 to N28): a module-level function
+// that takes what it captures after its parameters and gives back what it
+// writes after its results.
+const sameBytes = async (nested: string, lifted: string) => {
+  const [a, b] = [await wasmOfWat(watOfSource(nested)), await wasmOfWat(watOfSource(lifted))]
+  expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true)
+}
+
+describe('nested functions: lowering', () => {
+  test('the same module as the function written at module level with its captures (E1)', async () => {
+    await sameBytes(`
+export func count_over(xs: []u32, limit: u32) -> u32 {
+  let n: u32 = 0
+  func note(x: u32) {
+    if x > limit { n += 1 }
+  }
+  for x in xs { note(x) }
+  return n
+}`, `
+export func count_over(xs: []u32, limit: u32) -> u32 {
+  let n: u32 = 0
+  for x in xs { n = note(x, limit, n) }
+  return n
+}
+func note(x: u32, limit: u32, n: u32) -> (n: u32) {
+  if x > limit { n += 1 }
+}`)
+  })
+
+  test('one that captures nothing costs nothing (E2)', async () => {
+    await sameBytes(`
+export func area(w: u32, h: u32) -> u32 {
+  func double(x: u32) -> u32 => x * 2
+  return w.double() * h
+}`, `
+export func area(w: u32, h: u32) -> u32 {
+  return double(w) * h
+}
+func double(x: u32) -> u32 => x * 2`)
+  })
+
+  test('recursion with written captures (E3)', async () => {
+    await sameBytes(`
+export func climbs(n: u32) -> (ways: u32, calls: u32) {
+  func walk(left: u32) {
+    calls += 1
+    if left == 0 {
+      ways += 1
+      return
+    }
+    walk(left - 1)
+    if left >= 2 { walk(left - 2) }
+  }
+  walk(n)
+}`, `
+export func climbs(n: u32) -> (ways: u32, calls: u32) {
+  set (ways, calls) = walk(n, ways, calls)
+}
+func walk(left: u32, ways: u32, calls: u32) -> (ways: u32, calls: u32) {
+  calls += 1
+  if left == 0 {
+    ways += 1
+    return
+  }
+  set (ways, calls) = walk(left - 1, ways, calls)
+  if left >= 2 { set (ways, calls) = walk(left - 2, ways, calls) }
+}`)
+  })
+
+  test('placed after their function, in pre-order (E21)', async () => {
+    await sameBytes(`
+export func a() -> u32 {
+  func b() -> u32 {
+    func c() -> u32 => 1
+    return c()
+  }
+  func d() -> u32 => 2
+  return b() + d()
+}`, `
+export func a() -> u32 {
+  return b() + d()
+}
+func b() -> u32 {
+  return c()
+}
+func c() -> u32 => 1
+func d() -> u32 => 2`)
+  })
+
+  test('a call in an expression that writes a capture is a block; as a statement it is not', () => {
+    const wat = watOfSource(`
+export func order() -> u32 {
+  let n: u32 = 1
+  func bump() -> u32 {
+    n += 1
+    return n
+  }
+  bump()
+  return bump() * 10 + n
+}`)
+    expect(wat).toContain('(call $order.bump (local.get $n)) (local.set $n)\n')
+    expect(wat).toContain('(block (result i32) (call $order.bump (local.get $n)) (local.set $n))')
+    expect(wat).toContain('(func $order.bump (param $n i32) (result i32 i32)')
+  })
+
+  test('a struct and a slice are captured as their parts', () => {
+    const wat = watOfSource(`
+type Point = (x: i32, y: i32)
+export func walk(steps: u32, xs: []u32) -> i32 {
+  let p = Point(0, 0)
+  func step() {
+    p.x += 1
+    p.y -= xs.len as i32
+  }
+  for i in steps { step() }
+  return p.x + p.y
+}`)
+    expect(wat).toContain('(func $walk.step (param $xs_ptr i32) (param $xs_len i32) (param $p_x i32) (param $p_y i32) (result i32 i32)')
+    expect(wat).toContain('(call $walk.step (local.get $xs_ptr) (local.get $xs_len) (local.get $p_x) (local.get $p_y)) (local.set $p_y) (local.set $p_x)')
+  })
+
+  test('nested functions run as their function\'s variables say (N14 to N27)', async () => {
+    const { failed, ran } = await runTestsOfSource(`
+data words = [3:u32, 1, 4]
+data tail = [1:u32, 4]
+data buf = [1:u32, 2, 3, 4]
+type Point = (x: i32, y: i32)
+type Box = (arr: [3]u32, k: u32)
+data cells = [7:u32, 8, 9]
+
+func order() -> u32 {
+  let n: u32 = 1
+  func bump() -> u32 {
+    n += 1
+    return n
+  }
+  func show(a: u32) -> u32 => a * 100 + n
+  return show(bump()) * 10 + n
+}
+func lost() -> u32 {
+  let n: u32 = 1
+  func bump() -> u32 {
+    n += 5
+    return 10
+  }
+  n += bump()
+  return n
+}
+func kept() -> u32 {
+  let n: u32 = 1
+  func bump() -> u32 {
+    n += 5
+    return 10
+  }
+  n = bump() + n
+  return n
+}
+func thirds(n: u32) -> (count: u32) {
+  for i in n {
+    func skip() { i += 2 }
+    count += 1
+    skip()
+  }
+}
+func scaled(i: u32, k: u32) -> u32 {
+  if let v = cells[i] {
+    func times(m: u32) -> u32 => v * m
+    return times(k)
+  }
+  return 0
+}
+func walk(steps: u32) -> Point {
+  let p = Point(0, 0)
+  func step() {
+    p.x += 1
+    p.y -= 1
+  }
+  for i in steps { step() }
+  return p
+}
+func poked() -> u32 {
+  let b = Box([1, 2, 3], 4)
+  let a: [2][2]u32 = [[1, 2], [3, 4]]
+  func poke() {
+    b.arr[1] = 9
+    a[1][0] = 7
+  }
+  poke()
+  return b.arr[1] * 10 + a[1][0]
+}
+func passes(n: u32) -> u32 {
+  let runs: u32 = 0
+  func stop() { n = 0 }
+  for i in n {
+    runs += 1
+    stop()
+  }
+  return runs
+}
+func later() -> u32 {
+  let n: u32 = 0
+  func bump() { n += 10 }
+  func work() -> u32 {
+    defer bump()
+    n += 1
+    return n
+  }
+  let r = work()
+  return r * 100 + n
+}
+func outer() -> u32 {
+  let n: u32 = 0
+  func g() -> (r: u32) {
+    defer if true {
+      r = 7
+      n = 5
+    }
+    r = 1
+  }
+  return g() * 10 + n
+}
+func bare() -> u32 {
+  let n: u32 = 0
+  func g() -> (r: u32) {
+    defer if true { n = 5 }
+    r = 1
+    return
+  }
+  return g() * 10 + n
+}
+func arrow() -> u32 {
+  let n: u32 = 2
+  func g(x: u32) -> u32 => x + n
+  return g(3)
+}
+func early(k: u32) -> u32 {
+  let n: u32 = 0
+  func g() -> u32 {
+    for i in 10 {
+      n += 1
+      return i when i == k
+    }
+    return 99
+  }
+  let r = g()
+  return r * 100 + n
+}
+func first_of_old(k: u32) -> u32 {
+  let rest: []u32 = words
+  func drop_one() -> u32 {
+    rest = tail
+    return k
+  }
+  return rest[drop_one()] ?? 99
+}
+func biggest() -> u32 {
+  let n: u32 = 1
+  func bump() -> u32 {
+    n = 50
+    return 2
+  }
+  return max(n, bump())
+}
+func total() -> u32 {
+  func from(i: u32) -> u32 {
+    if i < 4 { return buf[i] + from(i + 1) }
+    i = 0
+    return 0
+  }
+  return from(0)
+}
+
+test "orders" {
+  assert order() == 2022
+  assert lost() == 11
+  assert kept() == 16
+}
+test "kinds of variables" {
+  assert thirds(10) == 4
+  assert scaled(1, 3) == 24
+  assert scaled(5, 3) == 0
+  assert walk(3).x == 3
+  assert walk(3).y == -3
+  assert poked() == 97
+  assert passes(3) == 3
+}
+test "exits" {
+  assert later() == 111
+  assert outer() == 75
+  assert bare() == 15
+  assert arrow() == 5
+  assert early(2) == 203
+  assert early(20) == 9910
+}
+test "the object before its index" {
+  assert first_of_old(0) == 3
+  assert first_of_old(2) == 4
+}
+test "a builtin's operand read once" {
+  assert biggest() == 2
+}
+test "recursion" {
+  assert total() == 10
+}
+`)
+    expect(ran.length).toBe(6)
+    expect(failed).toEqual([])
+  })
+})
+
+describe('nested functions: lowering, more shapes', () => {
+  test('an assignment\'s address is taken before its value writes the index back', async () => {
+    const { failed } = await runTestsOfSource(`
+data buf = mut [0:u32; 8]
+func w() -> u32 {
+  let i: u32#8 = 1
+  func setter() -> u32 {
+    i = 5
+    return 7
+  }
+  buf[i] = setter()
+  return buf[1] * 10 + buf[5]
+}
+test "address first" { assert w() == 70 }
+`)
+    expect(failed).toEqual([])
+  })
+
+  test('a function at the top of a test that captures is emitted after the test\'s function', () => {
+    const wat = watOfSource(`
+test "counts" {
+  let seen: u32 = 0
+  func see(x: u32) { seen += x }
+  see(2)
+  assert seen == 2
+}`)
+    // watOfSource builds no tests: nothing of it is emitted
+    expect(wat).not.toContain('see')
+  })
+
+  test('nested functions of tests, of a function of a test, and of a case-2 function run', async () => {
+    const { failed, ran } = await runTestsOfSource(`
+test "counts" {
+  let seen: u32 = 0
+  func see(x: u32) { seen += x }
+  func twice(x: u32) -> u32 {
+    func half(y: u32) -> u32 => y / 2
+    return half(x) * 4
+  }
+  see(2)
+  see(twice(3))
+  for i in 3 {
+    func add() { seen += i }
+    add()
+  }
+  assert seen == 9
+}
+`)
+    expect(ran).toEqual(['counts'])
+    expect(failed).toEqual([])
+  })
+})
+
+test("the object of a checked index or a range is evaluated before the index (N16, without nested functions)", async () => {
+  const { failed } = await runTestsOfSource(`
+data small = [1:u32, 2]
+data big = [10:u32, 20, 30, 40, 50, 60, 70, 80]
+data words = [3:u32, 1, 4]
+data tail = [1:u32, 4]
+data cells = mut [5:u32, 6, 7]
+export func s1(k: u32) -> u32 {
+  let xs: []u32 = small
+  return xs[if true { xs = big
+    k } else { 0 }] ?? 999
+}
+export func s2(k: u32) -> u32 {
+  let xs: []u32 = small
+  if let v = xs[if true { xs = big
+    k } else { 0 }] {
+    return v
+  }
+  return 999
+}
+export func s3(k: u32) -> u32 {
+  let xs: []u32 = small
+  let ys = xs[0..(if true { xs = big
+    k } else { 0 })] ?? xs
+  return ys.len
+}
+export func first_of_old(k: u32) -> u32 {
+  let rest: []u32 = words
+  let v = rest[if true { rest = tail
+    k } else { 0 }] ?? 99
+  return v
+}
+export func addr(k: u32) -> u32 {
+  let xs: []mut u32 = cells
+  if let p = &xs[if true { xs = xs[0..1] ?? xs
+    k } else { 0 }] {
+    return p.*
+  }
+  return 99
+}
+test "left to right" {
+  assert s1(5) == 999
+  assert s2(5) == 999
+  assert s3(5) == 8
+  assert first_of_old(0) == 3
+  assert first_of_old(2) == 4
+  assert addr(2) == 7
+}
+`)
+  expect(failed).toEqual([])
 })

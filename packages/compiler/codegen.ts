@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { argValue, ungroupedType } from './ast'
-import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, type CapturedVar, type ComptimeValue, type NestedCall, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -84,6 +84,15 @@ export interface CodegenContext {
   addressed: Set<AST.Expr>
   // Range assignments that fill (see TypeCheckResult.fills)
   fills: Set<AST.SliceExpr>
+  // The calls that pass captured variables (see TypeCheckResult.nestedCalls)
+  nestedCalls: TypeCheckResult['nestedCalls']
+  // The registers of the variables the function being emitted takes as
+  // captures, by variable (CapturedVar.id): a nested function's, and an
+  // instance's hidden ones (N21, N30)
+  captureRegs?: Map<number, string[]>
+  // What each exit of the function being emitted gives back after its own
+  // results: the registers of the variables it writes (N25)
+  writesBack?: string
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -106,6 +115,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     unproven: checkResult.unproven,
     addressed: checkResult.addressed,
     fills: checkResult.fills,
+    nestedCalls: checkResult.nestedCalls,
   }
 }
 
@@ -591,6 +601,16 @@ function setsLocalOf(wat: string, address: string): boolean {
     if (wat.includes(`(local.set ${name} `) || wat.includes(`(local.set ${name})`) || wat.includes(`(local.tee ${name} `)) return true
   }
   return false
+}
+
+// Whether `second` can be evaluated before `first` for the same values:
+// `first` has no effects and cannot trap, `second` sets none of the locals
+// it reads, and where `first` reads a global, `second` makes no call and sets
+// no global. The object of a checked index or a range is evaluated before
+// the index (N16, reference 4), and where this holds either way the order
+// does not matter.
+function commutes(first: string, second: string): boolean {
+  return isDroppable(first) && !setsLocalOf(second, first) && (!readsGlobal(first) || !/\((?:call|call_indirect|global\.set)\b/.test(second))
 }
 
 // The load and store instructions for one scalar. Integers narrower than a
@@ -1121,6 +1141,9 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   // called, Vec(u32)(p, 0, cap), compiles as the struct of its arguments.
   const lowered = ctx.calls.get(expr)
   if (lowered) return lowered.kind === 'CallExpr' ? callToWat(lowered, ctx) : tupleToWat(lowered, ctx)
+  // A call of a nested function, or of an instance that takes captures
+  const nested = ctx.nestedCalls.get(expr)
+  if (nested) return nestedCallToWat(expr, nested, ctx, false)
 
   // Get function name
   let funcName: string
@@ -1185,6 +1208,49 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   const traps = held.filter((_, i) => checked[i]).map((l) => nullTrap(`(local.get ${l})`)).join(' ')
   const gets = held.map((l) => `(local.get ${l})`).join(' ')
   return `(block (result ${types.join(' ')}) ${call} ${sets} ${traps} ${gets})`
+}
+
+// The registers a captured variable has in the function being emitted: the
+// capture parameters it takes for it, or its own locals there (N21).
+function captureRegsOf(v: CapturedVar, ctx: CodegenContext): string[] {
+  const regs = ctx.captureRegs?.get(v.id) ?? ctx.locals.get(v.name) ?? ctx.params.get(v.name)
+  if (!regs) throw new Error(`no registers for the captured variable '${v.name}'`)
+  return regs
+}
+
+// A call of a function that takes captured variables (N23): its arguments,
+// then the registers of what it captures, the call, and the registers of
+// what it writes assigned back from its last results, last first. In the
+// middle of an expression that is a block whose value is the call's own
+// results; as a statement (`statement`) it is the instructions as they are.
+function nestedCallToWat(expr: AST.CallExpr, info: NestedCall, ctx: CodegenContext, statement: boolean): string {
+  const args = expr.args.map((arg) => {
+    if (arg.value) return exprToWat(arg.value, ctx)
+    if (arg.name) return identToWat({ kind: 'IdentExpr', name: arg.name, span: arg.span }, ctx)
+    return ''
+  }).filter(Boolean)
+  const gets = info.captures.flatMap((v) => captureRegsOf(v, ctx).map((n) => `(local.get $${n})`))
+  const watName = ctx.nameMap.get(info.callee) ?? info.callee
+  const operands = [...args, ...gets]
+  const call = `(call $${watName}${operands.length ? ` ${operands.join(' ')}` : ''})`
+  if (info.writes.length === 0) return call
+  const sets = info.writes.flatMap((v) => captureRegsOf(v, ctx)).reverse().map((n) => `(local.set $${n})`).join(' ')
+  if (statement) return `${call} ${sets}`
+  const type = lookupExprType(expr, ctx)
+  const own = type && type.kind !== 'void' ? typeToWasm(type) : []
+  return `(block${own.length ? ` (result ${own.join(' ')})` : ''} ${call} ${sets})`
+}
+
+// The call an expression is, where that is a call that passes captured
+// variables, through what the checker compiles it as
+function nestedCallOf(expr: AST.Expr, ctx: CodegenContext): { call: AST.CallExpr; info: NestedCall } | null {
+  let e: AST.Expr | AST.TupleExpr | undefined = ungroup(expr)
+  while (e?.kind === 'CallExpr') {
+    const info = ctx.nestedCalls.get(e)
+    if (info) return { call: e, info }
+    e = ctx.calls.get(e)
+  }
+  return null
 }
 
 // === Places ===
@@ -1707,34 +1773,39 @@ function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
   const uid = scratchId(expr.span.start)
   const setup: string[] = []
   const simple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/.test(wat)
-  // A part as a plain expression, through the named scratch local if needed.
-  const keep = (wat: string, name: string): string => {
-    if (simple(wat)) return wat
+  // The object, then the bounds, in order (N16): a part is read where it
+  // stands, or through the named scratch local where it is more than a plain
+  // read, or where a part after it sets a local it reads.
+  const obj = exprToWat(expr.object, ctx)
+  const startWat = expr.start ? exprToWat(expr.start, ctx) : null
+  const endGiven = expr.end ? exprToWat(expr.end, ctx) : null
+  const later = (...wats: (string | null)[]) => wats.filter((w): w is string => w !== null)
+  const keep = (wat: string, name: string, after: string[] = []): string => {
+    if (simple(wat) && !after.some((w) => setsLocalOf(w, wat))) return wat
     setup.push(`(local.set $__sl_${name}_${uid} ${wat})`)
     return `(local.get $__sl_${name}_${uid})`
   }
 
-  const obj = exprToWat(expr.object, ctx)
   let ptr: string
   let len: string | null
   if (u.kind === 'slice') {
     const parts = trySplitMultiValue(obj, 2)
     if (parts) {
-      ptr = keep(parts[0], 'p')
-      len = keep(parts[1], 'n')
+      ptr = keep(parts[0], 'p', later(parts[1], startWat, endGiven))
+      len = keep(parts[1], 'n', later(startWat, endGiven))
     } else {
       setup.push(obj, `(local.set $__sl_n_${uid})`, `(local.set $__sl_p_${uid})`)
       ptr = `(local.get $__sl_p_${uid})`
       len = `(local.get $__sl_n_${uid})`
     }
   } else {
-    ptr = keep(obj, 'p')
+    ptr = keep(obj, 'p', later(startWat, endGiven))
     const pointee = u.kind === 'pointer' ? unwrap(u.pointee) : null
     const size = pointee?.kind === 'array' && typeof pointee.sizes?.[0] === 'number' ? pointee.sizes[0] : null
     len = size !== null ? `(i32.const ${size})` : null
   }
-  const start = expr.start ? keep(exprToWat(expr.start, ctx), 'a') : '(i32.const 0)'
-  const endWat = expr.end ? exprToWat(expr.end, ctx) : len
+  const start = startWat ? keep(startWat, 'a', later(endGiven)) : '(i32.const 0)'
+  const endWat = endGiven ?? len
   if (!endWat) throw new Error('a range on a many-pointer needs an end')
   const end = keep(endWat, 'b')
 
@@ -1843,9 +1914,23 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
     if (u.kind === 'slice' && !isDroppable(len)) base = `(block (result i32) ${base} ${len} (drop))`
     return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
   }
-  const idx = `$__addr_idx_${scratchId(expr.span.start)}`
+  const uid = scratchId(expr.span.start)
+  const idx = `$__addr_idx_${uid}`
+  // The object, then the index (N16), where the two orders can differ
+  const indexWat = exprToWat(target.index, ctx)
+  const obj = u.kind === 'slice' ? `${base} ${len}` : base
+  let setup = ''
+  if (!commutes(obj, indexWat) && !commutes(indexWat, obj)) {
+    setup = `(local.set $__addr_ptr_${uid} ${base}) `
+    base = `(local.get $__addr_ptr_${uid})`
+    if (u.kind === 'slice') {
+      setup += `(local.set $__addr_len_${uid} ${len}) `
+      len = `(local.get $__addr_len_${uid})`
+    }
+  }
   const { offset } = indexOffset(target.object, base, `(local.get ${idx})`, ctx)
-  return `(if (result i32) (i32.lt_u (local.tee ${idx} ${exprToWat(target.index, ctx)}) ${len}) (then ${offset}) (else (i32.const 0)))`
+  const check = `(if (result i32) (i32.lt_u (local.tee ${idx} ${indexWat}) ${len}) (then ${offset}) (else (i32.const 0)))`
+  return setup ? `(block (result i32) ${setup}${check})` : check
 }
 
 // The length of a null-terminated *[!]T (or [!]T): how many elements come
@@ -1941,13 +2026,17 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   const objType = lookupExprType(indexExpr.object, ctx)
 
   const parts: string[] = []
-  parts.push(`(local.set $${idxLocal} ${exprToWat(indexExpr.index, ctx)})`)
+  // The object, then the index (N16), where the two orders can differ
+  const indexWat = exprToWat(indexExpr.index, ctx)
+  const obj = exprToWat(indexExpr.object, ctx)
+  const indexFirst = commutes(obj, indexWat) || commutes(indexWat, obj)
+  const setIndex = `(local.set $${idxLocal} ${indexWat})`
+  if (indexFirst) parts.push(setIndex)
 
   if (objType?.kind === 'slice') {
-    const obj = exprToWat(indexExpr.object, ctx)
     parts.push(`${obj}\n(local.set $${lenLocal})\n(local.set $${ptrLocal})`)
   } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
-    parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+    parts.push(`(local.set $${ptrLocal} ${obj})`)
     const arrayType = objType.pointee
     // N, also of a packed *[NxM]T, whose rows are counted the same way
     if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
@@ -1956,9 +2045,10 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
       parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
     }
   } else if (objType && RT.framedArray(objType)) {
-    parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+    parts.push(`(local.set $${ptrLocal} ${obj})`)
     parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
   }
+  if (!indexFirst) parts.push(setIndex)
 
   const elemSize = byteSize(elemType) ?? 1
   const boundsCheck = `(i32.lt_u (local.get $${idxLocal}) (local.get $${lenLocal}))`
@@ -2010,13 +2100,17 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     const objType = lookupExprType(indexExpr.object, ctx)
 
     const parts: string[] = []
-    parts.push(`(local.set $${idxLocal} ${exprToWat(indexExpr.index, ctx)})`)
+    // The object, then the index (N16), where the two orders can differ
+    const indexWat = exprToWat(indexExpr.index, ctx)
+    const obj = exprToWat(indexExpr.object, ctx)
+    const indexFirst = commutes(obj, indexWat) || commutes(indexWat, obj)
+    const setIndex = `(local.set $${idxLocal} ${indexWat})`
+    if (indexFirst) parts.push(setIndex)
 
     if (objType?.kind === 'slice') {
-      const obj = exprToWat(indexExpr.object, ctx)
       parts.push(`${obj}\n(local.set $${lenLocal})\n(local.set $${ptrLocal})`)
     } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
-      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      parts.push(`(local.set $${ptrLocal} ${obj})`)
       const arrayType = objType.pointee
       // N, also of a packed *[NxM]T, whose rows are counted the same way
       if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
@@ -2027,12 +2121,13 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
         parts.push(`(local.set $${lenLocal} (i32.const 0))`)
       }
     } else if (objType && RT.framedArray(objType)) {
-      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      parts.push(`(local.set $${ptrLocal} ${obj})`)
       parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
     } else {
-      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      parts.push(`(local.set $${ptrLocal} ${obj})`)
       parts.push(`(local.set $${lenLocal} (i32.const 0))`)
     }
+    if (!indexFirst) parts.push(setIndex)
 
     const elemSize = byteSize(elemType) ?? 1
     const boundsCheck = `(i32.lt_u (local.get $${idxLocal}) (local.get $${lenLocal}))`
@@ -2508,6 +2603,11 @@ function sizeofToWat(expr: AST.SizeofExpr, ctx: CodegenContext): string {
 
 export function stmtToWat(stmt: AST.Statement, ctx: CodegenContext): string {
   switch (stmt.kind) {
+    // A nested function is a function of the module, emitted after the one
+    // that declares it (N20).
+    case 'FuncDecl':
+    case 'TypeFuncDecl':
+      return ''
     case 'LetStmt':
       return letToWat(stmt, ctx)
     case 'SetStmt':
@@ -2550,6 +2650,14 @@ function exprHasValue(expr: AST.Expr, ctx: CodegenContext): boolean {
 
 // An expression evaluated for its effect, dropping any result.
 function discardedExprToWat(expr: AST.Expr, ctx: CodegenContext): string {
+  // A call that assigns captured variables back, as a statement: no block
+  const nested = nestedCallOf(expr, ctx)
+  if (nested && nested.info.writes.length > 0) {
+    const wat = nestedCallToWat(nested.call, nested.info, ctx, true)
+    const type = lookupExprType(nested.call, ctx)
+    const slots = type && type.kind !== 'void' ? typeToWasm(type).length : 0
+    return slots > 0 ? `${wat}\n${Array(slots).fill('(drop)').join('\n')}` : wat
+  }
   const exprWat = exprToWat(expr, ctx)
   const exprType = lookupExprType(expr, ctx)
   if (exprType && exprType.kind !== 'void') {
@@ -2786,7 +2894,9 @@ function returnToWat(stmt: AST.ReturnStmt, ctx: CodegenContext): string {
   // The value is computed first and stays on the stack while every open block's
   // deferred expressions run (they leave the stack as they found it).
   const deferred = deferredToWat(ctx, ctx.deferFrames?.length ?? 0)
-  const run = deferred ? `${deferred} ` : ''
+  // The variables a nested function writes go back last, read after its
+  // deferred expressions have run (N25, N27).
+  const run = `${deferred ? `${deferred} ` : ''}${ctx.writesBack ? `${ctx.writesBack} ` : ''}`
 
   if (stmt.when) {
     const cond = exprToWat(stmt.when, ctx)
@@ -2857,15 +2967,24 @@ function assignedRoot(target: AST.LValue): string | null {
 // the count where the loop compares with it: nothing in the body may change
 // the variable it is read from (a slice's length is part of the slice), and
 // for a global, the body calls nothing that could.
-function steadyRead(stmt: AST.ForStmt, wat: string): boolean {
+function steadyRead(stmt: AST.ForStmt, wat: string, ctx: CodegenContext): boolean {
   const body = stmt.body
   let root = ungroup(stmt.iterable)
   while (root.kind === 'MemberExpr' && root.member.kind === 'field') root = ungroup(root.object)
-  if (root.kind !== 'IdentExpr' || mayChange(body, root.name)) return false
+  if (root.kind !== 'IdentExpr' || mayChange(body, root.name) || callWrites(body, root.name, ctx)) return false
   // for n in n: the loop variable takes the local the count is read from.
   if (stmt.binding.value === root.name || stmt.binding.index === root.name) return false
   if (/^\(local\.get \$[\w-]+\)$/.test(wat)) return true
   return /^\(global\.get \$[\w-]+\)$/.test(wat) && !makesCall(body)
+}
+
+// Whether a call in some code assigns the variable `name` back: a call of a
+// nested function, or of an instance, that writes it (N19)
+function callWrites(node: unknown, name: string, ctx: CodegenContext): boolean {
+  if (Array.isArray(node)) return node.some((n) => callWrites(n, name, ctx))
+  if (!node || typeof node !== 'object') return false
+  if ((node as { kind?: string }).kind === 'CallExpr' && nestedCallOf(node as AST.CallExpr, ctx)?.info.writes.some((v) => v.name === name)) return true
+  return Object.entries(node).some(([k, v]) => k !== 'span' && k !== 'type' && typeof v === 'object' && callWrites(v, name, ctx))
 }
 
 function makesCall(node: unknown): boolean {
@@ -2903,7 +3022,7 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
     // times; value counts up from 0 and stops at the count, so it never
     // reaches the values where the two comparisons differ.
     const constant = /^\(i32\.const (-?\d+)\)$/.exec(iterWat)
-    const steady = constant !== null || steadyRead(stmt, iterWat)
+    const steady = constant !== null || steadyRead(stmt, iterWat, ctx)
     const count = steady ? iterWat : scratchLocal(ctx, 'i32')
     const negative = iterType.kind === 'primitive' && RT.isSigned(iterType) && !(constant && Number(constant[1]) >= 0)
     const compare = negative ? 'i32.ge_s' : 'i32.ge_u'
@@ -3051,11 +3170,15 @@ export function funcToWat(
   }
   const name = checkResult.funcNames.get(decl) ?? decl.ident ?? 'anonymous'
 
-  // Get function type from checker
-  const funcType = checkResult.symbols.get(name)
+  // Get function type from checker. A nested function's is its own, and it
+  // and an instance given functions that capture take captured variables
+  // after their parameters and give back those they write (N21, N22, N30).
+  const nestedInfo = checkResult.nested.get(decl)
+  const funcType = nestedInfo ? nestedInfo.sym : checkResult.symbols.get(name)
   if (!funcType || funcType.kind !== 'func') {
     throw new Error(`Function ${name} not found in symbols`)
   }
+  const captured = nestedInfo ?? checkResult.instanceHidden.get(name)
 
   // Flatten parameters
   const params: string[] = []
@@ -3069,10 +3192,25 @@ export function funcToWat(
     for (const [i, n] of names.entries()) params.push(`(param $${n} ${wasmTypes[i]})`)
     ctx.params.set(paramName, names)
   }
+  // A parameter for each register of each captured variable, named as the
+  // variable's locals are. The body names it as the variable it is; one that
+  // reaches it through an instance's comptime parameter has no name there.
+  ctx.captureRegs = new Map()
+  for (const v of captured?.captures ?? []) {
+    const wasmTypes = typeToWasm(v.type)
+    const names = claimLocals(ctx, v.name, v.type, null)
+    for (const [i, n] of names.entries()) params.push(`(param $${n} ${wasmTypes[i]})`)
+    ctx.captureRegs.set(v.id, names)
+    if (nestedInfo && !nestedInfo.hidden.has(v.id)) ctx.params.set(v.name, names)
+  }
 
-  // Flatten returns and add named returns as locals
-  const returnTypes = funcType.type.returns.flatMap((r) => typeToWasm(r.type))
+  // Flatten returns and add named returns as locals. The variables written
+  // are results after its own.
+  const ownReturnTypes = funcType.type.returns.flatMap((r) => typeToWasm(r.type))
+  const writes = captured?.writes ?? []
+  const returnTypes = [...ownReturnTypes, ...writes.flatMap((v) => typeToWasm(v.type))]
   const resultStr = returnTypes.length > 0 ? `(result ${returnTypes.join(' ')})` : ''
+  ctx.writesBack = writes.flatMap((v) => ctx.captureRegs?.get(v.id) ?? []).map((n) => `(local.get $${n})`).join(' ')
 
   // Collect locals from body
   const locals = collectLocals(decl.body, ctx, checkResult)
@@ -3124,8 +3262,11 @@ export function funcToWat(
   // A block body with unnamed results returns on every path (the checker
   // ensures it), so its end is unreachable; say so for the wasm validator,
   // which can't tell that a loop with no break never falls through.
-  if (decl.body.kind === 'Block' && namedReturns.length === 0 && returnTypes.length > 0) {
+  if (decl.body.kind === 'Block' && namedReturns.length === 0 && ownReturnTypes.length > 0) {
     epilogue = '(unreachable)'
+  } else if (ctx.writesBack) {
+    // The variables written, after its own results (N25)
+    epilogue = epilogue ? `${epilogue}\n  ${ctx.writesBack}` : ctx.writesBack
   }
 
   const localStr = declareUsedLocals([...dedupedLocals, ...(ctx.scratch ?? [])], `${body}\n${epilogue}`, '\n  ')
@@ -3141,6 +3282,28 @@ export function funcToWat(
   ${entry.map((check) => `${check}\n  `).join('')}${body}
   ${epilogue}
 )`
+}
+
+// The nested functions a function or a test declares, in the order they are
+// declared, each followed by its own (N20): after the function that
+// declares them.
+function nestedToWat(
+  owner: AST.FuncDecl | AST.TestDecl,
+  checkResult: TypeCheckResult,
+  literalRefs: Map<number, { ptr: number; len: number }>,
+  nameMap: Map<string, string> | undefined,
+  dataSectionSize: number | undefined,
+  extraSymbols?: Map<string, CheckSymbol>,
+): string[] {
+  const out: string[] = []
+  for (const decl of checkResult.nestedOf.get(owner) ?? []) {
+    const info = checkResult.nested.get(decl)
+    if (!info) continue
+    const watName = nameMap?.get(info.path) ?? info.path
+    out.push(funcToWat(decl, checkResult, literalRefs, nameMap, watName, extraSymbols, dataSectionSize))
+    out.push(...nestedToWat(decl, checkResult, literalRefs, nameMap, dataSectionSize, extraSymbols))
+  }
+  return out
 }
 
 // An exported function whose parameters hold a plain host reference checks
@@ -3590,6 +3753,7 @@ function collectLocals(
         const t = checkResult.exprTypes.get(expr)
         if (t?.kind === 'pointer' && t.optional) {
           locals.push({ name: `__addr_idx_${scratchId(expr.span.start)}`, type: 'i32' })
+          locals.push({ name: `__addr_ptr_${scratchId(expr.span.start)}`, type: 'i32' }, { name: `__addr_len_${scratchId(expr.span.start)}`, type: 'i32' })
         }
       }
       visitExpr(expr.operand)
@@ -3706,6 +3870,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
       if (entry) hostEntries.push(entry)
     }
     parts.push(funcToWat(fn, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize, exported.has(fn)))
+    parts.push(...nestedToWat(fn, checkResult, literalRefs, undefined, dataSection.totalSize))
   }
   parts.push(...hostGlobalsStart(hostGlobalChecks(module, ctx, false)))
 
@@ -3838,12 +4003,16 @@ function emitTestDecl(
     } else if (item.kind === 'ImportDecl') {
       // Handled at module level — skip here
     } else if (item.kind === 'FuncDecl') {
+      // One that uses the test's variables is a nested function of the
+      // test's function, emitted after it (N36)
+      if (checkResult.nested.has(item)) continue
       // Emit shared helper function
       const watName = item.ident ? `__test_${myPrefix}_${item.ident}` : `__test_${myPrefix}_anon`
       if (item.ident) {
         ctx.nameMap.set(item.ident, watName)
       }
       parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName, ctx.symbols, ctx.dataSectionSize))
+      parts.push(...nestedToWat(item, checkResult, literalRefs, ctx.nameMap, ctx.dataSectionSize, ctx.symbols))
     } else if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       // Already processed above
     } else if (item.kind === 'TypeFuncDecl') {
@@ -3883,6 +4052,7 @@ function emitTestDecl(
     const localStr = declareUsedLocals(locals, body, ' ')
     const testLabel = decl.name ? ` ;; test "${decl.name}"` : ''
     parts.push(`(func $test_${safeName} ${localStr}${testLabel}\n  ${body}\n)`)
+    parts.push(...nestedToWat(decl, checkResult, literalRefs, ctx.nameMap, ctx.dataSectionSize, ctx.symbols))
     parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
   }
 }
@@ -4220,6 +4390,9 @@ export function programToWat(
       const name = inst.decl.ident as string
       modNameMap.set(name, prefix ? `${prefix}$${name}` : name)
     }
+    for (const nested of checkResults.get(path)?.nested.values() ?? []) {
+      modNameMap.set(nested.path, prefix ? `${prefix}$${nested.path}` : nested.path)
+    }
     perModuleNameMap.set(path, modNameMap)
     perModuleExports.set(path, modExports)
   }
@@ -4359,6 +4532,7 @@ export function programToWat(
         if (entry) hostEntries.push(entry)
       }
       parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize, entryExports.has(fn)))
+      parts.push(...nestedToWat(fn, result, refsOf(path), modNameMap, dataSection.totalSize))
     }
     globalChecks.push(...hostGlobalChecks(loaded.module, createContext(result, refsOf(path), modNameMap, dataSection.totalSize), tested.has(path)))
   }
