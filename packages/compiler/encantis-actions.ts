@@ -252,6 +252,33 @@ function piecesToBytes(pieces: Piece[]): Uint8Array {
 
 // A literal the grammar accepts but the language does not: '' or an escape
 // that names no character. parse() reports it where it is written.
+// The text of a string an import or an export names something by: the
+// module holds such names as UTF-8 text (7.1, 7.2), and a byte that is no
+// part of a character ("a\x80") is in none.
+function nameText(literal: AST.LiteralExpr, what: string): string {
+  const bytes = (literal.value as { bytes: Uint8Array }).bytes
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  try {
+    return decoder.decode(bytes)
+  } catch {
+    // The first byte that starts no character: each character, its length
+    // read off its first byte, is decoded on its own
+    let bad = 0
+    for (let i = 0; i < bytes.length; bad = i) {
+      const first = bytes[i]
+      const length = first < 0x80 ? 1 : first >= 0xf0 ? 4 : first >= 0xe0 ? 3 : 2
+      try {
+        decoder.decode(bytes.subarray(i, i + length))
+      } catch {
+        break
+      }
+      i += length
+    }
+    const hex = bytes[bad].toString(16).padStart(2, '0')
+    throw new LiteralError(`${what} is UTF-8 text: \\x${hex} is no character of it`, literal.span)
+  }
+}
+
 export class LiteralError extends Error {
   constructor(
     message: string,
@@ -324,8 +351,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
 
   // ImportDecl_group(...) -> ImportDecl
   ImportDecl_group(_import, module, _lp, items, _rp): AST.ImportDecl {
-    const moduleLit = module.toAST()
-    const moduleName = new TextDecoder().decode(moduleLit.value.bytes)
+    const moduleName = nameText(module.toAST(), 'a module an import names')
     return {
       kind: 'ImportDecl',
       module: moduleName,
@@ -335,8 +361,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   ImportDecl_single(_import, module, item): AST.ImportDecl {
-    const moduleLit = module.toAST()
-    const moduleName = new TextDecoder().decode(moduleLit.value.bytes)
+    const moduleName = nameText(module.toAST(), 'a module an import names')
     return {
       kind: 'ImportDecl',
       module: moduleName,
@@ -346,8 +371,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   ImportGroupItem(name, item): AST.ImportItem {
-    const nameLit = name.toAST()
-    const itemName = new TextDecoder().decode(nameLit.value.bytes)
+    const itemName = nameText(name.toAST(), 'the name an import gives')
     return {
       kind: 'ImportItem',
       name: itemName,
@@ -384,8 +408,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   ExportDecl_named(_export, name, item): AST.ExportDecl {
-    const literal = name.toAST()
-    const exportName = new TextDecoder().decode(literal.value.bytes)
+    const exportName = nameText(name.toAST(), 'an export\'s name')
     return {
       kind: 'ExportDecl',
       name: exportName,

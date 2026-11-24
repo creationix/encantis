@@ -3931,4 +3931,12 @@ export func two() -> u32 => gapply(u32, 2) + gapply(u64, 3)
     expect(hover(typed, typedParsed.module!, typedResult, typed.indexOf('gh('))?.type).toBe('func(a: [*]T, b: [*]T) -> T')
   })
 
+  // An import's or an export's name is UTF-8 text: a byte that is part of
+  // no character is refused, not written as another name (7.2)
+  test('import and export names that are not UTF-8 are refused', () => {
+    expect(parse('export "a\\x80" func f() -> u32 => 1').errors.map((e) => e.shortMessage)).toEqual([`an export's name is UTF-8 text: \\x80 is no character of it`])
+    expect(parse('import "env" "b\\xff" func g(x: u32)').errors.map((e) => e.shortMessage)).toEqual([`the name an import gives is UTF-8 text: \\xff is no character of it`])
+    expect(parse('import "e\\xe2\\x82" ("g" func g(x: u32))').errors.map((e) => e.shortMessage)).toEqual([`a module an import names is UTF-8 text: \\xe2 is no character of it`])
+    expect(parse('export "\\xe2\\x82\\xac" func f() -> u32 => 1').errors).toEqual([])
+  })
 })
