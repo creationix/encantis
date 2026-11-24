@@ -650,6 +650,33 @@ test "plain" {
     expect(result.symbols.has('twice')).toBe(true)
   })
 
+  test('a name it declares itself is its own, not a use of the test\'s variable of that name', async () => {
+    const source = `export func one() -> u32 => 1
+test "parameter" {
+  let x: u32 = 4
+  func double(x: u32) -> u32 => x * 2
+  assert double(x) == 8
+}
+test "named result" {
+  let r: u32 = 4
+  func two() -> (r: u32) { r = 2 }
+  assert two() + r == 6
+}
+test "group" {
+  let x: u32 = 4
+  func triple(x: u32) -> u32 => x * 3
+  test "inner" {
+    assert triple(3) == 9
+  }
+}`
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect([...result.nested.values()].map((n) => n.path)).toEqual([])
+    const { ran, failed } = await runTestsOfSource(source)
+    expect(ran).toEqual(['parameter', 'named result', 'group > inner'])
+    expect(failed).toEqual([])
+  })
+
   test('a capturing one takes no name of the module', () => {
     expect(errorsOf(`
 func helper() -> u32 => 1

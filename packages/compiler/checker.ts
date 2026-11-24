@@ -10352,11 +10352,17 @@ class CheckContext {
   // comptime function parameters seen there that it calls or gives.
   private captureSets(decl: AST.FuncDecl): CaptureSets & { named: Map<number, number[]>; hidden: Set<number> } {
     const names = namesInBody(decl.body)
+    // A name the function declares itself, where that declaration is seen,
+    // is not one of the scope around it (a function of a test whose
+    // parameter is named like a variable of the test, N36)
+    const free = freeNamesOf(decl)
     const used = new Map<number, CapturedVar>()
     const named = new Map<number, number[]>()
     const written = new Set<number>()
     const called: CaptureSets[] = []
-    for (const [name, offsets] of names.values) {
+    for (const name of names.values.keys()) {
+      const offsets = free.get(name)
+      if (!offsets) continue
       const sym = this.lookup(name)
       if (!sym) continue
       const info = this.varInfo.get(sym)
@@ -10368,10 +10374,12 @@ class CheckContext {
       }
     }
     for (const name of names.methods) {
+      if (!free.has(name)) continue
       const sym = this.lookup(name)
       if (sym?.kind === 'func' && sym.sets) called.push(sym.sets)
     }
     for (const { root, target } of names.targets) {
+      if (!free.has(root)) continue
       const sym = this.lookup(root)
       const info = sym && this.varInfo.get(sym)
       if (info && (target === null || assignsItsRoot(target, info.v.type))) written.add(info.v.id)
@@ -12507,6 +12515,138 @@ function namesInBody(body: AST.FuncBody): BodyNames {
   }
   walk(body)
   return names
+}
+
+// The names a function's body uses (as namesInBody counts them) that the
+// function does not declare itself where the use is, with the offsets of
+// those uses: not a parameter, a named result or a `let` of the function or
+// of a nested function the use is in (all seen in the whole of their
+// function), nor a nested function declared in one of them, nor the
+// binding of a `for`, an `if let`, an `elif let` or a match arm around the
+// use. Method names and assignment roots count too, with no offset of their
+// own.
+function freeNamesOf(decl: AST.FuncDecl): Map<string, number[]> {
+  const free = new Map<string, number[]>()
+  const use = (name: string, bound: ReadonlySet<string>, at?: number) => {
+    if (bound.has(name)) return
+    const list = free.get(name) ?? []
+    if (at !== undefined) list.push(at)
+    free.set(name, list)
+  }
+  const with_ = (bound: ReadonlySet<string>, names: Iterable<string>): ReadonlySet<string> => {
+    const more = new Set(bound)
+    for (const n of names) more.add(n)
+    return more
+  }
+  const matchedNames = (p: AST.MatchPattern, found: string[] = []): string[] => {
+    if (p.kind === 'binding') found.push(p.name)
+    else if (p.kind === 'constructor' || p.kind === 'tuple') {
+      for (const e of p.elements) {
+        if (e.kind === 'namedShort') found.push(e.field)
+        else matchedNames(e.pattern, found)
+      }
+    }
+    return found
+  }
+  // The names a function declares for the whole of itself: its parameters,
+  // named results, lets, and the nested functions declared in it
+  const functionNames = (d: AST.FuncDecl): string[] => {
+    const found: string[] = []
+    for (const t of [d.signature.input, d.signature.output]) {
+      if (t.kind === 'CompositeType') for (const f of t.fields) if (f.ident) found.push(f.ident)
+    }
+    const lets = (node: unknown): void => {
+      if (Array.isArray(node)) {
+        for (const n of node) lets(n)
+        return
+      }
+      if (!node || typeof node !== 'object') return
+      const n = node as { kind?: string }
+      if (n.kind === 'FuncDecl') {
+        const inner = node as AST.FuncDecl
+        if (inner.ident) found.push(inner.ident)
+        return
+      }
+      if (n.kind === 'TypeFuncDecl') return
+      if (n.kind === 'LetStmt') for (const { name } of setPatternNames((node as AST.LetStmt).pattern)) found.push(name)
+      for (const child of codeEntries(node)) lets(child)
+    }
+    lets(d.body)
+    return found
+  }
+  const walk = (node: unknown, bound: ReadonlySet<string>): void => {
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n, bound)
+      return
+    }
+    if (!node || typeof node !== 'object') return
+    const n = node as { kind?: string }
+    switch (n.kind) {
+      case 'IdentExpr': {
+        const e = node as AST.IdentExpr
+        use(e.name, bound, e.span.start)
+        return
+      }
+      case 'Arg': {
+        const a = node as AST.Arg
+        if (!a.value && a.name) use(a.name, bound, a.span.start)
+        else walk(a.value, bound)
+        return
+      }
+      case 'SetStmt': {
+        const st = node as AST.SetStmt
+        for (const { name, at } of setPatternNames(st.pattern)) use(name, bound, at)
+        walk(st.value, bound)
+        return
+      }
+      case 'AssignmentStmt': {
+        const st = node as AST.AssignmentStmt
+        const root = targetRoot(st.target)
+        if (root) use(root.name, bound)
+        walk(st.target, bound)
+        walk(st.value, bound)
+        return
+      }
+      case 'CallExpr': {
+        const call = node as AST.CallExpr
+        if (call.callee.kind === 'MemberExpr' && call.callee.member.kind === 'field') use(call.callee.member.name, bound)
+        break
+      }
+      case 'FuncDecl': {
+        const d = node as AST.FuncDecl
+        walk(d.body, with_(bound, functionNames(d)))
+        return
+      }
+      case 'TypeFuncDecl':
+        return
+      case 'ForStmt': {
+        const st = node as AST.ForStmt
+        walk(st.iterable, bound)
+        walk(st.body, with_(bound, forNames(st.binding).map((b) => b.name)))
+        return
+      }
+      case 'IfExpr':
+      case 'ElifBranch': {
+        const e = node as AST.IfExpr | AST.ElifBranch
+        if (!e.pattern) break
+        walk(e.condition, bound)
+        walk(e.thenBranch, with_(bound, matchedNames(e.pattern)))
+        if (e.kind === 'IfExpr') {
+          walk(e.elifs, bound)
+          walk(e.else_, bound)
+        }
+        return
+      }
+      case 'MatchArm': {
+        const arm = node as AST.MatchArm
+        walk(arm.body, with_(bound, arm.patterns.flatMap((p) => matchedNames(p))))
+        return
+      }
+    }
+    for (const child of codeEntries(node)) walk(child, bound)
+  }
+  walk(decl.body, new Set(functionNames(decl)))
+  return free
 }
 
 // The names a function declares itself, wherever in it, with where (N8):

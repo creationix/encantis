@@ -10797,7 +10797,7 @@ A test can declare `def`, `data`, functions and imports, and these are the test'
 
 - A `def` or a `data` block declared in a test replaces a module name of the same name inside that test only, below its declaration. The rest of the module reads the name as if the test were not there.
 - A function declared in a test is called by its name in the test, below its declaration, and there it replaces a module function of that name. Module code, a generic's instances included, calls the module's function. The compiler gets this wrong in three ways (known bugs). In the test build a `data` block or a function declared in a test is what its name means in the whole test, above its declaration too, where the checker took the name for the module's. It gives the test's function to the tests that come after it in the file: a call written in one of them calls the test's function, while module code they call still calls the module's. And in the test build it gives the module's function of that name the test function's parameters: if their types differ, the test build does not assemble, and if their names differ, the compiler stops with an internal error. Two tests can each declare a function of one name: with the same parameter types each test calls its own, and with different parameter types the test build does not assemble (`type mismatch in call`, the same known bugs). What is safe: give each function and `data` a test declares a name no module declaration has, declare it at the top of the test, and give functions of one name in different tests the same parameter types.
-- A function declared at the top of a test that uses the test's variables (or calls a function that does) is a nested function of the test ([Nested Functions](#nested-functions)), in a test that holds no tests: it is seen in that test alone, from its declaration to its end, it takes no name of the module (`'helper' is already declared: a function that uses its test's variables cannot reuse the name of a function of the module`), and none of the known bugs above concern it. One at the top of a group cannot use the group's variables ([12.3](#123-groups)). A function declared in a block of a test (a branch, a loop body) is a nested function of the test too. What a function at the top of a test is, is decided where it is declared: one that captures nothing is a function of the test, as above.
+- A function declared at the top of a test that uses the test's variables (or calls a function that does) is a nested function of the test ([Nested Functions](#nested-functions)), in a test that holds no tests: it is seen in that test alone, from its declaration to its end, it takes no name of the module (`'helper' is already declared: a function that uses its test's variables cannot reuse the name of a function of the module`), and none of the known bugs above concern it. One at the top of a group cannot use the group's variables ([12.3](#123-groups)). A function declared in a block of a test (a branch, a loop body) is a nested function of the test too. What a function at the top of a test is, is decided where it is declared: one that captures nothing is a function of the test, as above. A name the function declares itself (a parameter, a named result, a `let` of its body, a loop, `if let` or match binding around the use, or a parameter of a function nested in it) is its own there, and no use of a variable of the test of that name: `func double(x: u32) -> u32 => x * 2` after `let x` is a function of the test.
 - A function declared in a test can be given for a comptime function parameter in that test ([8.6](#86-comptime-function-parameters)): a nested one as any nested function, one that captures nothing by the name its test gives it. Its instance exists in the test build only.
 - An import declared in a test is part of the test build only: a host function, a host global or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. A host global imported there gets the stand-in of [12.6](#126-the-test-host), so a test can take a plain host reference to pass to the code it tests. As for functions, the compiler gives an import to the later tests too.
 
@@ -10821,6 +10821,16 @@ test "a function declared in a test uses the test's variables" {
   see(2)
   see(3)
   assert seen == 5
+}
+```
+
+```ents
+test "a parameter named like a variable of the test is the function's own" {
+  let x: u32 = 4
+  func double(x: u32) -> u32 => x * 2
+  func two() -> (x: u32) { x = 2 }
+  assert double(x) == 8
+  assert two() + x == 6
 }
 ```
 
