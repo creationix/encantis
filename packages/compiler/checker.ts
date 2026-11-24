@@ -266,6 +266,9 @@ export interface NestedFunc extends CaptureSets {
   // Where its name is written
   nameAt: number
   sym: Symbol & { kind: 'func' }
+  // Refused the name of a variable, a global, a def or a data block seen
+  // there (N7): the name stays theirs, so their uses say nothing more
+  unbound?: true
 }
 
 // A call of a nested function, or of an instance that threads captures:
@@ -645,7 +648,8 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     }
     const def = ctx.localDefs.get(nested.sym)
     const refs = def === undefined ? undefined : ctx.references.get(def)
-    if (def !== undefined && refs && refs.length === 0) warnings.push({ offset: def, message: `'${nested.name}' is never used` })
+    // One refused its name (N7) cannot be called: that error says enough
+    if (def !== undefined && refs && refs.length === 0 && !nested.unbound) warnings.push({ offset: def, message: `'${nested.name}' is never used` })
   }
 
   // A module that imports a generic type, checked on its own, cannot tell
@@ -7076,7 +7080,8 @@ class CheckContext {
     const named = ungrouped(expr)
     if (named.kind !== 'IdentExpr') return null
     const sym = this.lookup(named.name)
-    return sym?.kind === 'func' && !sym.alias ? declaredName(named.name) : null
+    // A nested function written as a value was refused already (N39)
+    return sym?.kind === 'func' && !sym.alias && !sym.nested ? declaredName(named.name) : null
   }
 
   // Whether a constant is none as it is written: the literal 0 (-0 is one,
@@ -7437,6 +7442,12 @@ class CheckContext {
         }
         return stripMax(operandType)
       case '&': {
+        // A nested function written as a value was refused already (N39)
+        const operand = ungrouped(expr.operand)
+        if (operand.kind === 'IdentExpr') {
+          const sym = this.lookup(operand.name)
+          if (sym?.kind === 'func' && sym.nested) return RECOVERY
+        }
         if (expr.operand.kind === 'IndexExpr') {
           const addr = this.addressOfIndex(expr.operand)
           if (addr) return addr
@@ -10413,7 +10424,7 @@ class CheckContext {
   private declareNested(decl: AST.FuncDecl, testTop = false, sets = this.captureSets(decl)): NestedFunc {
     const known = this.nestedFuncs.get(decl)
     if (known) {
-      this.currentScope.symbols.set(known.name, known.sym)
+      if (!known.unbound) this.currentScope.symbols.set(known.name, known.sym)
       return known
     }
     const frame = this.frame as FuncFrame
@@ -10457,7 +10468,8 @@ class CheckContext {
     if (results <= MAX_RESULT_REGISTERS && given > MAX_RESULT_REGISTERS) {
       this.error(nameAt, `the results are ${given} registers with the variables '${name}' writes, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — give a large value back through a pointer`)
     }
-    this.currentScope.symbols.set(name, sym)
+    if (kind && existing?.kind !== 'func') nested.unbound = true
+    else this.currentScope.symbols.set(name, sym)
     this.recordDefinition(name, nameAt, sym)
     return nested
   }

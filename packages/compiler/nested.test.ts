@@ -252,6 +252,34 @@ func f(x: u32) -> u32 {
     ])
   })
 
+  test('its address and a cast of it say nothing more than N39', () => {
+    const n39 = "'inc' is a nested function: it can only be called, or given for a comptime function parameter"
+    expect(errorsOf(`
+func f(x: u32) -> u32 {
+  func inc(y: u32) -> u32 => y + 1
+  defer inc
+  let p = &inc
+  let k = inc as u32
+  return x
+}`)).toEqual([n39, n39, n39])
+  })
+
+  test('a name refused because a variable has it stays the variable\'s', () => {
+    const source = `
+func f(n: u32) -> (r: u32) {
+  func n() -> u32 => 3
+  func r() -> u32 => 4
+  let a = n + 1
+  n = 5
+  r = a + n
+}`
+    expect(errorsOf(source)).toEqual([
+      "'n' is already declared: a nested function cannot reuse the name of a parameter",
+      "'r' is already declared: a nested function cannot reuse the name of a named result",
+    ])
+    expect(warningsOf(source)).toEqual(["'f' is never used"])
+  })
+
   test('return gives its own result', () => {
     expect(errorsOf(`
 func f() -> u32 {
