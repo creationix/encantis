@@ -636,6 +636,25 @@ function scratchLocal(ctx: CodegenContext, wasmType: string): string {
   return `$${name}`
 }
 
+// Tests tried in turn, as a load of an enum, a store of one and a match try
+// them, are ifs each in the else of the one before, up to this many. Text
+// tools read nested code to a depth of only about 150 (wabt, which the
+// command line assembles with), so a longer chain is written flat: in one
+// block, each if leaving it with its value.
+const MAX_NESTED_TESTS = 64
+
+// Tests tried in turn, each `[test, then]` in order, the first that holds
+// giving its `then`, and `otherwise` where none does; `nested` writes the
+// chain as ifs each in the else of the one before. More than
+// MAX_NESTED_TESTS are flat: a block of ifs, each `then` followed by a br out
+// of it with its value, then `otherwise`. A label inside a `then` is its own
+// block's (a label shadows the one outside it).
+function testChain(tests: [string, string][], otherwise: string, resultStr: string, nested: (test: string, then: string, rest: string) => string): string {
+  if (tests.length <= MAX_NESTED_TESTS) return tests.reduceRight((rest, [test, then]) => nested(test, then, rest), otherwise)
+  const ifs = tests.map(([test, then]) => `(if ${test} (then ${then} (br $__tests)))`)
+  return `(block $__tests ${resultStr}\n${[...ifs, otherwise].filter((x) => x !== '').join('\n')})`
+}
+
 // A local or a constant: free to repeat, and nothing that runs in between
 // changes it.
 const isSimple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/.test(wat)
@@ -858,9 +877,10 @@ function loadAt(type: ResolvedType, addr: () => string, offset: number, ctx: Cod
 }
 
 // An enum in memory: its tag's load, then one if for each payload variant in
-// declaration order, each nested in the else of the one before, whose result
-// is the slots: that variant's fields, each put in its slot, then zeros. The
-// innermost else, for a unit variant or a tag no variant has, gives zeros.
+// declaration order, each nested in the else of the one before (flat for
+// many, testChain), whose result is the slots: that variant's fields, each
+// put in its slot, then zeros. The innermost else, for a unit variant or a
+// tag no variant has, gives zeros.
 function loadEnumAt(e: RT.EnumRT, addr: () => string, offset: number, ctx: CodegenContext): string {
   const layout = RT.enumLayout(e)
   if (!layout) throw new Error(`${RT.typeToString(e)} has no fixed size in memory`)
@@ -884,10 +904,8 @@ function loadEnumAt(e: RT.EnumRT, addr: () => string, offset: number, ctx: Codeg
     for (const slot of slots.slice(at)) values.push(zeroOf(slot))
     branches.push([k, values.join(' ')])
   })
-  let chain = slots.map(zeroOf).join(' ')
-  for (const [k, values] of branches.reverse()) {
-    chain = `(if ${result} (i32.eq (local.get ${tag}) (i32.const ${k}))\n(then ${values})\n(else ${chain}))`
-  }
+  const tests = branches.map(([k, values]): [string, string] => [`(i32.eq (local.get ${tag}) (i32.const ${k}))`, values])
+  const chain = testChain(tests, slots.map(zeroOf).join(' '), result, (test, then, rest) => `(if ${result} ${test}\n(then ${then})\n(else ${rest}))`)
   return `(local.tee ${tag} ${tagLoad})\n${chain}`
 }
 
@@ -901,7 +919,8 @@ type StoredPart = { offset: number; type: RT.PrimitiveRT | RT.PointerRT; value: 
 // struct is. Any other value is computed whole, its registers kept in scratch
 // locals unless they are a variable's (or constants), and its parts stored
 // in field order, an enum part by its tag and then one if for each payload
-// variant, which stores that variant's fields from its slots. The padding of
+// variant (nested, or flat for many: testChain), which stores that variant's
+// fields from its slots. The padding of
 // an enum is never written. The address is computed first.
 function storeHolding(type: ResolvedType, ptr: string, value: string, valueExpr: AST.Expr | undefined, ctx: CodegenContext): string {
   const fixed = valueExpr ? fixedParts(type, valueExpr, 0, ctx) : null
@@ -956,10 +975,8 @@ function storeRegsAt(type: ResolvedType, base: string, offset: number, regs: str
       }
       branches.push([k, stores.filter((x) => x !== '').join(' ')])
     })
-    let chain = ''
-    for (const [k, stores] of branches.reverse()) {
-      chain = `(if (i32.eq ${tag} (i32.const ${k}))\n(then ${stores})${chain ? `\n(else ${chain})` : ''})`
-    }
+    const tests = branches.map(([k, stores]): [string, string] => [`(i32.eq ${tag} (i32.const ${k}))`, stores])
+    const chain = testChain(tests, '', '', (test, then, rest) => `(if ${test}\n(then ${then})${rest ? `\n(else ${rest})` : ''})`)
     if (chain) out.push(chain)
     return out.join('\n')
   }
@@ -2848,9 +2865,10 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
 
-  // For now, generate nested if/else for each arm
+  // One if for each arm, nested (or, for many, flat: testChain)
   // Could optimize to br_table for consecutive integers
-  let result = '(unreachable)'
+  let otherwise = '(unreachable)'
+  let tested: [string, string][] = []
 
   for (let i = expr.arms.length - 1; i >= 0; i--) {
     const arm = expr.arms[i]
@@ -2864,7 +2882,9 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
         : resultTypes.length > 0 ? exprToWat(arm.body, ctx) : discardedExprToWat(arm.body, ctx)
 
     if (isWildcard) {
-      result = body
+      // The arms after it are never reached.
+      otherwise = body
+      tested = []
     } else {
       // Generate condition for patterns
       const conditions = arm.patterns.map((p) => {
@@ -2886,11 +2906,11 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
           ? conditions[0]
           : conditions.reduce((acc, c) => `(i32.or ${acc} ${c})`)
 
-      result = `(if ${resultStr} ${cond} (then ${body}) (else ${result}))`
+      tested.unshift([cond, body])
     }
   }
 
-  return setup + result
+  return setup + testChain(tested, otherwise, resultStr, (test, then, rest) => `(if ${resultStr} ${test} (then ${then}) (else ${rest}))`)
 }
 
 // A value of an enum as registers that can be read more than once (a
@@ -2966,11 +2986,12 @@ function withPatternBindings<T>(pattern: AST.MatchPattern, ctx: CodegenContext, 
 }
 
 // A match on an enum (reference 5.4): the subject is evaluated once; the arms
-// are nested ifs, the first outermost, each testing the tag for the variants
-// its patterns name (or-ed for several), its then setting its bindings from
-// their slots and then running its body. The first arm that lists _ is the
-// else of the arm before it, and the arms after it are not compiled; with
-// none, the innermost else is (unreachable): a tag no variant has traps.
+// are nested ifs (flat for many, testChain), the first outermost, each
+// testing the tag for the variants its patterns name (or-ed for several), its
+// then setting its bindings from their slots and then running its body. The
+// first arm that lists _ is the else of the arm before it, and the arms after
+// it are not compiled; with none, the innermost else is (unreachable): a tag
+// no variant has traps.
 function matchEnumToWat(expr: AST.MatchExpr, e: RT.EnumRT, ctx: CodegenContext): string {
   const [setup, regs] = enumRegisters(expr.subject, e, ctx)
   const tag = regs[0]
@@ -2983,11 +3004,12 @@ function matchEnumToWat(expr: AST.MatchExpr, e: RT.EnumRT, ctx: CodegenContext):
       : resultTypes.length > 0 ? exprToWat(arm.body, ctx) : discardedExprToWat(arm.body, ctx)
   const last = expr.arms.findIndex((arm) => arm.patterns.some((p) => p.kind === 'wildcard'))
   const arms = last < 0 ? expr.arms : expr.arms.slice(0, last + 1)
-  let result = '(unreachable)'
+  let otherwise = '(unreachable)'
+  const tested: [string, string][] = []
   for (let i = arms.length - 1; i >= 0; i--) {
     const arm = arms[i]
     if (i === last) {
-      result = bodyOf(arm)
+      otherwise = bodyOf(arm)
       continue
     }
     const tests = arm.patterns.map((p) => variantTest(p, tag, ctx))
@@ -2995,8 +3017,9 @@ function matchEnumToWat(expr: AST.MatchExpr, e: RT.EnumRT, ctx: CodegenContext):
     const only = arm.patterns.length === 1 ? arm.patterns[0] : null
     const sets = only ? patternBindingsToWat(only, e, regs, ctx) : []
     const body = only ? withPatternBindings(only, ctx, () => bodyOf(arm)) : bodyOf(arm)
-    result = `(if ${resultStr} ${cond}\n(then ${[...sets, body].join(' ')})\n(else ${result}))`
+    tested.unshift([cond, [...sets, body].join(' ')])
   }
+  const result = testChain(tested, otherwise, resultStr, (test, then, rest) => `(if ${resultStr} ${test}\n(then ${then})\n(else ${rest}))`)
   return setup ? `${setup}\n${result}` : result
 }
 

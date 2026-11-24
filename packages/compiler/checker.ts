@@ -3144,12 +3144,6 @@ class CheckContext {
     this.recordDefinition(name, decl.pattern.span.start)
   }
 
-  // A wasm global starts as a constant, so its initializer has to be one: a
-  // number or bool the compiler can work out, the address of data or of a
-  // function, or a tuple, struct or array of those, which is one wasm global
-  // for each. Each value goes to codegen, which emits it where the
-  // expression as written would need an instruction (1 + 1, a literal that
-  // widens, a cast that narrows).
   // Whether an expression is a type's name where a value is wanted (refused
   // where it is inferred: 'Point' is a type), which a declaration that wants
   // a constant says nothing more of
@@ -3161,7 +3155,17 @@ class CheckContext {
     return kind === 'type' || kind === 'typefunc'
   }
 
+  // A wasm global starts as a constant, so its initializer has to be one: a
+  // number or bool the compiler can work out, the address of data or of a
+  // function, or a tuple, struct or array of those, which is one wasm global
+  // for each. Each value goes to codegen, which emits it where the
+  // expression as written would need an instruction (1 + 1, a literal that
+  // widens, a cast that narrows).
   private isConstantInitializer(expr: AST.Expr): boolean {
+    // Parentheses are their value, and what it widens to is said of the
+    // value inside them (`(sizeof(u32))` for a u64): it is recorded there.
+    const inner = groupedExpr(expr)
+    if (inner) return this.isConstantInitializer(inner)
     const value = this.evalComptimeExpr(expr, true)
     if (value) {
       this.constants.set(expr, value)
@@ -8997,8 +9001,9 @@ class CheckContext {
       if (!said) this.error(arm.span.start, message)
       else this.errorsReported++
     }
-    // The clash of a name with one in scope is said first, and that name
-    // is not declared again.
+    // The clash of a name with one in scope is said first, and the name is
+    // still declared, as a name an if let binds is: its uses in the branch
+    // are its own, and say nothing more.
     const prevScope = this.currentScope
     const then: Scope = { parent: prevScope, symbols: new Map() }
     const clashes = new Set<string>()
@@ -9011,9 +9016,7 @@ class CheckContext {
     const twice = found.bindings ? boundTwice(pattern, 'if let', clashes, error, (at) => this.firstDeclared(at)) : []
     this.declare(arm)
     const bindings = onceEach(found.bindings ?? patternBindings(pattern).map((b) => ({ ...b, type: RECOVERY })), twice)
-    for (const b of bindings) {
-      if (!clashes.has(b.name)) this.bindName(then, b.name, b.type, arm.span.start, 'if let', arm, b.at)
-    }
+    for (const b of bindings) this.bindName(then, b.name, b.type, arm.span.start, 'if let', arm, b.at)
     this.currentScope = then
     try {
       branch()
@@ -9086,7 +9089,8 @@ class CheckContext {
     let unknownCover = false
     const armBindings = expr.arms.map((arm) => {
       const bindings: Binding[] = []
-      // A name that clashes is that one error, and is not declared again.
+      // A name that clashes is that one error, and is still declared: its
+      // uses in the arm are its own, and say nothing more.
       const clashes = new Set<string>()
       const before = this.errorsReported
       for (const { name } of arm.patterns.flatMap(patternBindings)) {
@@ -9159,9 +9163,9 @@ class CheckContext {
       // A refused pattern still declares the names it would bind, as refused
       // values: their uses say nothing more.
       if (refused) {
-        return onceEach(arm.patterns.flatMap(patternBindings).filter((b) => !clashes.has(b.name)).map((b) => ({ ...b, type: RECOVERY })), twice)
+        return onceEach(arm.patterns.flatMap(patternBindings).map((b) => ({ ...b, type: RECOVERY })), twice)
       }
-      return onceEach(bindings.filter((b) => !clashes.has(b.name)), twice)
+      return onceEach(bindings, twice)
     })
     // A match on an enum handles every variant, or has a _ arm.
     if (subject.kind === 'enum') {

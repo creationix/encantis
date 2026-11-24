@@ -563,6 +563,26 @@ func h(c: Color) -> u8 => if let Hsl(h, s: h) = c { h } else { 0 }
     ])
   })
 
+  test('a part named as a variable in scope is that one error, and its uses are its own', () => {
+    const source = `${COLOR}func f(b: [2]u8, c: Color) -> bool => if let Grey(b) = c { b == 1 } else { false }
+func g(b: [2]u8, c: Color) -> bool => match c {
+  Grey(b:) => b == 1
+  Rgb(_, _, b) => b == 2
+  _ => false
+}
+func h(c: Color) -> bool {
+  let r: [2]u8 = [1, 2]
+  return if let Rgb(r:, g:, b:) = c { r + g + b == 3 } else { false }
+}
+`
+    expect(errors(source)).toEqual([
+      "10:39 'b' is already declared: an if let binding cannot reuse the name of a parameter (first declared at 10:8)",
+      "12:3 'b' is already declared: a match binding cannot reuse the name of a parameter (first declared at 11:8)",
+      "13:3 'b' is already declared: a match binding cannot reuse the name of a parameter (first declared at 11:8)",
+      "18:10 'r' is already declared: an if let binding cannot reuse the name of a variable in scope (first declared at 17:7)",
+    ])
+  })
+
   test('a match whose every arm returns returns, with every variant handled', () => {
     const source = `enum Dir { North, East, South, West }
 func code(d: Dir) -> u32 {
@@ -763,6 +783,14 @@ export global s: M = U(sizeof(u32))
 export global px: Px = Px(Grey(1 + 1), 2)
 export global p: Paint = Solid(Grey(k + 1))
 export global xs: [2]Color = [Grey(0x0f & 0x3), Red]
+def k32: u32 = 5
+data buf = [1:u8, 2, 3]
+export global ps: M = U((sizeof(u32)))
+export global pl: M = L((buf.len))
+export global pk: M = B(((k32)))
+export global pa: M = L((5:u32))
+export global plain: u64 = (sizeof(u32))
+export global wide: u128 = ((k32))
 `
     const globals = wat(source).split('\n').filter((l) => l.trim().startsWith('(global'))
     // Each initializer is one constant instruction
@@ -771,6 +799,9 @@ export global xs: [2]Color = [Grey(0x0f & 0x3), Red]
     const value = (name: string) => (exports[name] as WebAssembly.Global).value
     expect(['c_tag', 'c_0', 'a_tag', 'a_0', 'f_0', 'w_tag', 'w_0', 'w_1', 's_0', 'px_c_0', 'px_a', 'p_tag', 'p_0', 'p_1', 'xs_0_0'].map(value))
       .toEqual([5, 7, 0, 4294960296n, 0x4008000000000000n, 2, 0n, 1n << 36n, 4n, 2, 2, 1, 5, 8, 3])
+    // Parentheses are their value, which widens as it would without them.
+    expect(['ps_0', 'pl_0', 'pl_1', 'pk_0', 'pa_0', 'plain', 'wide_0', 'wide_1'].map(value))
+      .toEqual([4n, 3n, 0n, 0x4014000000000000n, 5n, 4n, 5n, 0n])
   })
 
   test('enums in structs, arrays, instances and branches are their registers', () => {
@@ -1084,6 +1115,33 @@ export memory 1
     expect([call('is-red-at', 200), call('light', 4, 1, 2, 30)]).toEqual([0, 30])
     memory.set([3, 10, 40, 20, 0], 220)
     expect(call('light', 6, 220, 0, 0)).toBe(20)
+  })
+
+  // wabt, which the command line assembles with, reads nested code to a depth
+  // of only about 150: a chain of more than 64 tests is one block of ifs.
+  test('a load, a store or a match of many tests is flat, and runs', async () => {
+    const variants = (n: number) => Array.from({ length: n }, (_, k) => `V${k}(u8)`).join(', ')
+    const flat = (source: string, start: string) => watOf(source, start).includes('(block $__tests')
+    const at = (n: number) => `enum E { ${variants(n)} }\nexport func ld(p: *E) -> E => p.*\nexport func st(p: *mut E, e: E) { p.* = e }\n`
+    expect([flat(at(64), '(func $ld'), flat(at(64), '(func $st')]).toEqual([false, false])
+    expect([flat(at(65), '(func $ld'), flat(at(65), '(func $st')]).toEqual([true, true])
+    const arms = Array.from({ length: 200 }, (_, k) => `  V${k}(x) => x + ${k}`).join('\n')
+    const numbers = Array.from({ length: 200 }, (_, k) => `  ${k} => ${k * 3}`).join('\n')
+    const source = `${at(200)}export func code(e: E) -> u32 => match e {\n${arms}\n}\nexport func triple(d: u32) -> u32 => match d {\n${numbers}\n  _ => 7\n}\nexport memory 1\n`
+    expect([flat(source, '(func $code'), flat(source, '(func $triple')]).toEqual([true, true])
+    const exports = await instance(source)
+    const memory = new Uint8Array((exports.memory as WebAssembly.Memory).buffer)
+    const call = (name: string, ...args: number[]) => (exports[name] as (...a: number[]) => unknown)(...args)
+    memory.set([150, 42], 100)
+    expect(call('ld', 100)).toEqual([150, 42])
+    memory.set([199, 9], 100)
+    expect(call('ld', 100)).toEqual([199, 9])
+    memory.fill(0xee, 200, 203)
+    call('st', 200, 151, 7)
+    expect([...memory.slice(200, 203)]).toEqual([151, 7, 0xee])
+    expect([call('code', 0, 5), call('code', 64, 1), call('code', 199, 1)]).toEqual([5, 65, 200])
+    expect(() => call('code', 200, 0)).toThrow()
+    expect([call('triple', 0), call('triple', 150), call('triple', 199), call('triple', 200)]).toEqual([0, 450, 597, 7])
   })
 })
 

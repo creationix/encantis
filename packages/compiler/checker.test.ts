@@ -4378,7 +4378,6 @@ describe('a name declared again says where the first declaration is', () => {
     expect(errs('func g(o: ?*u32, k: u32) -> u32 {\n  if let v = o {\n    let v = 3\n    return match k { v => v }\n  }\n  return 0\n}')).toEqual([
       "'v' is already declared in this scope (first declared at 2:10)",
       "'v' is already declared: a match binding cannot reuse the name of an if let binding in scope (first declared at 2:10)",
-      'cannot assign i32 to u32',
     ])
     // A let refused since a function has the name: a loop variable, which
     // may hide a function, may take it after it
