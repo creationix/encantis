@@ -716,6 +716,29 @@ global minus: M = A(-1)
     expect([tag, slot, g0]).toEqual([0, 4294967295n, 4294967295n])
   })
 
+  test('a payload the compiler works out is folded to constants in a global, whatever its slot', async () => {
+    const source = `${COLOR}enum M { A(i32), B(f64), L(u128), U(u32) }
+type Px = (c: Color, a: u8)
+enum Paint { None, Solid(Color) }
+def k = 7
+export global c: Color = Grey(3 + 4)
+export global a: M = A(k * -1000)
+export global f: M = B(1.5 * 2.0)
+export global w: M = L(1 << 100)
+export global s: M = U(sizeof(u32))
+export global px: Px = Px(Grey(1 + 1), 2)
+export global p: Paint = Solid(Grey(k + 1))
+export global xs: [2]Color = [Grey(0x0f & 0x3), Red]
+`
+    const globals = wat(source).split('\n').filter((l) => l.trim().startsWith('(global'))
+    // Each initializer is one constant instruction
+    for (const g of globals) expect(g).toMatch(/^ *\(global \$\S+ \(mut [if](32|64)\) \([if](32|64)\.const [^\s()]+\)\)$/)
+    const exports = await instance(source)
+    const value = (name: string) => (exports[name] as WebAssembly.Global).value
+    expect(['c_tag', 'c_0', 'a_tag', 'a_0', 'f_0', 'w_tag', 'w_0', 'w_1', 's_0', 'px_c_0', 'px_a', 'p_tag', 'p_0', 'p_1', 'xs_0_0'].map(value))
+      .toEqual([5, 7, 0, 4294960296n, 0x4008000000000000n, 2, 0n, 1n << 36n, 4n, 2, 2, 1, 5, 8, 3])
+  })
+
   test('enums in structs, arrays, instances and branches are their registers', () => {
     const source = `${COLOR}type Px = (c: Color, a: u8)
 export func col(p: Px) -> Color => p.c
@@ -1094,5 +1117,23 @@ func g() -> Color => Red
     expect(variant?.value).toBe('1')
     expect(meta.types[variant?.type ?? -1]?.type).toBe('(r: u8, g: u8, b: u8) -> Color')
     expect(meta.symbols.find((s) => s.name === 'r' && s.kind === 'local')).toBeDefined()
+  })
+
+  test('a name of a refused pattern is shown with no type, where it is bound and where it is used', () => {
+    const source = `enum Color { Red, Rgb(r: u8, g: u8, b: u8) }
+func f(c: Color) -> u8 => match c {
+  Rgb(r, b:) => r
+  _ => 0
+}
+`
+    const p = parse(source)
+    const checked = typecheck(p.module!, { source })
+    expect(checked.errors.map((e) => e.message)).toEqual(['a variant pattern takes its parts all by position or all by name'])
+    const bound = source.indexOf('r, b:')
+    const used = source.indexOf('=> r') + 3
+    expect([hover(source, p.module!, checked, bound), hover(source, p.module!, checked, used)]).toEqual([null, null])
+    const meta = buildMeta(p.module!, source, { checkResult: checked })
+    const key = (offset: number) => `${source.slice(0, offset).split('\n').length - 1}:${offset - source.lastIndexOf('\n', offset - 1) - 1}`
+    expect([meta.hints[key(bound)], meta.hints[key(used)]]).toEqual([undefined, undefined])
   })
 })

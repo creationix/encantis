@@ -3,7 +3,7 @@
 // only keeps the handlers the server registers.
 
 import { describe, expect, test } from 'bun:test'
-import type { CompletionItem, Connection, DocumentSymbol, SignatureHelp, WorkspaceEdit } from 'vscode-languageserver/lib/common/api'
+import { type CompletionItem, CompletionItemKind, type Connection, type DocumentSymbol, type SignatureHelp, type WorkspaceEdit } from 'vscode-languageserver/lib/common/api'
 import { posix, win32 } from 'node:path'
 import { pathFor, pathOf, type ServerOptions, startServer, uriFor } from './serve'
 
@@ -426,6 +426,66 @@ export func f() -> u32 => take(pair(3))
     expect(applied(libText, await s.at<Promise<WorkspaceEdit>>('onRenameRequest', lib, libText, libText.indexOf('n: u32'), { newName: 'k' }), lib)).toContain('pair(k: u32)')
     const found = await s.ask<Promise<{ name: string }[]>>('onWorkspaceSymbol', { query: '' })
     expect(found.map((f) => f.name)).toContain('other')
+  })
+})
+
+describe('an enum: definition, references and highlights', () => {
+  const COLORS = `enum Color { Red, Rgb(r: u8, g: u8, b: u8) }
+global gl: Color = Rgb(1, 2, 3)
+func mk(k: u8) -> Color => Rgb(r: k, g: 0, b: k)
+func f(c: Color) -> u8 => match c { Red => 0, Rgb(r: x, g:, b:) => x + g + b }
+func g() -> u8 => f(mk(1)) + f(gl) + f(Red)
+`
+  type Place = { uri?: string; range: { start: { line: number; character: number } }; kind?: number }
+  const at = (p: Place) => `${p.range.start.line}:${p.range.start.character}${p.kind === undefined ? '' : p.kind === 3 ? ':write' : ':read'}`
+  // The nth place the text writes `word` at, from 0
+  const nth = (word: string, n: number) => {
+    let offset = -1
+    for (let i = 0; i <= n; i++) offset = COLORS.indexOf(word, offset + 1)
+    return offset
+  }
+
+  test('at the declaration of the enum, of a variant and of a payload field, and at each use', async () => {
+    const s = server()
+    await s.open(uri, COLORS)
+    const color = ['0:5', '1:11', '2:18', '3:10']
+    const rgb = ['0:18', '1:19', '2:27', '3:46']
+    const r = ['0:22', '2:31', '3:50']
+    for (const [word, places] of [['Color', color], ['Rgb', rgb], ['r:', r]] as const) {
+      for (let n = 0; n < places.length; n++) {
+        const offset = nth(word, n)
+        expect(at(s.at<Place>('onDefinition', uri, COLORS, offset))).toBe(places[0])
+        expect(s.at<Place[]>('onReferences', uri, COLORS, offset, { context: { includeDeclaration: true } }).map(at)).toEqual(places)
+        // The declaration is a write. (A use followed by `=` is one too, as
+        // the highlight of any name has it: `gl: Color = ...`.)
+        const highlights = s.at<Place[]>('onDocumentHighlight', uri, COLORS, offset)
+        expect(highlights.map((h) => at({ range: h.range }))).toEqual(places)
+        expect(highlights[0].kind).toBe(3)
+      }
+    }
+    // A unit variant, where it is declared and where it is a value or a pattern
+    for (let n = 0; n < 3; n++) {
+      expect(s.at<Place[]>('onReferences', uri, COLORS, nth('Red', n), { context: { includeDeclaration: false } }).map(at)).toEqual(['3:36', '4:39'])
+    }
+  })
+
+  test('a payload field is shown with its type where it is declared and named', async () => {
+    const s = server()
+    await s.open(uri, COLORS)
+    for (const offset of [nth('r:', 0), nth('r:', 1), nth('r:', 2)]) {
+      expect(s.at<{ contents: { value: string } }>('onHover', uri, COLORS, offset).contents.value).toBe('```encantis\nr:u8\n```')
+    }
+    // A shorthand is the binding it declares
+    expect(s.at<{ contents: { value: string } }>('onHover', uri, COLORS, nth('g:', 2)).contents.value).toContain('let g')
+  })
+
+  test('an enum completes as an enum, its variants as its members', async () => {
+    const s = server()
+    const text = COLORS.replace('f(Red)', 'f(R)')
+    await s.open(uri, text)
+    const items = s.at<CompletionItem[]>('onCompletion', uri, text, text.indexOf('f(R)') + 3)
+    const kind = (label: string) => items.find((i) => i.label === label)?.kind
+    expect([kind('Color'), kind('Red'), kind('Rgb')]).toEqual([CompletionItemKind.Enum, CompletionItemKind.EnumMember, CompletionItemKind.EnumMember])
   })
 })
 

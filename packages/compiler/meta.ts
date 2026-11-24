@@ -2,7 +2,7 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
-import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, type TypeCheckResult } from './checker'
+import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, isRefusedType, readAsModuleName, type TypeCheckResult } from './checker'
 import { ownName, callOf, memberIn, instancesListed, applicationsListed, genericAround, type GenericInfo } from './instances'
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow, enumText } from './types'
 import { LineMap } from './position'
@@ -989,6 +989,9 @@ class MetaBuilder {
       case 'TypeDecl':
         this.generateHintsForTypeDecl(decl)
         break
+      case 'EnumDecl':
+        this.generateHintsForEnumDecl(decl)
+        break
       case 'DataDecl':
         this.generateHintsForData(decl)
         break
@@ -1217,8 +1220,9 @@ class MetaBuilder {
       const at = part.kind === 'namedShort' ? part.span.start : part.pattern.kind === 'binding' ? part.pattern.span.start : null
       const name = part.kind === 'namedShort' ? part.field : part.pattern.kind === 'binding' ? part.pattern.name : null
       if (at === null || name === null) continue
+      // A name of a refused pattern is a refused value: it has no type to show
       const type = this.bindingType(at, 'Binding')
-      if (!type) continue
+      if (!type || isRefusedType(type)) continue
       const symbolIndex = this.symbolIndexByDef.get(at) ?? this.addSymbol(name, 'local', type, at)
       this.addHint(at, name.length, this.typeRegistry.register(type), symbolIndex)
     }
@@ -1249,12 +1253,18 @@ class MetaBuilder {
 
     switch (expr.kind) {
       case 'IdentExpr': {
+        // A refused value (a name of a refused pattern) has no type to show
+        if (isRefusedType(type)) break
         const symbolIndex = this.usedSymbol(expr)
         // Check for builtin functions when no symbol is found
         const effectiveType = type ?? BUILTIN_SIGNATURES[expr.name]
         if (effectiveType) {
           const typeIndex = this.typeRegistry.register(effectiveType)
           this.addHint(expr.span.start, expr.name.length, typeIndex, symbolIndex)
+        } else if (symbolIndex !== undefined && this.symbols[symbolIndex].kind === 'variant') {
+          // The name a variant's constructor is called by, Rgb(1, 2, 3), has no
+          // type of its own: it is the variant, shown as its symbol is.
+          this.addHint(expr.span.start, expr.name.length, this.symbols[symbolIndex].type, symbolIndex)
         }
         break
       }
@@ -1585,6 +1595,25 @@ class MetaBuilder {
         this.symbols[symbolIndex].type,
         symbolIndex,
       )
+    }
+  }
+
+  // An enum's name and each of its variants' are where they are declared,
+  // and the types its payloads name are uses of those types. A name refused
+  // by the check of capitalised names is the first one's, which has its hint
+  // there: nothing is added for it.
+  private generateHintsForEnumDecl(decl: AST.EnumDecl): void {
+    const own = (name: string, at: number) => this.checkResult.symbolDefOffsets.get(name) === at
+    const enumIndex = this.symbolIndexByName.get(decl.ident)
+    if (enumIndex !== undefined && own(decl.ident, decl.identSpan.start)) {
+      this.addHint(decl.identSpan.start, decl.ident.length, this.symbols[enumIndex].type, enumIndex)
+    }
+    for (const v of decl.variants) {
+      const variantIndex = this.symbolIndexByName.get(v.name)
+      if (variantIndex !== undefined && own(v.name, v.span.start)) {
+        this.addHint(v.span.start, v.name.length, this.symbols[variantIndex].type, variantIndex)
+      }
+      for (const field of v.fields ?? []) this.generateHintsForTypeExpr(field.type)
     }
   }
 

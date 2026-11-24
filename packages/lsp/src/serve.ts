@@ -24,6 +24,7 @@ import {
   type SymbolInformation,
   type WorkspaceSymbolParams,
   type Position,
+  type Range,
   SymbolKind,
   type DocumentHighlight,
   type InlayHint,
@@ -60,8 +61,9 @@ import { BUILTIN_DOCS, BUILTIN_SIGNATURES, TYPE_DOCS } from './words';
 import { complete, signatureHelp } from './complete';
 import { inlayHints } from './hints';
 import { applyRename, planRename, type RenamePlan, refusedName } from './rename';
-import { rename } from '@encantis/compiler/queries';
+import { payloadFieldNamed, rename } from '@encantis/compiler/queries';
 import { literalAt, nameAfter, pieces } from './scan';
+import { typeToString } from '@encantis/compiler/types';
 
 
 // Convert symbol kind to display prefix
@@ -825,6 +827,15 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       // by name it would be shown as a global, a type or a builtin.
       if (genericDeclaring(cached.module, wordInfo.start, word)) return null;
 
+      // A field of an enum's payload, where it is declared or named (a named
+      // argument of a constructor, a part of a pattern by name), is shown
+      // with its type.
+      const payload = payloadFieldAt(params);
+      if (payload) {
+        const value = `\`\`\`encantis\n${formatLine(`${word}: ${typeToString(payload.found.field.type)}`)}\n\`\`\``;
+        return { contents: { kind: MarkupKind.Markdown, value }, range: makeHoverRange(wordStartPos, word.length) };
+      }
+
       // A field's name (`type Pt = (x: i32)`, `Pt(x: 1)`) is no name of the
       // module either, and by name it would be shown as a global spelled
       // like it. After a point it has a hint of its own.
@@ -933,11 +944,33 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return { uri: open?.uri ?? uriFor(target, params.textDocument.uri), range: { start, end: { line: start.line, character: start.character + at.length } } };
   }
 
+  // The field of an enum's payload a name at a position declares or names,
+  // where it is declared and where it is named (see payloadFieldNamed). It
+  // is no symbol of the module: a struct's fields, which have no such
+  // answer, are not either.
+  function payloadFieldAt(params: TextDocumentPositionParams): { found: NonNullable<ReturnType<typeof payloadFieldNamed>>; length: number; uri: string; analysis: Analysis } | null {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return null;
+    const text = document.getText();
+    const cached = analysisOf(params.textDocument.uri, text);
+    const word = getWordAtOffset(text, document.offsetAt(params.position));
+    if (!cached || !word || !answersAt(cached, word.start)) return null;
+    const found = payloadFieldNamed(cached.module, cached.check, word.start);
+    if (!found || !answersAt(cached, found.declared)) return null;
+    return { found, length: word.end - word.start, uri: params.textDocument.uri, analysis: cached };
+  }
+
+  function rangeAt(text: string, offset: number, length: number): Range {
+    return { start: offsetToPosition(text, offset), end: offsetToPosition(text, offset + length) };
+  }
+
   connection.onDefinition((params: TextDocumentPositionParams): Location | null => {
     const exported = exportAt(params);
     if (exported) return exported;
     const found = symbolAt(params);
-    return found ? locationOf(found.uri, found.symbol, found.symbol.def) : null;
+    if (found) return locationOf(found.uri, found.symbol, found.symbol.def);
+    const field = payloadFieldAt(params);
+    return field ? { uri: field.uri, range: rangeAt(field.analysis.text, field.found.declared, field.length) } : null;
   });
 
   // ---------------------------------------------------------------------------
@@ -1246,7 +1279,12 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // Answered as references are (see onReferences).
   connection.onDocumentHighlight((params: DocumentHighlightParams): DocumentHighlight[] | null => {
     const found = symbolAt(params);
-    if (!found) return null;
+    if (!found) {
+      const field = payloadFieldAt(params);
+      if (!field) return null;
+      const { declared, uses } = field.found;
+      return uses.map((at) => ({ range: rangeAt(field.analysis.text, at, field.length), kind: at === declared ? DocumentHighlightKind.Write : DocumentHighlightKind.Read }));
+    }
     const { symbol, uri, analysis } = found;
     if (analysis.recovered?.unseenNames.has(symbol.name)) return null;
     const assigned = /^\s*(?:[-+*/%&|^]\|?|<<<?|>>>?)?=(?!=)/;
@@ -1284,7 +1322,13 @@ export function startServer(connection: Connection, options: ServerOptions = {})
 
   connection.onReferences((params: ReferenceParams): Location[] | null => {
     const found = symbolAt(params);
-    if (!found) return null;
+    if (!found) {
+      const field = payloadFieldAt(params);
+      if (!field) return null;
+      const { declared, uses } = field.found;
+      const keys = params.context?.includeDeclaration ? uses : uses.filter((at) => at !== declared);
+      return keys.map((at) => ({ uri: field.uri, range: rangeAt(field.analysis.text, at, field.length) }));
+    }
     const { symbol, uri, analysis } = found;
     // A use in what was left out, or in a declaration that can differ once
     // that is written again, may not be listed.

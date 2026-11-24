@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, isRefusedType, readAsModuleName } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, type ResolvedField, byteSize, unwrap, isValueArray, enumText } from './types'
 import { typeToWasm } from './codegen'
@@ -51,12 +51,14 @@ export interface HoverResult {
   more?: number
 }
 
-// A hover as one line of text, as the CLI prints it:
-// local x: T — in index_of(T = u32): u32; in index_of(T = f64): f64
-// The field of an enum's payload declared at `offset` in this module, or
-// named there (the checker records the uses of fields, TypeCheckResult.fieldNames)
-function payloadFieldAt(module: AST.Module, checkResult: TypeCheckResult, offset: number): ResolvedField | null {
-  const declared = (at: number): ResolvedField | null => {
+// The field of an enum's payload declared or named at `start` (a named
+// argument of a constructor, a part of a pattern by name), where this module
+// declares it: the field, the offset of its declaration, and every place the
+// module names it, the declaration among them, in order. The checker records
+// the uses of fields (TypeCheckResult.fieldNames). Null where `start` names no
+// such field, or names fields of more than one (in a generic's body).
+export function payloadFieldNamed(module: AST.Module, checkResult: TypeCheckResult, start: number): { field: ResolvedField; declared: number; uses: number[] } | null {
+  const declaredAt = (at: number): ResolvedField | null => {
     for (const decl of module.decls) {
       if (decl.kind !== 'EnumDecl') continue
       for (const [k, v] of decl.variants.entries()) {
@@ -69,16 +71,16 @@ function payloadFieldAt(module: AST.Module, checkResult: TypeCheckResult, offset
     }
     return null
   }
-  const own = declared(offset)
-  if (own) return own
-  for (const place of checkResult.fieldNames.get(offset) ?? []) {
-    if (place.file !== null) continue
-    const found = declared(place.offset)
-    if (found) return found
-  }
-  return null
+  const named = [...new Set((checkResult.fieldNames.get(start) ?? []).filter((place) => place.file === null).map((place) => place.offset))]
+  const declared = declaredAt(start) ? start : named.length === 1 ? named[0] : undefined
+  const field = declared === undefined ? null : declaredAt(declared)
+  if (declared === undefined || !field) return null
+  const uses = fieldUses(checkResult, declared)
+  return { field, declared, uses: uses.includes(declared) ? uses : [declared, ...uses].sort((a, b) => a - b) }
 }
 
+// A hover as one line of text, as the CLI prints it:
+// local x: T — in index_of(T = u32): u32; in index_of(T = f64): f64
 export function hoverText(r: HoverResult): string {
   const head = `${r.kind} ${r.name}: ${r.type}${r.value !== undefined ? ` = ${r.value}` : ''}`
   const parts = [
@@ -272,23 +274,13 @@ export function gotoDefinition(
   const name = identAtOffset(source, offset)
   if (!name) return null
 
-  const defOffset = definitionOf(source, module, checkResult, offset, name) ?? payloadFieldDeclaredAt(module, checkResult, wordStart(source, offset))
+  const defOffset = definitionOf(source, module, checkResult, offset, name) ?? payloadFieldNamed(module, checkResult, wordStart(source, offset))?.declared
   if (defOffset === undefined) return null
 
   return {
     name,
     location: { offset: defOffset, length: name.length },
   }
-}
-
-// Where the field of an enum's payload named at `start` is declared, where
-// this module declares it
-function payloadFieldDeclaredAt(module: AST.Module, checkResult: TypeCheckResult, start: number): number | undefined {
-  const fields = checkResult.fieldNames.get(start)
-  if (fields?.length !== 1 || fields[0].file !== null) return undefined
-  const declared = fields[0].offset
-  const inPayload = module.decls.some((d) => d.kind === 'EnumDecl' && d.variants.some((v) => (v.fields ?? []).some((f) => (f.identSpan?.start ?? f.span.start) === declared)))
-  return inPayload ? declared : undefined
 }
 
 // The type of the identifier used (not declared) at an offset.
@@ -356,13 +348,14 @@ export function hover(
   // is named like).
   const defined = checkResult.symbolRefs.get(start) ?? (checkResult.references.has(start) ? start : undefined)
   if (defined !== undefined && localDefinedAt(checkResult, defined)) {
+    // A name of a refused pattern is a refused value: it has no type to show
     const type = localType(checkResult, start) ?? localType(checkResult, defined)
-    return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
+    return type && !isRefusedType(type) ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
   }
 
   // A field of an enum's payload, where it is declared or named (a named
   // argument of a constructor, a part of a pattern by name)
-  const payloadField = payloadFieldAt(module, checkResult, start)
+  const payloadField = payloadFieldNamed(module, checkResult, start)?.field
   if (payloadField) return { name, type: typeToString(payloadField.type), kind: 'field' }
 
   // A field is not the module's name spelled like it: it is shown after a
@@ -446,11 +439,11 @@ export function findReferences(
   const defOffset = definitionOf(source, module, checkResult, offset, name)
   if (defOffset === undefined) {
     // A field: its declaration, and every place the module names it
-    const declared = payloadFieldDeclaredAt(module, checkResult, wordStart(source, offset))
-    if (declared === undefined) return null
+    const field = payloadFieldNamed(module, checkResult, wordStart(source, offset))
+    if (!field) return null
     return {
-      definition: { offset: declared, length: name.length },
-      references: fieldUses(checkResult, declared).filter((at) => at !== declared).map((r) => ({ offset: r, length: name.length })),
+      definition: { offset: field.declared, length: name.length },
+      references: field.uses.filter((at) => at !== field.declared).map((r) => ({ offset: r, length: name.length })),
     }
   }
 

@@ -2560,7 +2560,7 @@ A value goes into its slot, and comes back out, bit for bit:
 
 A mix of `f32` and `f64` is an `i64`, not an `f64`: `f64.promote_f32` may change a NaN's bits, and a payload comes back as it went in. A slot a variant's list does not reach holds 0 in every value the compiler makes.
 
-The registers are named after the variable: `c_tag`, then `c_0`, `c_1`, ...; an enum of unit variants alone is named as the variable is. Within a struct they nest as fields' names do (`px_c_tag`). A function with an enum parameter or result is the function with those wasm parameters and results, at the host boundary too ([7.2](#what-the-host-sees)), and an enum global is one wasm global per register, exported as `g_tag`, `g_0`, ... A global's initializer is a constant: a unit variant, or a constructor of constants; each register's constant is exactly the bits its value has at run time, so `A(-1)` of `enum M { A(i32), B(f64) }` is `4294967295` in its `i64` slot, the `i32`'s bits zero-extended.
+The registers are named after the variable: `c_tag`, then `c_0`, `c_1`, ...; an enum of unit variants alone is named as the variable is. Within a struct they nest as fields' names do (`px_c_tag`). A function with an enum parameter or result is the function with those wasm parameters and results, at the host boundary too ([7.2](#what-the-host-sees)), and an enum global is one wasm global per register, exported as `g_tag`, `g_0`, ... A global's initializer is a constant: a unit variant, or a constructor of constants; each register's constant is exactly the bits its value has at run time, so `A(-1)` of `enum M { A(i32), B(f64) }` is `4294967295` in its `i64` slot, the `i32`'s bits zero-extended. A payload value the compiler works out (`Grey(3 + 4)`, `A(k * -1000)`, `W(1 << 100)`) is folded the same way, to the bits of the value it has: the initializer holds no instruction but constants.
 
 A variant is built as its tag constant, then its payload's values in the order written, each put in its slot, then a 0 for each slot its list does not reach. A value written as separate parts (a variable's read, a tuple or a constructor) is put part by part, each with its conversion; one computed whole (a call, an `if`, a load) stays as it is where no value of it is converted, and else goes through scratch locals. That is all a variant costs: `grey` below is the same module as the registers written out, and so is `g`.
 
@@ -2584,6 +2584,31 @@ export global g: M = A(-1)
 ```ents same-wasm
 export global g_tag: u32 = 0
 export global g_0: u64 = 4294967295
+```
+
+```ents
+enum Color { Red, Blue, Green, Rgb(r: u8, g: u8, b: u8), Hsl(h: u8, s: u8, l: u8), Grey(b: u8), Darker(c: *Color) }
+enum M { A(i32), B(f64) }
+enum L { S(u32), W(u128) }
+def k = 7
+export global c: Color = Grey(3 + 4)
+export global g: M = A(k * -1000)
+export global h: M = B(1.5 * 2.0)
+export global w: L = W(1 << 100)
+```
+
+```ents same-wasm
+export global c_tag: u32 = 5
+export global c_0: u32 = 7
+export global c_1: u32 = 0
+export global c_2: u32 = 0
+export global g_tag: u32 = 0
+export global g_0: u64 = 4294960296
+export global h_tag: u32 = 1
+export global h_0: u64 = 0x4008000000000000
+export global w_tag: u32 = 1
+export global w_0: u64 = 0
+export global w_1: u64 = 68719476736
 ```
 
 ```ents

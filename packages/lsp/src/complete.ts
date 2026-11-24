@@ -160,11 +160,17 @@ function typeOf(source: Source, symbol: MetaSymbol): string {
   return type ? formatLine(type) : '';
 }
 
+// A type is an enum where its name is one, as the outline has it
+function kindOf(symbol: MetaSymbol, source: Source): CompletionItemKind {
+  const declared = symbol.kind === 'type' ? source.check.symbols.get(symbol.name) : undefined;
+  return declared?.kind === 'type' && unwrap(declared.type).kind === 'enum' ? CompletionItemKind.Enum : ITEM_KIND[symbol.kind];
+}
+
 function item(symbol: MetaSymbol, source: Source, sort: string): CompletionItem {
   const detail = typeOf(source, symbol);
   return {
     label: symbol.name,
-    kind: ITEM_KIND[symbol.kind],
+    kind: kindOf(symbol, source),
     ...(detail ? { detail } : {}),
     ...(symbol.doc ? { documentation: { kind: MarkupKind.Markdown, value: symbol.doc } } : {}),
     sortText: `${sort}${symbol.name}`,

@@ -218,6 +218,10 @@ const MAX_APPLY_DEPTH = 1000
 // identity, so that what the expression is used for stays silent about it.
 const RECOVERY: ResolvedType = primitive('i32')
 
+// Whether a type is that of something refused (RECOVERY): a name of a refused
+// pattern is one. The editor shows it with no type.
+export const isRefusedType = (type: ResolvedType | undefined): boolean => type === RECOVERY
+
 export interface Scope {
   parent: Scope | null
   symbols: Map<string, Symbol>
@@ -3156,9 +3160,10 @@ class CheckContext {
       case 'TupleExpr':
         return expr.elements.every(e => e.value !== null && this.isConstantInitializer(e.value))
       case 'CallExpr': {
-        // A variant's constructor of constants
+        // A variant's constructor of constants: each of its values, as codegen
+        // puts each in its slot (a payload of one value is no value of its own)
         const payload = this.payloads.get(expr)
-        if (payload) return this.isConstantInitializer(payload)
+        if (payload) return payload.elements.every(e => e.value !== null && this.isConstantInitializer(e.value))
         // A struct constructor of constants.
         const built = this.calls.get(expr)
         if (built?.kind === 'TupleExpr') return this.isConstantInitializer(built)
