@@ -6393,7 +6393,7 @@ A `for` binds one variable, `for x in xs`, or two, `for i, x in xs`: the index f
 
 #### Counting
 
-`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`, or `... not f64` for a float), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that counts up from 0, and a pass runs while `i` is below the count, the two compared as `u32`s. A signed count is tested once, before the first pass: a negative one runs the loop zero times, and one that isn't is the same number as a `u32`. So whatever the count's type, assigning `i` a value at or past the count ends the loop after that pass: with `n: i32` of 5, an `i = 0x80000000` in the body ends it, as it does with `n: u32`. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A count that is a variable gives `i` no range, a ranged one too: with `n: u32#4`, `for i in n` makes `i` a plain `u32`. To index with it, count to the constant and stop at the variable, `for i in 4 { break when i >= n ... }`, where `i` is a `u32#4`. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`. A count computed from constants with operators should be its value; the compiler takes the number furthest from zero among its operands instead (the number [Comptime Literal Promotion](#comptime-literal-promotion) checks; for a count, a known bug). So `for k in n / 4` with `def n = 8` gives `k` the range `u32#8`, and `two[k]` on a `*[2]u32` is refused. A negative count whose largest operand is positive, such as `2 - 3`, runs as the `u32` 4294967295 with `i` taken as a `u32#3`, so an index that range claims to prove is read past the array with no check. Write a constant count as a literal, a `.len`, or a `def` whose value is a literal (`def half = 4`).
+`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`, or `... not f64` for a float), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that starts at 0. A pass runs while `i` is below the count, the two compared as `u32`s, and after each pass, one a `continue` ends too, `i` is stepped by 1, wrapping at 2^32. A signed count is tested once, before the first pass: a negative one runs the loop zero times, and one that isn't is the same number as a `u32`. So whatever the count's type, a pass that sets `i` to a value from the count minus 1 up to `0xFFFFFFFE` is the last one; one that sets it to a smaller value, or to `0xFFFFFFFF`, which the step wraps to 0, is followed by a pass with the stepped `i`. With `n: i32` of 5, an `i = 0x80000000` in the body ends the loop, as it does with `n: u32`, and an `i = 0xFFFFFFFF` in the first pass is followed by five more, with `i` from 0 to 4. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A count that is a variable gives `i` no range, a ranged one too: with `n: u32#4`, `for i in n` makes `i` a plain `u32`. To index with it, count to the constant and stop at the variable, `for i in 4 { break when i >= n ... }`, where `i` is a `u32#4`. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`. A count computed from constants with operators should be its value; the compiler takes the number furthest from zero among its operands instead (the number [Comptime Literal Promotion](#comptime-literal-promotion) checks; for a count, a known bug). So `for k in n / 4` with `def n = 8` gives `k` the range `u32#8`, and `two[k]` on a `*[2]u32` is refused. A negative count whose largest operand is positive, such as `2 - 3`, runs as the `u32` 4294967295 with `i` taken as a `u32#3`, so an index that range claims to prove is read past the array with no check. Write a constant count as a literal, a `.len`, or a `def` whose value is a literal (`def half = 4`).
 
 There is no range form: `for i in 2..10` is a syntax error. Count from 0 and add the start, or loop over the elements of a range of an array or slice ([4.8](#48-slicerange-syntax)). A count loop has one variable; with two, `for i, j in n`, the first is never set (a known bug).
 
@@ -6425,12 +6425,25 @@ func c_assign_signed(n: i32) -> (t: u32) {
   }
 }
 
+// How many passes run when the first one sets i to v.
+func c_assign(n: i32, v: u32) -> (t: u32) {
+  for i in n {
+    t += 1
+    if t == 1 { i = v }
+    break when t > 10
+  }
+}
+
 test "counting" {
   assert total() == 724
   assert span(2, 5) == 9
   assert span(5, 2) == 0
   assert c_assign_signed(5) == 1
   assert c_assign_signed(-5) == 0
+  assert c_assign(5, 4) == 1            // the count minus 1: stepped to the count
+  assert c_assign(5, 3) == 2
+  assert c_assign(5, 0xFFFFFFFE) == 1
+  assert c_assign(5, 0xFFFFFFFF) == 6   // stepped to 0: five more passes
 }
 ```
 
@@ -9954,7 +9967,7 @@ A float truncates toward zero, and the `trunc` instructions trap on NaN, an infi
 | `match` | one comparison per arm in the order written, as nested `if`/`else`; with no `_` arm the last `else` is `unreachable` |
 | `while c { ... }` | `(block $break (loop $continue (br_if $break (i32.eqz c)) ... (br $continue)))` |
 | `loop { ... }` | `(block $break (loop $continue ... (br $continue)))` |
-| `for` | a `block` and a `loop` that step a counter, or an address by the element's size; the body is a `block` of its own, which `continue` leaves to reach the step. A count's counter is compared with `i32.ge_u`, and a signed variable count is first tested with `i32.lt_s` against 0 in the `block`, before the `loop` |
+| `for` | a `block` and a `loop` that step a counter, or an address by the element's size; the body is a `block` of its own, which `continue` leaves to reach the step. A count's counter is compared with `i32.ge_u` (a negative constant count with `i32.ge_s` against the constant, which ends the loop before the first pass), and a signed variable count is first tested with `i32.lt_s` against 0 in the `block`, before the `loop` |
 | `break`, `break when c` | `br $break`, `br_if $break c` |
 | `continue`, `continue when c` | `br` and `br_if` to the loop's head, or in a `for` to its step |
 | `return`, `return x when c` | `return`, `(if c (then x (return)))` |
