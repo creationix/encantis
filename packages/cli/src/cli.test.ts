@@ -8,6 +8,8 @@ import { mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { watOfSource } from '@encantis/compiler/test-utils'
+import { optimizeWasm, watToWasm } from './wasm'
 
 const CLI = join(import.meta.dir, 'cli.ts')
 
@@ -421,6 +423,40 @@ Bun.plugin({
     expect(throws.exitCode).toBe(1)
     expect(throws.written).toBeNull()
     expect(throws.stderr).toContain('Error: binaryen failed: Aborted(')
+  }, 60_000)
+
+  // binaryen assumes traps happen (wasm.ts), so the release build of a loop
+  // does what the unoptimized one does: a walk that leaves memory traps at
+  // the first element past it (#161), and a pass that assigns i past a
+  // signed count is the last (#257).
+  test('a release build keeps what a loop does', async () => {
+    const source = `
+export func count32(s: []u32) -> (n: u32) {
+  for x in s { n += 1 }
+}
+export func huge(a: u32) -> (t: u32) {
+  let p = a as *[1073741823]u32
+  for x in p {
+    t += 1
+    break when t == 100000
+  }
+}
+export func high(n: i32) -> (t: u32) {
+  for i in n {
+    t += 1
+    if t == 1 { i = 0x80000000 }
+    break when t > 10
+  }
+}
+`
+    const debug = await watToWasm('loops.ents', watOfSource(source))
+    for (const wasm of [debug, await optimizeWasm(debug, 'release')]) {
+      const m = (await WebAssembly.instantiate(wasm, {})).instance.exports as Record<string, (...args: number[]) => number>
+      expect(m.count32(65536 - 16, 4)).toBe(4)
+      expect(() => m.count32(64, 0x40000001)).toThrow('Out of bounds')
+      expect(() => m.huge(4096)).toThrow('Out of bounds')
+      expect(m.high(5)).toBe(1)
+    }
   }, 60_000)
 })
 
