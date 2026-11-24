@@ -1848,7 +1848,7 @@ test "wide" {
       const check = typecheckProgram(load.modules, path, { includeTests: true })
       expect(check.errors).toEqual([])
       const { wat } = programToWatWithTests(load.modules, check.results, path)
-      expect(funcs(wat)).toEqual(['max<i64>', 'max<u32>', 'f', 'test_wide'])
+      expect(funcs(wat)).toEqual(['max<i64>', 'max<u32>', 'f', '__test1'])
       await wasmOfWat(wat)
     } finally {
       await rm(dir, { recursive: true })
@@ -3386,7 +3386,7 @@ test "t" {
 }`
     const result = check(source)
     expect(result.errors).toEqual([])
-    expect(result.instances.map((i) => [i.name, i.label])).toEqual([['sort<i32|__test_t_by_low_bits>', 'sort(T = i32, before = by_low_bits)']])
+    expect(result.instances.map((i) => [i.name, i.label])).toEqual([['sort<i32|__test1.by_low_bits>', 'sort(T = i32, before = by_low_bits)']])
     // It is used: the call names it.
     expect(result.warnings.map(w => w.message).filter(m => m.includes('by_low_bits'))).toEqual([])
   })
@@ -3403,7 +3403,7 @@ test "t" {
   assert twice(helper, 1) == 21
 }`
     expect(check(source).errors).toEqual([])
-    expect(check(source).instances.map((i) => i.name)).toEqual(['twice<u32|helper>', 'twice<u32|__test_t_helper>'])
+    expect(check(source).instances.map((i) => i.name)).toEqual(['twice<u32|helper>', 'twice<u32|__test1.helper>'])
     expect(check(source, { includeTests: false }).errors).toEqual([])
   })
 
@@ -5695,7 +5695,7 @@ describe('examples/generics', () => {
       expect(checked.errors).toEqual([])
       const { wat } = programToWatWithTests(load.modules, checked.results, path)
       expectPlainWasm(wat)
-      expect(funcs(wat).filter(name => !name.startsWith('test_'))).toEqual([
+      expect(funcs(wat).filter(name => !name.startsWith('__test'))).toEqual([
         'alloc', "hashset<''u32>", 'hashset<u32>', "slot<''u32>", 'slot<u32>', "has<''u32>", 'has<u32>', "add<''u32>", 'add<u32>',
         'hash', 'eq', "hash:''u32", "eq:''u32|''u32",
       ])

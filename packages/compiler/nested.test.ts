@@ -116,10 +116,10 @@ func f(n: u32) -> u32 {
   for i in 3 { func keep() { } }
   return 0
 }`)).toEqual([
-        "'total' is already declared: a nested function cannot reuse the name of a global",
-        "'size' is already declared: a nested function cannot reuse the name of a function of the module",
-        "'n' is already declared: a nested function cannot reuse the name of a parameter",
-        "'keep' is already declared in 'f': a nested function's name is its own in the whole function that declares it",
+        "'total' is already declared: a nested function cannot reuse the name of a global (first declared at 2:8)",
+        "'size' is already declared: a nested function cannot reuse the name of a function of the module (first declared at 3:6)",
+        "'n' is already declared: a nested function cannot reuse the name of a parameter (first declared at 4:8)",
+        "'keep' is already declared in 'f': a nested function's name is its own in the whole function that declares it (first declared at 8:21)",
       ])
     })
 
@@ -134,8 +134,8 @@ func g() -> u32 {
   if true { func tock2() { } }
   return tick + a + tock
 }`)).toEqual([
-        "'step' is already declared in 'g': a nested function's name is its own in the whole function that declares it",
-        "'tick' is already declared in 'g': a nested function's name is its own in the whole function that declares it",
+        "'step' is already declared in 'g': a nested function's name is its own in the whole function that declares it (first declared at 3:21)",
+        "'tick' is already declared in 'g': a nested function's name is its own in the whole function that declares it (first declared at 5:18)",
       ])
     })
 
@@ -145,7 +145,7 @@ func g() -> u32 {
   for step in 3 { }
   func step() { }
   return 0
-}`)).toEqual(["'step' is already declared in 'g': a nested function's name is its own in the whole function that declares it"])
+}`)).toEqual(["'step' is already declared in 'g': a nested function's name is its own in the whole function that declares it (first declared at 3:7)"])
     })
 
     test('its parameters and results hide nothing it could use', () => {
@@ -157,9 +157,9 @@ func f(x: u32) -> u32 {
   func m(k: u32) -> u32 => k
   return g(x) + h(x) + m(k())
 }`)).toEqual([
-        "'x' is already declared: a parameter of a nested function cannot reuse the name of a parameter",
-        "'x' is already declared: a result of a nested function cannot reuse the name of a parameter",
-        "'k' is already declared: a parameter of a nested function cannot reuse the name of a nested function in scope",
+        "'x' is already declared: a parameter of a nested function cannot reuse the name of a parameter (first declared at 2:8)",
+        "'x' is already declared: a result of a nested function cannot reuse the name of a parameter (first declared at 2:8)",
+        "'k' is already declared: a parameter of a nested function cannot reuse the name of a nested function in scope (first declared at 5:8)",
       ])
     })
 
@@ -274,8 +274,8 @@ func f(n: u32) -> (r: u32) {
   r = a + n
 }`
     expect(errorsOf(source)).toEqual([
-      "'n' is already declared: a nested function cannot reuse the name of a parameter",
-      "'r' is already declared: a nested function cannot reuse the name of a named result",
+      "'n' is already declared: a nested function cannot reuse the name of a parameter (first declared at 2:8)",
+      "'r' is already declared: a nested function cannot reuse the name of a named result (first declared at 2:20)",
     ])
     expect(warningsOf(source)).toEqual(["'f' is never used"])
   })
@@ -649,6 +649,89 @@ describe('nested functions: narrowing (N18)', () => {
   }
 }`)).toBe(true)
   })
+
+  // An elif let's value runs after the conditions before it: a nested
+  // function it calls can write what they narrowed, in its own branch and
+  // in every branch after it.
+  test('an elif let: its value, its branch, and the conditions before it', () => {
+    const bump = `func bump() -> ?*u32 {
+    i = 100
+    return p
+  }`
+    expect(refused(`func a(i: u32, p: ?*u32) -> u32 {
+  ${bump}
+  if i >= 4 {
+    return 0
+  } elif let q = bump() {
+    return buf[i]
+  }
+  return 0
+}`)).toBe(true)
+    expect(refused(`func b(i: u32, p: ?*u32) -> u32 {
+  ${bump}
+  if i >= 4 {
+    return 0
+  } elif let q = bump() {
+    return 1
+  } else {
+    return buf[i]
+  }
+}`)).toBe(true)
+    expect(refused(`func c(i: u32, p: ?*u32, d: bool) -> u32 {
+  ${bump}
+  if i >= 4 {
+    return 0
+  } elif let q = bump() {
+    return 1
+  } elif d {
+    return buf[i]
+  }
+  return 0
+}`)).toBe(true)
+    expect(refused(`func d(i: u32, p: ?*u32) -> u32 {
+  func bumped() -> bool {
+    i = 100
+    return false
+  }
+  if i >= 4 || bumped() {
+    return 0
+  } elif let q = p {
+    return buf[i]
+  }
+  return 0
+}`)).toBe(true)
+    // As a value too
+    expect(refused(`func e(i: u32, p: ?*u32) -> u32 {
+  ${bump}
+  let r: u32 = if i >= 4 { 0 } elif let q = bump() { 1 } else { buf[i] }
+  return r
+}`)).toBe(true)
+  })
+
+  test('an elif let that calls nothing that writes keeps the narrowing', async () => {
+    const source = `data buf = [1:u32, 2, 3, 4]
+data five = [5:u32]
+export func a(i: u32, p: ?*u32, d: bool) -> u32 {
+  func look() -> u32 => i
+  if i >= 4 {
+    return 0
+  } elif let q = p {
+    return buf[i] + look() + q.*
+  } elif d {
+    return buf[i]
+  } else {
+    return buf[i] + 1
+  }
+}
+test "narrowed" {
+  let x = five as *u32
+  assert a(2, 0, false) == 4
+  assert a(1, x, false) == 2 + 1 + 5
+  assert a(5, x, true) == 0
+}`
+    expect(errorsOf(source)).toEqual([])
+    expect((await runTestsOfSource(source)).failed).toEqual([])
+  })
 })
 
 describe('nested functions: tests (N36)', () => {
@@ -662,7 +745,7 @@ test "counts" {
   assert seen == 5
 }`)
     expect(result.errors).toEqual([])
-    expect(setsOf(result, 'test_counts.see')).toEqual({ captures: ['seen'], writes: ['seen'] })
+    expect(setsOf(result, '__test1.see')).toEqual({ captures: ['seen'], writes: ['seen'] })
     // Never a function of the module
     expect(result.symbols.has('see')).toBe(false)
   })
@@ -712,7 +795,7 @@ test "t" {
   let x: u32 = 1
   func helper() -> u32 => x
   assert helper() == 1
-}`)).toEqual(["'helper' is already declared: a function that uses its test's variables cannot reuse the name of a function of the module"])
+}`)).toEqual(["'helper' is already declared: a function that uses its test's variables cannot reuse the name of a function of the module (first declared at 2:6)"])
   })
 
   test('a group\'s variables: not at its top, not in its nested tests', () => {
@@ -757,7 +840,63 @@ test "blocks" {
   assert n == 3
 }`)
     expect(result.errors.map((e) => e.message)).toEqual(['a generic function is declared at module level, not inside a test'])
-    expect(setsOf(result, 'test_blocks.add')).toEqual({ captures: ['n', 'i'], writes: ['n'] })
+    expect(setsOf(result, '__test1.add')).toEqual({ captures: ['n', 'i'], writes: ['n'] })
+  })
+
+  // A capturing function is one of the names of its test, as a function or
+  // an import of the test is (reference 12.4): no other one takes its name.
+  test('a capturing one is one of the names of its test', () => {
+    expect(errorsOf(`
+test "nested then plain" {
+  let x: u32 = 1
+  func keep() -> u32 => x
+  func keep() -> u32 => 2
+  assert keep() == 1
+}
+test "nested then import" {
+  let z: u32 = 1
+  func ask() -> u32 => z
+  import "env" "ask" func ask() -> u32
+  assert ask() == 1
+}
+test "nested twice" {
+  let w: u32 = 1
+  func two() -> u32 => w
+  func two() -> u32 => w + 1
+  assert two() == 1
+}`)).toEqual([
+      "'keep' is already declared in this test",
+      "'ask' is already declared in this test",
+      "'two' is already declared: a function that uses its test's variables cannot reuse the name of a nested function in scope (first declared at 16:8)",
+    ])
+  })
+
+  // A test's function is $__test<n> in the output, and what it declares is
+  // named under it, a nested function too (#61): two groups of one name
+  // that each give a nested function of one name are two tests apart.
+  test('a test\'s nested functions are named under the test, $__test<n>', async () => {
+    const source = `func twice(comptime f: (u32) -> u32, x: u32) -> u32 => f(f(x))
+test "g" {
+  let k: u32 = 1
+  if true {
+    func f(x: u32) -> u32 => x + k
+    assert twice(f, 1) == 3
+  }
+  test "x" { assert true }
+}
+test "g" {
+  let k: u32 = 2
+  if true {
+    func f(x: u32) -> u32 => x + k
+    assert twice(f, 1) == 5
+  }
+  test "y" { assert true }
+}`
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect([...result.nested.values()].map((n) => n.path)).toEqual(['__test1.f', '__test3.f'])
+    expect(result.instances.map((i) => i.name)).toEqual(['twice<__test1.f>', 'twice<__test3.f>'])
+    expect(await runTestsOfSource(source)).toEqual({ ran: ['g > x', 'g > y'], failed: [] })
   })
 })
 
@@ -1187,16 +1326,16 @@ async function runProgram(files: Record<string, string>): Promise<{ ran: string[
     if (load.errors.length > 0) throw new Error(load.errors.map((e) => e.message).join('\n'))
     const check = typecheckProgram(load.modules, path, { includeTests: true })
     if (check.errors.length > 0) throw new Error(check.errors.map((e) => e.message).join('\n'))
-    const { wat, testNames, testTitles, standIns } = programToWatWithTests(load.modules, check.results, path)
+    const { wat, testExports, testTitles, standIns } = programToWatWithTests(load.modules, check.results, path)
     const bytes = await wasmOfWat(wat)
     const module = await WebAssembly.compile(bytes)
     const host = createTestHost(module, () => {}, undefined, bytes, standIns)
     const instance = await WebAssembly.instantiate(module, host.imports)
     host.attach(instance)
     const failed: string[] = []
-    for (const [i, name] of testNames.entries()) {
+    for (const [i, name] of testExports.entries()) {
       try {
-        ;(instance.exports[`test_${name}`] as () => void)()
+        ;(instance.exports[name] as () => void)()
       } catch {
         failed.push(testTitles[i])
       }
@@ -1601,8 +1740,8 @@ test "a test sorts with a comparator that captures" {
     const result = check(source)
     expect(result.errors).toEqual([])
     expect(result.instances.map((i) => [i.name, i.label])).toEqual([
-      ['sort<i32|test_a_test_sorts_with_a_comparator_that_captures.closer>', 'sort(T = i32, before = test_a_test_sorts_with_a_comparator_that_captures.closer)'],
-      ['sort<i32|__test_a_test_sorts_with_a_comparator_that_captures_desc>', 'sort(T = i32, before = desc)'],
+      ['sort<i32|__test1.closer>', 'sort(T = i32, before = __test1.closer)'],
+      ['sort<i32|__test1.desc>', 'sort(T = i32, before = desc)'],
     ])
     const { failed, ran } = await runTestsOfSource(source)
     expect(ran.length).toBe(1)

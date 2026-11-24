@@ -588,8 +588,8 @@ switch (command) {
       const hasTests = entryMod?.module.decls.some(d => d.kind === 'TestDecl')
       if (!hasTests) continue
 
-      const { wat, testNames, testTitles, standIns } = programToWatWithTests(load.modules, check.results, entryPath)
-      if (testNames.length === 0) continue
+      const { wat, testExports, testTitles, standIns } = programToWatWithTests(load.modules, check.results, entryPath)
+      if (testExports.length === 0) continue
 
       const w = await wabt()
       let wasmModule: WabtModule | undefined
@@ -598,7 +598,7 @@ switch (command) {
         wasmModule.validate()
       } catch (e: any) {
         console.error(`${testFile}: WAT error: ${e.message}`)
-        totalFailed += testNames.length
+        totalFailed += testExports.length
         continue
       }
       const { buffer } = wasmModule.toBinary({})
@@ -615,15 +615,15 @@ switch (command) {
         instance = await WebAssembly.instantiate(mod, host.imports)
       } catch (e: any) {
         console.error(`${testFile}: the module did not start: ${e.message}`)
-        totalFailed += testNames.length
+        totalFailed += testExports.length
         for (const title of testTitles) allResults.push({ file: testFile, name: title, pass: false, error: `the module did not start: ${e.message}` })
         continue
       }
       host.attach(instance)
 
-      for (const [t, name] of testNames.entries()) {
+      for (const [t, name] of testExports.entries()) {
         const title = testTitles[t]
-        const fn = instance.exports[`test_${name}`] as Function
+        const fn = instance.exports[name] as Function
         try {
           failedOffset = -1
           fn()

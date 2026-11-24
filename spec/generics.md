@@ -3670,10 +3670,10 @@ export func g(p: ?*u32, x: u32) -> u32 => f(8, p, x) + h(8)
 cannot assign to 'n': it is a comptime value parameter, in f(n = 8)
 cannot assign to 'n': it is a comptime value parameter, in f(n = 8)
 cannot set 'n': it is a comptime value parameter, in f(n = 8)
-'n' is already declared: a loop variable cannot reuse the name of a comptime value parameter, in f(n = 8)
-'n' is already declared: an if let binding cannot reuse the name of a comptime value parameter, in f(n = 8)
-'n' is already declared: a match binding cannot reuse the name of a comptime value parameter, in f(n = 8)
-'n' is already declared in this scope, in h(n = 8)
+'n' is already declared: a loop variable cannot reuse the name of a comptime value parameter (first declared at 1:17), in f(n = 8)
+'n' is already declared: an if let binding cannot reuse the name of a comptime value parameter (first declared at 1:17), in f(n = 8)
+'n' is already declared: a match binding cannot reuse the name of a comptime value parameter (first declared at 1:17), in f(n = 8)
+'n' is already declared in this scope (first declared at 10:17), in h(n = 8)
 ```
 
 `n = 0` where the body needs an index proven: the error of the same function written by hand for 0.

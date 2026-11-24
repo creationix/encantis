@@ -956,7 +956,7 @@ if let name = names[i] { print(name) } else { print("none") }
 let n = if let p = maybe { p.* } else { 0 }
 ```
 
-A branch is a block or `=>` and one expression: `if c => r = 1` is a syntax error, as an assignment is a statement. `elif let` parses, and the compiler does not bind its name (a compiler bug): write `else { if let ... }`.
+A branch is a block or `=>` and one expression: `if c => r = 1` is a syntax error, as an assignment is a statement. An `elif let` branch binds its name in its own body, as an `if let` does.
 
 ### Match
 

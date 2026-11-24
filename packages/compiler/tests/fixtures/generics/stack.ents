@@ -1,4 +1,7 @@
-// A small bump stack (the same interface as monkey-fist's stack/stack.ents).
+// A small bump stack (the same interface as a board-builder port's
+// stack/stack.ents). What is allocated is checked against the room left,
+// capacity - top, which does not wrap, since top is never past capacity;
+// top + n could (as lib/stack.ents does).
 def capacity = 65536:u32
 data space = mut [0:u8; 65536]
 global top: u32 = 0
@@ -6,18 +9,20 @@ global top: u32 = 0
 export func mark() -> u32 => (space as u32) + top
 
 export func reset(m: u32) {
-  top = m - (space as u32)
+  let at = m - (space as u32)
+  assert at <= capacity
+  top = at
 }
 
 export func alloc(n: u32) -> (p: u32) {
   top = (top + 7) & 0xFFFFFFF8
+  assert n <= capacity - top
   p = (space as u32) + top
   top += n
-  assert top <= capacity
 }
 
 export func extend(n: u32) -> (p: u32) {
+  assert n <= capacity - top
   p = (space as u32) + top
   top += n
-  assert top <= capacity
 }
