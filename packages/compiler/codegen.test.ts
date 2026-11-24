@@ -3764,6 +3764,27 @@ describe('the address of an element, where a pointer is expected', () => {
     ])
   })
 
+  test('of a pointer in a test, and of what another module gives', async () => {
+    expect(typecheck(parse(`
+      test "t" {
+        let p = 8 as *i32
+        let q = &p
+        assert q == p
+      }
+    `).module as AST.Module).errors.map((e) => e.message)).toEqual(["'p' is already a pointer (*i32): drop the &"])
+    const { typecheckProgram } = await import('./checker')
+    const { resolve } = await import('node:path')
+    const [lib, main] = [resolve('/p/lib.ents'), resolve('/p/main.ents')]
+    const modules = new Map([
+      [lib, 'export func cell() -> *i32 => 8 as *i32\nexport global where: *i32 = 16 as *i32\n'],
+      [main, 'import "./lib" (\n  "cell" func cell() -> *i32\n  "where" global where: *i32\n)\nfunc get(p: *i32) -> i32 => p.*\nexport func a() -> i32 => get(&cell())\nexport func b() -> i32 => get(&where)\nexport func c() -> i32 => get(&cell().*)\n'],
+    ].map(([path, src]) => [path, { module: parse(src).module as AST.Module, source: src }]))
+    expect(typecheckProgram(modules, main).errors.map((e) => e.message)).toEqual([
+      "'cell()' is already a pointer (*i32): drop the &",
+      "'where' is already a pointer (*i32): drop the &",
+    ])
+  })
+
   test('of a pointer in a generic, in the instance whose type is a pointer', () => {
     const errs = typecheck(parse(`
       func g(comptime T: type, x: T) -> T => &x
