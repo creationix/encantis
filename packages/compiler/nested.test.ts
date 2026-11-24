@@ -2474,6 +2474,47 @@ test "main" { assert m() == 1 }`
     expect(own.wat).toContain('(func $apply<x@s>')
   })
 
+  // What a test build leaves out lays out no data, and what only its tests
+  // lay out comes after the program's data, which keeps its addresses and
+  // its end where the build has nothing more to lay out (9.0, 12.4)
+  test('a test build lays out the data of what it builds, the program\'s first', async () => {
+    const gen = `export func tag(comptime k: (u32) -> u32) -> []u8 {
+  let s = "a literal of the instance, 40 bytes long"
+  return s
+}`
+    const lib = `import "./gen.ents" ("tag" func tag(comptime k: (u32) -> u32) -> []u8)
+export func dbl(x: u32) -> u32 => x * 2
+export func one() -> u32 => 1
+test "lib asks for tag<dbl> and tag<its own function>" {
+  func tf(x: u32) -> u32 => x * 2
+  assert tag(dbl).len == 40 && tag(tf).len == 40
+  data blob = "lib test data, 20 b."
+  assert blob.len == 20
+}`
+    const main = `import "./lib.ents" ("one" func one() -> u32 "dbl" func dbl(x: u32) -> u32)
+import "./gen.ents" ("tag" func tag(comptime k: (u32) -> u32) -> []u8)
+test "above the program's data" {
+  data early = "a test's data, written first"
+  assert early.len == 28 && where_mine() == 8
+}
+data mine = "abcd"
+export func where_mine() -> u32 => mine as u32
+export func data_end() -> u32 => sizeof data
+test "lib's tests lay out nothing here" {
+  assert one() == 1 && where_mine() == 8 && data_end() > 12
+}
+test "an instance only this test asks for comes after" {
+  assert tag(dbl).len == 40 && where_mine() == 8
+}`
+    const { ran, failed, wat } = await runProgram({ 'main.ents': main, 'lib.ents': lib, 'gen.ents': gen })
+    expect({ ran, failed }).toEqual({ ran: ["above the program's data", "lib's tests lay out nothing here", 'an instance only this test asks for comes after'], failed: [] })
+    expect(wat).not.toContain('lib test data')
+    expect(wat.match(/a literal of the instance/g)).toHaveLength(1)
+    // Without that test the build lays out the program's data alone
+    const plain = await runProgram({ 'main.ents': main.slice(0, main.indexOf('test "an instance')), 'lib.ents': lib, 'gen.ents': gen })
+    expect(plain.wat).not.toContain('a literal of the instance')
+  })
+
   // Each name of a match arm is its own declaration: the later clash with
   // any of them is told what that one could not take
   test('a later clash is told the place of what each name of a refused match arm could not take', () => {

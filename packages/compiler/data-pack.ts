@@ -1434,6 +1434,9 @@ interface DataSectionOptions {
   calls?: ReadonlyMap<AST.CallExpr, AST.Expr>
   constants?: ReadonlyMap<AST.Expr, ComptimeValue>
   fieldOrder?: ReadonlyMap<AST.TupleExpr, number[]>
+  // Whether a literal, by its source and its id, is laid out after all the
+  // others: in a test build, what only the tests use (see literalFates)
+  late?: (source: number, id: number) => boolean
 }
 
 /**
@@ -1510,7 +1513,9 @@ export function buildProgramDataSection(
     literalSortScore(b.type) - literalSortScore(a.type)
   )
 
-  // Serialize each literal
+  // Serialize each literal, those laid out late after all the others
+  const late = options.late
+  for (const lit of sorted) if (!late?.(lit.source, lit.id)) layOut(lit)
   for (const lit of sorted) layOut(lit)
 
   return { dataBuilder, literalRefs }

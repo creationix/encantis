@@ -3994,6 +3994,50 @@ function untestedInstances(checkResults: ReadonlyMap<string, TypeCheckResult>, t
   return new Map([...checkResults].map(([path, result]) => [path, new Set(result.instances.filter((inst) => !kept.has(inst)).map((inst) => inst.name))]))
 }
 
+// What becomes of each literal of a module in a build, by its id: laid out
+// with the program's data; laid out after all of it, in a test build, for
+// what only the tests built use (a test's own, and an instance's that only
+// they ask for), so that the program's data keeps the addresses it has in
+// the build without tests (9.0); or not laid out at all, for what the build
+// leaves out (the tests of a module whose tests are not built, and the
+// instances only those ask for, 12.4, 12.5).
+function literalFates(
+  module: AST.Module | undefined,
+  result: TypeCheckResult,
+  left: ReadonlySet<string> | undefined,
+  tested: boolean,
+  testBuild: boolean,
+  checkResults: ReadonlyMap<string, TypeCheckResult>,
+): (id: number) => 'program' | 'late' | 'none' {
+  if (!testBuild) return () => 'program'
+  // The instances a build without tests has
+  const withoutTests = untestedInstanceSet(checkResults, result)
+  const tests = (module?.decls ?? []).flatMap((decl) => (decl.kind === 'TestDecl' ? [decl.span] : []))
+  return (id) => {
+    if (id >= INSTANCE_STRIDE) {
+      const inst = result.instances[Math.floor(id / INSTANCE_STRIDE) - 1]
+      if (!inst) return 'program'
+      if (left?.has(inst.name)) return 'none'
+      return withoutTests.has(inst.name) ? 'late' : 'program'
+    }
+    if (!tests.some((span) => id >= span.start && id < span.end)) return 'program'
+    return tested ? 'late' : 'none'
+  }
+}
+
+// The instances of a module that a build without tests leaves out: those
+// only tests ask for
+const withoutTestsCache = new WeakMap<ReadonlyMap<string, TypeCheckResult>, Map<TypeCheckResult, Set<string>>>()
+function untestedInstanceSet(checkResults: ReadonlyMap<string, TypeCheckResult>, result: TypeCheckResult): Set<string> {
+  let found = withoutTestsCache.get(checkResults)
+  if (!found) {
+    const left = untestedInstances(checkResults, new Set())
+    found = new Map([...checkResults].map(([path, r]) => [r, left.get(path) ?? new Set<string>()]))
+    withoutTestsCache.set(checkResults, found)
+  }
+  return found.get(result) ?? new Set()
+}
+
 // A generic is never exported to the host: there is no one function to
 // export, and a generic type is not there at run time at all. Its `export`
 // only makes it importable by other source modules.
@@ -4491,10 +4535,17 @@ export function programToWat(
     for (const [expr, value] of result.constants) allConstants.set(expr, value)
     for (const [tuple, order] of result.fieldOrder) allFieldOrders.set(tuple, order)
   }
-  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), {
+  // The instances each module leaves out of the build (see untestedInstances)
+  const left = untestedInstances(checkResults, tested)
+  const fates = sources.map(({ path, result }) => literalFates(modules.get(path)?.module, result, left.get(path), tested.has(path), !!options?.includeTests, checkResults))
+  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }, i) => ({
+    literals: result.literals.filter((lit) => fates[i](lit.id) !== 'none'),
+    types: result.types,
+  })), {
     calls: allCalls,
     constants: allConstants,
     fieldOrder: allFieldOrders,
+    late: (source, id) => fates[source](id) === 'late',
   })
   const literalRefsOf = new Map(sources.map(({ path }, i) => [path, refsOfSource[i]]))
   const refsOf = (path: string) => literalRefsOf.get(path) ?? new Map<number, DataRef>()
@@ -4595,7 +4646,6 @@ export function programToWat(
   }
 
   const testNames = testBuildNames(tested, modules, checkResults, sourceImportNames, globals, (path) => prefixes.get(path) ?? '')
-  const left = untestedInstances(checkResults, tested)
   // A function a test imports from the host, by the name the checker gives
   // it as it does a function the test declares (testIds), which an instance
   // given it calls: the import's name in the WAT. One from another module is
