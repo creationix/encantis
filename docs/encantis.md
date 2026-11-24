@@ -37,9 +37,10 @@ Source code is shown in `ents` code blocks. The examples that the compiler can p
   1. generic types: what is wrong with their parameters, then any that applies itself to a growing argument ([8.5](#85-generic-types));
   2. `type` declarations;
   3. every other declaration, whatever its kind: imports, `def`s, globals (`global initializer must be a compile-time constant`), `data` (`data value must be a literal ...`), functions' parameter and result types and a generic's comptime parameters (a named result with a comptime parameter's name among them), with the limits on these, such as an array's size or the registers a signature takes ([2.12](#212-limits)); a second function with the same parameter types, and a generic that shares its name with a function, are reported at the one declared second;
-  4. export names used twice;
-  5. the bodies of functions and tests. With a function's body come the checks that tie its signature to it, such as `result 'n' is the parameter 'n', so it has its type: u32, not u64`, and the errors at its calls of generics, such as a comptime function argument of the wrong type ([8.6](#86-comptime-function-parameters));
-  6. the instances of generics, in the order they are made ([8.3](#83-requirements)).
+  4. export names: one used twice, or one that begins with `test:` ([7.2](#72-exports));
+  5. the names of tests: a test whose name is empty, and two tests exported under one name ([12.6](#126-the-test-host));
+  6. the bodies of functions and tests. With a function's body come the checks that tie its signature to it, such as `result 'n' is the parameter 'n', so it has its type: u32, not u64`, and the errors at its calls of generics, such as a comptime function argument of the wrong type ([8.6](#86-comptime-function-parameters));
+  7. the instances of generics, in the order they are made ([8.3](#83-requirements)).
 
   So an error in a later function's parameter type is listed before one in an earlier function's body. A generic type's body is checked where the type is applied, so the body of one never applied is not checked at all ([8.5](#85-generic-types)). An expression that is refused takes a type that fits wherever it is used, so its uses add no error of their own. After a few errors the compiler still reports a second, misleading one at the same place (`cannot assign i32 to u32` after `unknown identifier 'n'` in a function that returns a `u32`: known bugs); the examples here avoid them.
 - A code block marked `ents same-wasm` after an example is a second program that compiles to exactly the same `.wasm` file. This is how the reference shows that a feature costs nothing.
@@ -9865,7 +9866,7 @@ A `test` block is code that a module runs to check itself. It stands in the modu
 
 ### 12.1 Writing a Test
 
-`test` is followed by the test's name, a string, and a block. The block holds statements, as a function body does, and `assert` states what must hold:
+`test` is followed by the test's name, a string that is not empty, and a block. The block holds statements, as a function body does, and `assert` states what must hold:
 
 <!-- spec:begin compile -->
 
@@ -10028,7 +10029,7 @@ Tests run without the program's host. `encantis test` gives each import of the m
 - Any other imported function throws when it is called, which fails the test that called it. The functions that do not reach it are tested as usual.
 - An imported global is the zero of its type: 0 for a number, none for an optional host reference. One of a plain host type, which is never null, is a stand-in object ([2.13](#213-host-references)).
 
-In the test build each test that is run, one with a name that holds no tests, is a function exported as `test:` followed by its name: the names of its groups and its own joined by `__`, with each character that is not an ASCII letter, a digit or `_` replaced by `_`. A character is a code point, so `é` and `😀` are one `_` each. The test `rectangles > one row` of [12.5](#125-running-tests) is exported as `test:rectangles__one_row`. A test without a name adds nothing to the names of the tests it holds. A group is not exported, so a group and a test beside it can share a name. Two tests exported under one name are an error at the second, whether their names are the same or become the same this way (`tests "a b" and "a_b" are both exported as 'test:a_b' in the test build: give each test a name of its own`). As any error in a test, it is reported where the tests are checked, by `encantis check` and `encantis test`, and not by `encantis compile`. The exports of the tests come in the order the tests run, so a host can run the tests itself: it calls each export whose name begins with `test:`, in turn.
+In the test build each test that is run, one with a name that holds no tests, is a function exported as `test:` followed by its name: the names of its groups and its own joined by `__`, with each character that is not an ASCII letter, an ASCII digit or `_` replaced by `_`. A character is a code point, so `é`, `😀` and the Arabic digit `٣` are one `_` each. The test `rectangles > one row` of [12.5](#125-running-tests) is exported as `test:rectangles__one_row`. A test without a name adds nothing to the names of the tests it holds; a test whose name is empty, `test "" { ... }`, is an error (`a test's name is empty: give it one`), so that no test is left out of the build with nothing said. A group is not exported, so a group and a test beside it can share a name. Two tests exported under one name are an error at the second, whether their names are the same or become the same this way (`tests "a b" and "a_b" are both exported as 'test:a_b' in the test build: give each test a name of its own`). As any error in a test, these are reported where the tests are checked, by `encantis check` and `encantis test`, and not by `encantis compile`. The exports of the tests come in the order the tests run, so a host can run the tests itself: it calls each export whose name begins with `test:`, in turn.
 
 No export of the module begins with `test:` ([7.2](#72-exports)). In the WAT, each test's function, and each function the test declares and each function and global it imports from the host, has a name of the test's own, which no declaration of the module or of another test can have. A function or a global a test imports from another source module is that module's, in the program once whatever names the tests give it. So the module names its functions and exports as it likes, and each test what it declares and imports: a function `test_xor` and an export `"test_and"` stand beside the tests `"xor"` and `"and"`, and two tests each import the host's `f` and `level` beside the module's function `f`:
 
@@ -10065,11 +10066,39 @@ test "rectangles" {
 }
 test "rectangles__one_row" { assert true }
 test "rectangles" { assert true }
+test "" { assert false }
+test "group" {
+  test "" { assert false }
+}
 ```
 
 ```errors
 tests "a b" and "a_b" are both exported as 'test:a_b' in the test build: give each test a name of its own
 tests "rectangles > one row" and "rectangles__one_row" are both exported as 'test:rectangles__one_row' in the test build: give each test a name of its own
+a test's name is empty: give it one
+a test's name is empty: give it one
+```
+
+<!-- spec:end -->
+
+The names of the tests are checked after the export names of the module and before any body, as the passes listed in [Examples](#examples) say:
+
+<!-- spec:begin compile -->
+
+```ents
+func f() -> u32 => true
+test "a" { assert true }
+test "a" { assert true }
+export "test:x" func g() -> u32 => 1
+export "h" func h() -> u32 => 1
+export "h" func k() -> u32 => 1
+```
+
+```errors
+export name 'test:x' begins with 'test:'
+export name 'h' is used twice
+tests "a" and "a" are both exported as 'test:a'
+cannot assign bool to u32
 ```
 
 <!-- spec:end -->

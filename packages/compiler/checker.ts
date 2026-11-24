@@ -1802,7 +1802,20 @@ class CheckContext {
 
   // Each test the test build runs is a function exported under a name of its
   // own (testsToRun): two of one name would be one export for two functions.
+  // A name that is empty is no name a test is reported or exported by, and
+  // a test without a name is not run (reference 12.3): such a test would
+  // be left out with nothing said.
   private checkTestNames(module: AST.Module): void {
+    const found: { offset: number; message: string }[] = []
+    const empty = (items: readonly { kind: string }[]): void => {
+      for (const item of items) {
+        if (item.kind !== 'TestDecl') continue
+        const test = item as AST.TestDecl
+        if (test.name === '') found.push({ offset: test.span.start, message: `a test's name is empty: give it one` })
+        empty(test.children)
+      }
+    }
+    empty(module.decls)
     const first = new Map<string, string>()
     for (const { decl, exportName, title } of testsToRun(module.decls)) {
       const earlier = first.get(exportName)
@@ -1810,8 +1823,9 @@ class CheckContext {
         first.set(exportName, title)
         continue
       }
-      this.error(decl.span.start, `tests "${earlier}" and "${title}" are both exported as '${exportName}' in the test build: give each test a name of its own`)
+      found.push({ offset: decl.span.start, message: `tests "${earlier}" and "${title}" are both exported as '${exportName}' in the test build: give each test a name of its own` })
     }
+    for (const { offset, message } of found.sort((a, b) => a.offset - b.offset)) this.error(offset, message)
   }
 
   collectTypeDecl(decl: AST.TypeDecl): void {

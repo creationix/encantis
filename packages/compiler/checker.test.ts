@@ -4367,6 +4367,14 @@ describe('the export names of tests', () => {
     expect(errs('test "todo" {}\ntest "todo" {}')).toEqual([both('todo', 'todo', 'todo')])
   })
 
+  test('a test whose name is empty is an error, in source order with the others', () => {
+    const empty = "a test's name is empty: give it one"
+    expect(errs('test "" { assert false }\ntest "g" {\n  test "" { assert false }\n}')).toEqual([empty, empty])
+    expect(errs('test "a" { assert true }\ntest "a" { assert true }\ntest "" {\n  test "x" { assert true }\n}')).toEqual([both('a', 'a', 'a'), empty])
+    // A test without a name is no test whose name is empty.
+    expect(errs('test {\n  test "x" { assert true }\n}')).toEqual([])
+  })
+
   test('a group is no export: its name may be that of a test', () => {
     expect(errs('test "g" {\n  test "x" { assert true }\n}\ntest "g" { assert true }\ntest "x" { assert true }')).toEqual([])
     expect(errs('test "g" {\n  test "x" { assert true }\n}\ntest "h" {\n  test "x" { assert true }\n}')).toEqual([])
