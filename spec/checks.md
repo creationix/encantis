@@ -814,25 +814,25 @@ func other(p: ?*u32) -> f64 {
   return q
 }
 
-func arm(n: u32, k: u32) -> u32 => match k {
+func arm(n: u32, m: u32) -> u32 => match m {
   0 => 1
   n => n + 1
 }
 ```
 
 ```errors
-'c' is already declared: a loop variable cannot reuse the name of a variable in scope
-'n' is already declared: a loop variable cannot reuse the name of a parameter
-'n' is already declared: a loop variable cannot reuse the name of a named result
-'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope
-'i' is already declared: a loop variable cannot reuse the name of a variable in scope
-'v' is already declared: a loop variable cannot reuse the name of a variable in scope
-'g' is already declared: a loop variable cannot reuse the name of a global
-'k' is already declared: a loop variable cannot reuse the name of a def
-'xs' is already declared: a loop variable cannot reuse the name of a data block
-'p' is already declared: an if let binding cannot reuse the name of a parameter
-'q' is already declared: an if let binding cannot reuse the name of a variable in scope
-'n' is already declared: a match binding cannot reuse the name of a parameter
+'c' is already declared: a loop variable cannot reuse the name of a variable in scope (first declared at 6:7)
+'n' is already declared: a loop variable cannot reuse the name of a parameter (first declared at 11:12)
+'n' is already declared: a loop variable cannot reuse the name of a named result (first declared at 17:19)
+'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope (first declared at 22:7)
+'i' is already declared: a loop variable cannot reuse the name of a variable in scope (first declared at 28:7)
+'v' is already declared: a loop variable cannot reuse the name of a variable in scope (first declared at 36:7)
+'g' is already declared: a loop variable cannot reuse the name of a global (first declared at 1:8)
+'k' is already declared: a loop variable cannot reuse the name of a def (first declared at 2:5)
+'xs' is already declared: a loop variable cannot reuse the name of a data block (first declared at 3:6)
+'p' is already declared: an if let binding cannot reuse the name of a parameter (first declared at 47:10)
+'q' is already declared: an if let binding cannot reuse the name of a variable in scope (first declared at 55:7)
+'n' is already declared: a match binding cannot reuse the name of a parameter (first declared at 62:10)
 ```
 
 After the body the names are free again: two loops one after the other can both use `i`, a `let` after a `for c` declares a variable of its own, and `if let`s in turn can bind one name to values of different types. A `let` in a loop's body is still seen to the end of the function. A function has no value, and a binding of its name hides it in the body.

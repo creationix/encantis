@@ -3554,12 +3554,14 @@ describe('functions that share a name', () => {
       `export name 'x' is used twice: give one an explicit name, as in export "x_2" global g`,
     ])
     // Of several memory declarations only the first is the module's memory,
-    // so only its export is one.
-    expect(errs('export memory\nexport memory 8\nexport "mem" memory 8 256\nexport "mem" func f() { }')).toEqual([])
+    // so only its export is one: the others are refused as memory declared
+    // again (#40), not as names exported twice.
+    const twice = 'memory is already declared: a program has one memory declaration at most'
+    expect(errs('export memory\nexport memory 8\nexport "mem" memory 8 256\nexport "mem" func f() { }')).toEqual([twice, twice])
     expect(errs('export "memory" func f() { }\nexport memory 8')).toEqual([
       `export name 'memory' is used twice: give one an explicit name, as in export "memory_2" memory`,
     ])
-    expect(errs('memory 1\nexport "memory" func f() { }\nexport memory 8')).toEqual([])
+    expect(errs('memory 1\nexport "memory" func f() { }\nexport memory 8')).toEqual([twice])
   })
 
   test('the name of several functions is no function value', () => {
@@ -3894,6 +3896,71 @@ describe('the size of a function', () => {
   })
 })
 
+// #40: two memory declarations passed the check, and the compiler then
+// stopped with a stack trace.
+describe('a program declares its memory once', () => {
+  const twice = 'memory is already declared: a program has one memory declaration at most'
+  const errsOf = (src: string) => typecheck(parse(src).module!, { source: src }).errors.map((e) => e.message)
+  const programOf = (files: [string, string][], entry: string) => {
+    const modules = new Map(files.map(([path, src]) => [resolve(path), { module: parse(src).module!, source: src }]))
+    const program = typecheckProgram(modules, resolve(entry))
+    return [...program.results].flatMap(([path, r]) => r.errors.map((e) => `${path.replace(/^.*[\\/]/, '')}: ${e.message}`))
+  }
+
+  test('in one module, at the second, saying where the first is', () => {
+    const src = 'memory 1\nexport func f() -> u32 => 1\nexport memory 2 16\n'
+    const found = typecheck(parse(src).module!, { source: src }).errors
+    expect(found.map((e) => e.message)).toEqual([`${twice} (first declared at 1:1)`])
+    expect(found[0].offset).toBe(src.indexOf('export memory'))
+    // Exported twice, it is still this one error, not an export name used twice too.
+    expect(errsOf('export memory\nexport memory 2')).toEqual([`${twice} (first declared at 1:1)`])
+    // Three: each after the first
+    expect(errsOf('memory\nmemory 2\nmemory 3')).toEqual([`${twice} (first declared at 1:1)`, `${twice} (first declared at 1:1)`])
+  })
+
+  test('in two modules, in the one checked later, naming the other', () => {
+    // main imports lib: lib is checked first
+    expect(programOf([
+      ['/p/lib.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
+      ['/p/main.ents', 'import "./lib" ("one" func one() -> u32)\n\nmemory 4\nexport func two() -> u32 => one() + 1\n'],
+    ], '/p/main.ents')).toEqual([`main.ents: ${twice} (first declared at lib.ents:1:1)`])
+    // Two imports of the entry: the second one has it.
+    expect(programOf([
+      ['/p/a.ents', '// a\n\n  memory 2\nexport func one() -> u32 => 1\n'],
+      ['/p/b.ents', 'export memory\nexport func two() -> u32 => 2\n'],
+      ['/p/main.ents', 'import "./a" ("one" func one() -> u32)\nimport "./b" ("two" func two() -> u32)\nexport func f() -> u32 => one() + two()\n'],
+    ], '/p/main.ents')).toEqual([`b.ents: ${twice} (first declared at a.ents:3:3)`])
+    // One module with a memory declaration is no error, wherever it is.
+    expect(programOf([
+      ['/p/lib.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
+      ['/p/main.ents', 'import "./lib" ("one" func one() -> u32)\nexport func two() -> u32 => one() + 1\n'],
+    ], '/p/main.ents')).toEqual([])
+  })
+
+  test('two modules with one file name are told apart by their paths', () => {
+    expect(programOf([
+      ['/p/x/lib.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
+      ['/p/y/lib.ents', '\nmemory 1\nexport func two() -> u32 => 2\n'],
+      ['/p/main.ents', 'import "./x/lib" ("one" func one() -> u32)\nimport "./y/lib" ("two" func two() -> u32)\nexport func three() -> u32 => one() + two()\n'],
+    ], '/p/main.ents')).toEqual([`lib.ents: ${twice} (first declared at x/lib.ents:1:1)`])
+    // One beside the entry's directory, and one of the entry's name
+    expect(programOf([
+      ['/p/main.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
+      ['/q/main.ents', 'import "../p/main" ("one" func one() -> u32)\nmemory 1\nexport func two() -> u32 => one()\n'],
+    ], '/q/main.ents')).toEqual([`main.ents: ${twice} (first declared at ../p/main.ents:1:1)`])
+  })
+
+  test('a module only a test imports counts where the tests are built', () => {
+    const files: [string, string][] = [
+      ['/p/lib.ents', 'export memory 2\nexport func one() -> u32 => 1\n'],
+      ['/p/main.ents', 'memory 1\nexport func f() -> u32 => 1\ntest "t" {\n  import "./lib" ("one" func one() -> u32)\n  assert one() == 1\n}\n'],
+    ]
+    expect(programOf(files, '/p/main.ents')).toEqual([`main.ents: ${twice} (first declared at lib.ents:1:1)`])
+    const modules = new Map(files.map(([path, src]) => [resolve(path), { module: parse(src).module!, source: src }]))
+    expect(typecheckProgram(modules, resolve('/p/main.ents'), { includeTests: false }).errors).toEqual([])
+  })
+})
+
 describe('a name for a pointer, a slice, an array or an optional', () => {
   const errs = (src: string) => checkModule(src).errors.map(e => e.message)
   const names = `type P = *mut u16
@@ -4201,6 +4268,180 @@ describe('a function named where a value is', () => {
       func a(g: (i32) -> i32, h: (i32) -> i32) -> bool => g == h
       func b(g: (i32) -> i32) -> u32 => g as u32
     `)).toEqual([])
+  })
+})
+
+// #38, #138: a def's name is read as the def wherever it is written, so a
+// parameter or a named result of the name was written to and never read.
+describe('a parameter or a named result cannot have a def\'s name', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const param = (name: string) => `'${name}' is already declared: a parameter cannot reuse the name of a def`
+  const result = (name: string) => `'${name}' is already declared: a named result cannot reuse the name of a def`
+
+  test('in a function, said at the name', () => {
+    const src = 'def k = 3\nfunc g(x: u32, k: u32) -> u32 => k'
+    const found = checkModule(src).errors
+    expect(found.map(e => e.message)).toEqual([param('k')])
+    expect(found[0].offset).toBe(src.indexOf('k: u32'))
+    expect(errs('def limit = 10\nfunc f() -> (limit: u32) {\n limit = 3\n return limit * 2\n}')).toEqual([result('limit')])
+    // An arrow body, an export, a result that is the parameter (both names
+    // are written), a def declared after the function.
+    expect(errs('def k = 3\nfunc f(x: u32) -> (k: u32) => x')).toEqual([result('k')])
+    expect(errs('def k = 3\nexport func f(k: u32) -> (k: u32) => k')).toEqual([param('k'), result('k')])
+    expect(errs('func f(k: u32) -> u32 => k\ndef k = 3')).toEqual([param('k')])
+    // A typed def, one whose value is an expression
+    expect(errs('def k: u8 = 3\ndef m = k + 1\nfunc f(k: u32, m: u32) -> u32 => k + m')).toEqual([param('k'), param('m')])
+  })
+
+  test('in a generic, once where it is declared, called or not', () => {
+    expect(errs('def k = 3\nfunc h(comptime T: type, k: T) -> T => k')).toEqual([param('k')])
+    expect(errs('def k = 3\nfunc h(comptime T: type, x: T) -> (k: T) => x\nfunc use() -> u32 => h(u32, 5) + h(u32, 6)')).toEqual([result('k')])
+    // A comptime value parameter has its own message.
+    expect(errs('def n = 3\nfunc h(comptime n: u32, x: u32) -> u32 => x')).toEqual(["comptime parameter 'n' has the name of a def declared in this module"])
+    // A comptime function parameter, which the body calls by its name: at
+    // the name, once, called or not, its type written out or an alias.
+    const pick = 'func pick(comptime less: (u32, u32) -> bool, a: u32, b: u32) -> u32 => if less(a, b) { a } else { b }'
+    const lt = 'func lt(a: u32, b: u32) -> bool => a < b'
+    const src = `def less = 3\n${lt}\n${pick}\nexport func use() -> u32 => pick(lt, 1, 2) + pick(lt, 3, 4)`
+    const found = checkModule(src).errors
+    expect(found.map(e => e.message)).toEqual([param('less')])
+    expect(found[0].offset).toBe(src.indexOf('less: ('))
+    expect(errs(`def less = 3\n${pick}`)).toEqual([param('less')])
+    expect(errs('def less = 3\ntype Cmp = (u32, u32) -> bool\nfunc pick(comptime less: Cmp, a: u32) -> u32 => a')).toEqual([param('less')])
+  })
+
+  test('in a test, the test\'s defs as well', () => {
+    expect(errs('test "t" {\n def z = 4\n func inner(z: u32) -> u32 => z\n assert inner(9) == 9\n}')).toEqual([param('z')])
+    // A def a test declares is not the rest of the module's.
+    expect(errs('test "t" {\n def z = 4\n assert z == 4\n}\nfunc outer(z: u32) -> u32 => z')).toEqual([])
+  })
+
+  test('a data block, a global, a function and an import are names a parameter can hide', () => {
+    expect(errs(`
+      data s = [1:u8, 2]
+      global g: u32 = 1
+      func f() -> u32 => 1
+      import "env" "log" func log(k: u32)
+      def k = 3
+      func a(s: []u8, g: u32, f: u32, log: u32) -> (n: u32) => s.len + g + f + log
+    `)).toEqual([])
+  })
+})
+
+// #170: a name clash said nothing of where the first declaration is.
+describe('a name declared again says where the first declaration is', () => {
+  // With the module's text, as the command line and the editor check it
+  const errs = (src: string) => typecheck(parse(src).module!, { source: src }).errors.map(e => e.message)
+
+  test('a let, at the name of the variable, the parameter or the module\'s declaration', () => {
+    expect(errs('func f(c: bool) -> u32 {\n  if c {\n    let t: u32 = 1\n  } else {\n    let t: u32 = 2\n  }\n  return t\n}'))
+      .toEqual(["'t' is already declared in this scope (first declared at 3:9)"])
+    expect(errs('func f(n: u32) -> u32 {\n  let n: u32 = 2\n  return n\n}')).toEqual(["'n' is already declared in this scope (first declared at 1:8)"])
+    expect(errs('func f() -> (r: u32) {\n  let r: u32 = 2\n}')).toEqual(["'r' is already declared in this scope (first declared at 1:14)"])
+    // Names of the module: at the name after the keywords
+    const module = 'global g: u32 = 1\ndef k = 30\ndata xs = [1:u8]\nexport func helper() -> u32 => 1\nimport "env" "log" func log(x: u32)\n'
+    expect(errs(`${module}func f() {\n  let g = 1\n  let k = 2\n  let xs = 3\n  let helper = 4\n  let log = 5\n}`)).toEqual([
+      "'g' is already declared in this scope (first declared at 1:8)",
+      "'k' is already declared in this scope (first declared at 2:5)",
+      "'xs' is already declared in this scope (first declared at 3:6)",
+      "'helper' is already declared in this scope (first declared at 4:13)",
+      "'log' is already declared in this scope (first declared at 5:25)",
+    ])
+    // A let that takes its names from fields
+    expect(errs('type P = (x: u32, y: u32)\nfunc f(p: P, x: u32) -> u32 {\n  let (x:, y:) = p\n  return y\n}'))
+      .toEqual(["'x' is already declared in this scope (first declared at 2:14)"])
+    // Imported globals, from the host and from another module, at their
+    // local names, as imported functions are
+    const imports = 'import "env" (\n  "width" global width: i32\n  "log" func log(x: i32)\n)\nimport "env" "h" global height: i32\nimport "./lib" "total" global total: u32\n'
+    expect(errs(`${imports}func f() {\n  let width = 1\n  let log = 2\n  let height = 3\n  let total = 4\n}`)).toEqual([
+      "'width' is already declared in this scope (first declared at 2:18)",
+      "'log' is already declared in this scope (first declared at 3:14)",
+      "'height' is already declared in this scope (first declared at 5:25)",
+      "'total' is already declared in this scope (first declared at 6:31)",
+    ])
+  })
+
+  test('a third declaration, and every later one, names the first', () => {
+    const src = 'func f(c: bool) -> u32 {\n  let t: u32 = 1\n  if c {\n    let t: u32 = 2\n  } else {\n    let t: u32 = 3\n  }\n  for t in 3 { }\n  return t\n}'
+    expect(errs(src)).toEqual([
+      "'t' is already declared in this scope (first declared at 2:7)",
+      "'t' is already declared in this scope (first declared at 2:7)",
+      "'t' is already declared: a loop variable cannot reuse the name of a variable in scope (first declared at 2:7)",
+    ])
+    // Field lets, and a binding after a refused let, which says what the
+    // first is
+    expect(errs('type P = (x: i32, y: i32)\nfunc f(p: P) -> i32 {\n  let (x:, y:) = p\n  let x = 1\n  let (y:, x:) = p\n  return x\n}')).toEqual([
+      "'x' is already declared in this scope (first declared at 3:8)",
+      "'y' is already declared in this scope (first declared at 3:12)",
+      "'x' is already declared in this scope (first declared at 3:8)",
+    ])
+    expect(errs('func g(o: ?*u32, k: u32) -> u32 {\n  if let v = o {\n    let v = 3\n    return match k { v => v }\n  }\n  return 0\n}')).toEqual([
+      "'v' is already declared in this scope (first declared at 2:10)",
+      "'v' is already declared: a match binding cannot reuse the name of an if let binding in scope (first declared at 2:10)",
+      'cannot assign i32 to u32',
+    ])
+    // A let refused since a function has the name: a loop variable, which
+    // may hide a function, may take it after it
+    expect(errs('import "env" "log" func log(x: i32)\nfunc f() {\n  let log = 2\n  for log in 3 { }\n}')).toEqual([
+      "'log' is already declared in this scope (first declared at 1:25)",
+    ])
+  })
+
+  test('a loop variable, an if let binding and a match binding', () => {
+    expect(errs('func f(n: u32) -> u32 {\n  for n in 3 { }\n  return 0\n}'))
+      .toEqual(["'n' is already declared: a loop variable cannot reuse the name of a parameter (first declared at 1:8)"])
+    expect(errs('func f() {\n  for i in 3 {\n    for i in 4 { }\n  }\n}'))
+      .toEqual(["'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope (first declared at 2:7)"])
+    expect(errs('func f(p: ?*u32) -> u32 {\n  if let p = p { return 1 }\n  return 0\n}'))
+      .toEqual(["'p' is already declared: an if let binding cannot reuse the name of a parameter (first declared at 1:8)"])
+    expect(errs('def size = 4\nfunc f(m: u32) -> u32 => match m {\n  size => 1\n  _ => 0\n}'))
+      .toEqual(["'size' is already declared: a match binding cannot reuse the name of a def (first declared at 1:5)"])
+  })
+
+  test('a parameter with a def\'s name, declared before or after the function, or in its test', () => {
+    expect(errs('def k = 3\nfunc f(k: u32) -> u32 => k')).toEqual(["'k' is already declared: a parameter cannot reuse the name of a def (first declared at 1:5)"])
+    expect(errs('func f(k: u32) -> u32 => k\n\ndef k = 3')).toEqual(["'k' is already declared: a parameter cannot reuse the name of a def (first declared at 3:5)"])
+    expect(errs('test "t" {\n  def z = 4\n  func inner(z: u32) -> u32 => z\n  assert inner(9) == 9\n}'))
+      .toEqual(["'z' is already declared: a parameter cannot reuse the name of a def (first declared at 2:7)"])
+  })
+
+  test('in a test, and in an instance of a generic, in the generic\'s source', () => {
+    expect(errs('global count: u32 = 0\ntest "t" {\n  let count = 7\n}')).toEqual(["'count' is already declared in this scope (first declared at 1:8)"])
+    expect(errs('test "t" {\n  func inner() -> u32 => 1\n  let inner = 6\n}')).toEqual(["'inner' is already declared in this scope (first declared at 2:8)"])
+    const generic = 'func f(comptime T: type, x: T) -> u32 {\n  let x = 2\n  return 0\n}\nfunc g(comptime n: u32, y: u32) -> u32 {\n  for n in 3 { }\n  return y\n}\n'
+    // Each instance says it, at the same place
+    expect(errs(`${generic}export func use() -> u32 => f(u32, 1) + f(i32, 2) + g(4, 1)`)).toEqual([
+      "'x' is already declared in this scope (first declared at 1:26), in f(T = u32)",
+      "'x' is already declared in this scope (first declared at 1:26), in f(T = i32)",
+      "'n' is already declared: a loop variable cannot reuse the name of a comptime value parameter (first declared at 5:17), in g(n = 4)",
+    ])
+  })
+
+  test('told in another module of a file name another module has too, the place names its path', () => {
+    const [lib, other, main] = [resolve('/p/x/lib.ents'), resolve('/p/y/lib.ents'), resolve('/p/main.ents')]
+    const modules = new Map([
+      [lib, 'export func each(comptime T: type, xs: []T) -> u32 {\n  let t: u32 = 0\n  for x in xs {\n    let t: u32 = 1\n  }\n  return t\n}\n'],
+      [other, 'export func two() -> u32 => 2\n'],
+      [main, 'import "./x/lib" "each" func each(comptime T: type, xs: []T) -> u32\nimport "./y/lib" "two" func two() -> u32\nexport func f(xs: []u8) -> u32 => each(xs) + two()\n'],
+    ].map(([path, src]) => [path, { module: parse(src).module!, source: src }]))
+    expect(typecheckProgram(modules, main).results.get(main)!.errors.map((e) => e.message))
+      .toEqual(["each(T = u8) cannot be instantiated: 't' is already declared in this scope (first declared at x/lib.ents:2:7) (x/lib.ents:4:9)"])
+  })
+
+  test('told in another module, the place names its file', () => {
+    const [lib, main] = [resolve('/p/lib.ents'), resolve('/p/main.ents')]
+    const modules = new Map([
+      [lib, 'export func each(comptime T: type, xs: []T) -> u32 {\n  let t: u32 = 0\n  for x in xs {\n    let t: u32 = 1\n  }\n  return t\n}\n'],
+      [main, 'import "./lib" "each" func each(comptime T: type, xs: []T) -> u32\nexport func f(xs: []u8) -> u32 => each(xs)\n'],
+    ].map(([path, src]) => [path, { module: parse(src).module!, source: src }]))
+    const program = typecheckProgram(modules, main)
+    expect(program.results.get(lib)!.errors.map((e) => e.message)).toEqual(["'t' is already declared in this scope (first declared at 2:7), in each(T = u8)"])
+    expect(program.results.get(main)!.errors.map((e) => e.message))
+      .toEqual(["each(T = u8) cannot be instantiated: 't' is already declared in this scope (first declared at lib.ents:2:7) (lib.ents:4:9)"])
+  })
+
+  test('without the module\'s text it is not said', () => {
+    expect(checkModule('func f(n: u32) -> u32 {\n  let n: u32 = 2\n  return n\n}').errors.map(e => e.message)).toEqual(["'n' is already declared in this scope"])
   })
 })
 

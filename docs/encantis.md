@@ -3717,7 +3717,7 @@ The compiler refuses two values these rules allow (known bugs): a value written 
 
 A `def` can stand wherever a constant can: in an expression, as the length in a type (`[n]u8`), the bound of a ranged integer (`u32#n`), the count of a repeat literal (`[0; n]`) or of a loop (`for i in n`), a comptime value argument ([8.7](#87-comptime-value-parameters)), a global's initializer and the values of `data`.
 
-A `def` is no variable: assigning it is an error (`cannot assign to 'k': it is not a variable`, [4.5](#45-assignment-and-compound-assignment)). A `let`, a loop variable and a match binding cannot take a def's name (`'k' is already declared in this scope`, `'k' is already declared: a loop variable cannot reuse the name of a def`). A parameter or a named result must not take one either. The compiler accepts both (known bugs): an assignment to one writes the variable, but every other read of the name gives the def's value, so a parameter's argument is never read ([3.4](#34-functions)).
+A `def` is no variable: assigning it is an error (`cannot assign to 'k': it is not a variable`, [4.5](#45-assignment-and-compound-assignment)). A `let`, a loop variable, a match binding, a parameter and a named result cannot take a def's name (`'k' is already declared in this scope`, `'k' is already declared: a loop variable cannot reuse the name of a def`, `'k' is already declared: a parameter cannot reuse the name of a def`, [3.4](#34-functions)).
 
 A `def` declared in a `test` block is that test's: it replaces the name inside that test only, and the rest of the module reads the name as if the test were not there.
 
@@ -3977,7 +3977,7 @@ test "a let without a value starts at zero and is never reset" {
 
 `counts` shows the rule; it is no way to write a loop. A value carried from one pass to the next is declared before the loop (`let seen: u32 = 0` above the `for`), where a reader sees that it lives across passes.
 
-A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The first branch of an `if let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in an `elif` or `else` branch of an `if let`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
+A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The first branch of an `if let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in an `elif` or `else` branch of an `if let`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The error ends with where the first declaration of the name is, as the line and column of the name there (the name a `let`, a parameter or a binding declares; the name after the keywords of a declaration of the module, the `k` of `def k`; an import's local name): `'t' is already declared in this scope (first declared at 3:9)`, also where that declaration is in a block that has ended, as in `pick` below. So do the errors of a loop variable, an `if let` binding and a match binding that take a name already seen ([5.2](#52-loops)), and of a parameter or a named result with a def's name ([3.4](#34-functions)). A third declaration of the name, and every later one, is told the place of the first, not of the one refused before it. In an instance of a generic the place is in the generic's source; told in another module, as the error of an instance of an imported generic is told at the call that asked for it ([8.8](#88-generics-across-modules)), it names its file, `(first declared at lib.ents:3:7)`, or, where another module of the program has a file of that name, its path from the directory of the file the program is built from, `(first declared at x/lib.ents:3:7)`. The variables of a loop, an `if let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
 
 <!-- spec:begin compile -->
 
@@ -4016,13 +4016,59 @@ func widest(xs: []u32, ys: []u32) -> u32 {
     let d = y * 3                // a second d of the function
     w = max(w, d)
   }
+  for z in xs {
+    let d = z * 4                // a third: the first is still the one said
+    w = max(w, d)
+  }
   return w
 }
 ```
 
 ```errors
-'t' is already declared in this scope
-'d' is already declared in this scope
+'t' is already declared in this scope (first declared at 3:9)
+'d' is already declared in this scope (first declared at 12:9)
+'d' is already declared in this scope (first declared at 12:9)
+```
+
+A declaration of the module's that a name clashes with is said where its name is written, an import's local name too, from the host or from another module, and a function a `test` declares as well:
+
+```ents
+import "env" (
+  "width" global width: i32
+  "log" func log(x: i32)
+)
+import "./lib" "total" global total: u32
+
+def limit = 8
+global count: u32 = 0
+
+func f() -> u32 {
+  let width = 1
+  let log = 2
+  let total = 3
+  let limit = 4
+  let count = 5
+  return 0
+}
+test "t" {
+  func helper() -> u32 => 1
+  let helper = 2
+}
+func g(comptime T: type, x: T) -> u32 {
+  let x = 1
+  return 0
+}
+func use() -> u32 => g(u32, 5)
+```
+
+```errors
+'width' is already declared in this scope (first declared at 2:18)
+'log' is already declared in this scope (first declared at 3:14)
+'total' is already declared in this scope (first declared at 5:31)
+'limit' is already declared in this scope (first declared at 7:5)
+'count' is already declared in this scope (first declared at 8:8)
+'helper' is already declared in this scope (first declared at 19:8)
+'x' is already declared in this scope (first declared at 22:26), in g(T = u32)
 ```
 
 <!-- spec:end -->
@@ -4189,7 +4235,44 @@ test "a value is copied, a pointer is shared" {
 
 <!-- spec:end -->
 
-A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. Neither a parameter nor a named result may have a def's name. The compiler accepts both (known bugs): an assignment to one (`limit = 3`, `limit += 1`) writes the variable, but every other read of the name gives the def's value. So beside `def limit = 10`, `func f() -> (limit: u32) { limit = 3  return limit * 2 }` returns 20, and `=> limit` returns 10.
+A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. Neither a parameter nor a named result may have a def's name: the name of a `def` of the module, or, for a function declared in a test, of a `def` the test declares before it. Each is an error at the name (`'k' is already declared: a parameter cannot reuse the name of a def`, `'limit' is already declared: a named result cannot reuse the name of a def`), in a generic function too, where it is reported once, with the declarations, whether or not anything calls it. So is a comptime function parameter ([8.6](#86-comptime-function-parameters)), which the body calls by its name: `comptime less: (u32, u32) -> bool` beside a `def less` is that error. (A comptime value parameter's is `comptime parameter 'n' has the name of a def declared in this module`, [8.7](#87-comptime-value-parameters).) The parameter names an import writes are no variables, and are not checked.
+
+<!-- spec:begin compile -->
+
+```ents
+def limit = 10
+def k = 3
+
+func f() -> (limit: u32) {
+  limit = 3
+  return limit * 2
+}
+func g(k: u32) -> u32 => k
+func h(comptime T: type, k: T) -> T => k
+
+test "a def in a test" {
+  def z = 4
+  func inner(z: u32) -> u32 => z
+  assert inner(9) == 9
+}
+
+def less = 1
+func lt(a: u32, b: u32) -> bool => a < b
+func pick(comptime less: (u32, u32) -> bool, a: u32, b: u32) -> u32 => if less(a, b) { a } else { b }
+func never(comptime less: (u32, u32) -> bool, a: u32) -> u32 => a
+func use() -> u32 => pick(lt, 1, 2)
+```
+
+```errors
+'limit' is already declared: a named result cannot reuse the name of a def (first declared at 1:5)
+'k' is already declared: a parameter cannot reuse the name of a def (first declared at 2:5)
+'k' is already declared: a parameter cannot reuse the name of a def (first declared at 2:5)
+'less' is already declared: a parameter cannot reuse the name of a def (first declared at 17:5)
+'less' is already declared: a parameter cannot reuse the name of a def (first declared at 17:5)
+'z' is already declared: a parameter cannot reuse the name of a def (first declared at 12:7)
+```
+
+<!-- spec:end -->
 
 **Returning.** An expression body is the function's result, so a function with no result has a block body, or an expression body that gives nothing (`=> ()`, or an `if` with an `else` whose branches end in a statement, `=> if c { n += 1 } else { n = 0 }`): `func f() => id(3)` is `cannot assign u32 to ()`. `func f() => bump()`, where `bump` has no result either, is refused too, and so are an `if` whose branch ends in such a call and an `if` without an `else`, `func f(c: bool) => if c { n += 1 }` (`cannot assign () to ()`, known bugs). A block body gives an unnamed result with `return value`, and every way out of the block must be one. The compiler decides this by the block's last statement, which must be:
 
@@ -5721,8 +5804,8 @@ func pick(i: u32) -> u32 {
 ```
 
 ```errors
-'p' is already declared: an if let binding cannot reuse the name of a parameter
-'v' is already declared: an if let binding cannot reuse the name of a variable in scope
+'p' is already declared: an if let binding cannot reuse the name of a parameter (first declared at 3:10)
+'v' is already declared: an if let binding cannot reuse the name of a variable in scope (first declared at 11:7)
 ```
 
 After the branch the name is free again: another `if let` can bind it, to a value of another type, and so can a `let`.
@@ -5837,7 +5920,106 @@ func value(x: i32) -> i32 => get(&x)
 
 <!-- spec:end -->
 
-Write `&` only before a literal, an element, or a value that lies in memory. Before a value that is already a pointer it is accepted and gives that pointer, not the address of a cell holding it (`&p`, with `p` a pointer variable, is `p`): a known bug, and the rule for it is undecided, so do not write it. A string is already its address, so `&` before one is not needed. `let p = &"abc"` is the string's own constant `*[3]u8` ([String Literals](#string-literals)), not a writable copy (write `mut "abc"` for that). Where a pointer is wanted, `&"abc"` is refused (`cannot assign *[3]u8 to [3]u8`, a known bug): write `"abc"`. A cast binds tighter than `&` ([Precedence](#precedence)): `&p[1] as [*]u8` takes the address of `p[1] as [*]u8`; write `(&p[1]) as [*]u8`.
+Write `&` only before a literal, an element, or a value that lies in memory. A pointer, a slice, a many-pointer or an optional one that has no place in memory is already an address and lies in no cell: `&` before one is an error (`'p' is already a pointer (*i32): drop the &`), whatever it is (a variable, a parameter, a global, a `data` name, a call's result, a method call's, a cast, a number written as one, `(4096:*u32)`, an `if` or a `??`), also in an instance of a generic whose type parameter is a pointer. One that lies in memory has an address as any value there has: `&n.next`, with `n` a `*Node` and `next` a `*Node` field, is the `**Node` where that field is, `&b.items` with `items` a `[]u8` field is a `*[]u8`, and `&ptrs[i]` with `ptrs` a `[*]*i32` is a `**i32`. That is the field's address, not the pointer the field holds, which is `n.next`: `(&n.next) as u32` is `n` plus the field's offset, and `&n.next == 0` is false whatever `next` holds. The address of a place is the same wherever it is given, also to a function whose name others share, to a generic function, and as a method's receiver, `(&b.pos).len2()`. A row of a packed array lies in memory, and the `*[M]T` it is read as is its address: `&m.tiles[0]` and, with `p` a `*[3x4]u8`, `&p[1]` are that `*[M]T`. An element of a `*[!]T` is given no address (`cannot take the address of an element of *[!]u8: make a slice of it first, (z.ptr, z.len), and take the address of the slice's element`): `let s: []u8 = (z.ptr, z.len)` and then `&s[i]`. A string is already its address, so `&` before one is not needed. `let p = &"abc"` is the string's own constant `*[3]u8` ([String Literals](#string-literals)), not a writable copy (write `mut "abc"` for that). Where a pointer is wanted, `&"abc"` is refused (`cannot assign *[3]u8 to [3]u8`, a known bug): write `"abc"`. A cast binds tighter than `&` ([Precedence](#precedence)): `&p[1] as [*]u8` is `&(p[1] as [*]u8)`, which a cast to a pointer makes an error, and `&p[1] as u32` is `&` before a number, which has no address. Where what is cast has an address (an element, or a value that lies in memory) and the cast is not in parentheses, the error that refuses the `&`, or the cast where it is refused itself, says what was meant: `'p[1] as [*]u8' is already a pointer ([*]u8): drop the & (a cast binds tighter than &: for the address of p[1], write (&p[1]) as [*]u8)`, `& requires a literal, a value in memory, or an element of an array, slice or many-pointer (a cast binds tighter than &: ...)`, and, for `&base[k] as u32` with `base` a `[*]Pt`, `cannot cast Pt to u32 (a cast binds tighter than &: for the address of base[k], write (&base[k]) as u32)`. Nothing more is said of that `&`: its value is taken to be the cast's. Write `(&p[1]) as [*]u8`. Of a cast of a variable held in registers (`&s.x as *u8` with `s` a `let` of a struct) only the `&` is refused, since `(&s.x) as *u8` has no address either.
+
+<!-- spec:begin compile -->
+
+```ents
+type Node = (val: i32, next: ?*Node)
+
+data first: Node = mut (1, 0)
+data second: Node = mut (2, 0)
+
+// Where n keeps its successor
+func link(n: *mut Node) -> *mut ?*Node => &n.next
+func row(p: *[3x4]u8) -> *[4]u8 => &p[1]          // the row's address
+func at(n: *Node) -> u32 => (&n.next) as u32      // the field's address, n + 4
+func last(n: *Node) -> bool => n.next == 0        // what the field holds
+
+test "a pointer that lies in memory has an address" {
+  let slot = link(first)
+  slot.* = second
+  assert (first.next ?? first).val == 2
+  assert (slot as u32) == (first as u32) + 4
+  assert at(first) == (first as u32) + 4 && at(first) != (second as u32)
+  assert !last(first) && last(second)
+  assert !(&second.next == 0)                     // an address is never none
+}
+```
+
+```ents
+type Pt = (x: i32, y: i32)
+type Body = (id: u32, pos: Pt, row: [4]u8, next: ?*Body)
+
+data b: Body = mut (7, (3, 4), [1, 1, 1, 1], 0)
+
+func pick(p: *i32) -> u32 => 1
+func pick(p: *u32) -> u32 => 2
+func pick(p: *?*Body) -> u32 => 3
+func id(comptime T: type, x: T) -> T => x
+func len2(p: *Pt) -> i32 => p.x * p.x + p.y * p.y
+
+test "an address is the same wherever it is given" {
+  assert pick(&b.pos.x) == 1 && pick(&b.id) == 2 && pick(&b.next) == 3
+  assert pick(&(b as *u32).*) == 2
+  assert (id(&b.row) as u32) == (b as u32) + 12
+  assert (id(&b.next) as u32) == (b as u32) + 16
+  assert (&b.pos).len2() == 25
+}
+```
+
+```ents
+type Pt = (x: i32, y: i32)
+
+data buf = [1:u8, 2, 3]
+global where: *i32 = 16 as *i32
+
+func get(p: *i32) -> i32 => p.*
+func id(p: *i32) -> *i32 => p
+func same(comptime T: type, x: T) -> T => &x
+func again(p: *i32) -> i32 => get(&p)
+func called(p: *i32) -> i32 => get(&id(p))
+func method(p: *i32) -> i32 => get(&p.id())
+func size(s: []u8) -> u32 => (&s).len
+func maybe(o: ?*i32) -> ?*i32 => &o
+func global_() -> i32 => get(&where)
+func data_() -> *[3]u8 => &buf
+func either(c: bool, p: *i32, q: *i32) -> i32 => get(&(if c { p } else { q }))
+func or(o: ?*i32, q: *i32) -> i32 => get(&(o ?? q))
+func number() -> u32 => (&(4096:*u32)) as u32
+func instance(p: *i32) -> *i32 => same(*i32, p)
+func at(base: [*]u32, k: u32) -> [*]Pt => &base[k] as [*]Pt
+func head(z: *[!]u8) -> ?*u8 => &z[0]
+func bytes(p: [*]u32) -> [*]u8 => &p[1] as [*]u8
+func refused(base: [*]Pt, k: u32) -> u32 => &base[k] as u32
+func word(p: [*]u32) -> u32 => &p[1] as u32
+func held(a: i32) -> u32 {
+  let s: Pt = (a, 2)
+  return (&s.x as *u8) as u32
+}
+```
+
+```errors
+'p' is already a pointer (*i32): drop the &
+'id(p)' is already a pointer (*i32): drop the &
+'p.id()' is already a pointer (*i32): drop the &
+'s' is already a pointer ([]u8): drop the &
+'o' is already a pointer (?*i32): drop the &
+'where' is already a pointer (*i32): drop the &
+'buf' is already a pointer (*[3]u8): drop the &
+'(if c { p } else { q })' is already a pointer (*i32): drop the &
+'(o ?? q)' is already a pointer (*i32): drop the &
+'(4096:*u32)' is already a pointer (*u32): drop the &
+'base[k] as [*]Pt' is already a pointer ([*]Pt): drop the & (a cast binds tighter than &: for the address of base[k], write (&base[k]) as [*]Pt)
+cannot take the address of an element of *[!]u8: make a slice of it first, (z.ptr, z.len), and take the address of the slice's element
+'p[1] as [*]u8' is already a pointer ([*]u8): drop the & (a cast binds tighter than &: for the address of p[1], write (&p[1]) as [*]u8)
+cannot cast Pt to u32 (a cast binds tighter than &: for the address of base[k], write (&base[k]) as u32)
+& requires a literal, a value in memory, or an element of an array, slice or many-pointer (a cast binds tighter than &: for the address of p[1], write (&p[1]) as u32)
+'s.x as *u8' is already a pointer (*u8): drop the &
+'x' is already a pointer (*i32): drop the &, in same(T = *i32)
+```
+
+<!-- spec:end -->
 
 ### 4.8 Slice/Range Syntax
 
@@ -6521,13 +6703,13 @@ func res() -> (t: u32) {
 ```
 
 ```errors
-'n' is already declared: a loop variable cannot reuse the name of a parameter
-'c' is already declared: a loop variable cannot reuse the name of a variable in scope
-'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope
-'total' is already declared: a loop variable cannot reuse the name of a global
-'bytes' is already declared: a loop variable cannot reuse the name of a data block
-'v' is already declared: a loop variable cannot reuse the name of an if let binding in scope
-'t' is already declared: a loop variable cannot reuse the name of a named result
+'n' is already declared: a loop variable cannot reuse the name of a parameter (first declared at 1:12)
+'c' is already declared: a loop variable cannot reuse the name of a variable in scope (first declared at 10:7)
+'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope (first declared at 18:7)
+'total' is already declared: a loop variable cannot reuse the name of a global (first declared at 26:8)
+'bytes' is already declared: a loop variable cannot reuse the name of a data block (first declared at 27:6)
+'v' is already declared: a loop variable cannot reuse the name of an if let binding in scope (first declared at 42:10)
+'t' is already declared: a loop variable cannot reuse the name of a named result (first declared at 50:16)
 ```
 
 After the loop its names are free again. A later loop can use them, for elements of another type, and a `let` after the loop declares a variable of its own. A function of the module has no value: a loop variable of its name hides it in the body.
@@ -6905,7 +7087,7 @@ func d(p: *u32) -> u32 => match p {
 ```errors
 cannot match u8 against int(300)
 cannot match []u8 against a string
-'size' is already declared: a match binding cannot reuse the name of a def
+'size' is already declared: a match binding cannot reuse the name of a def (first declared at 1:5)
 cannot match *u32 against int(0)
 ```
 
@@ -7042,7 +7224,7 @@ func next(n: u32, k: u32) -> u32 => match k {
 ```
 
 ```errors
-'n' is already declared: a match binding cannot reuse the name of a parameter
+'n' is already declared: a match binding cannot reuse the name of a parameter (first declared at 1:11)
 ```
 
 <!-- spec:end -->
@@ -7592,7 +7774,7 @@ A memory declaration, `memory`, then optionally a minimum and a maximum in pages
 - The maximum is how far the memory may grow. Without one, none is written in the module, and the engine's own limit applies.
 - A program that uses memory and declares none gets that memory with the minimum the data needs, no maximum, and no export. The declaration is needed only to choose the sizes or to export the memory.
 - The numbers are integer literals, in any base: `memory 0x10` is 16 pages (a dozenal `0d10` is read wrong, a known bug). A name, even a `def`'s, an expression, or a number with a type (`memory pages`, `memory 1 + 1`, `memory 2:u32`) is a syntax error. They must satisfy `min <= max <= 65536` (65536 pages are 4 GiB), and the minimum is at least what the data needs. The compiler does not check these (a known bug): a module that breaks one fails when it is assembled, or when it is instantiated (`segment is too big` for a minimum too small for its data). Leave the minimum out unless the program needs more than its data.
-- A program has one memory declaration at most, in any one of its modules. Where it is, its sizes and its export are the program's memory's, also in a module that another imports. Two are meant to be an error; the checker accepts them and the compiler then stops with an internal error (a known bug).
+- A program has one memory declaration at most, in any one of its modules. Where it is, its sizes and its export are the program's memory's, also in a module that another imports. A second one is an error where it is written, and the error says where the first is: `memory is already declared: a program has one memory declaration at most (first declared at 1:1)` in the same module, `(first declared at lib.ents:1:1)` in another, named by its path from the directory of the file the program is built from, `(first declared at x/lib.ents:1:1)`, where another module of the program has a file of that name. Of two modules, the one checked later has the error: a module is checked after the modules it imports, and those in the order its imports are written, so with `main.ents` importing `lib.ents` it is `main.ents`'s, and with `main.ents` importing `a.ents` and then `b.ents`, it is `b.ents`'s. A module that only a `test` block imports is part of the program only where the tests are built ([12.4](#124-declarations-in-a-test)): `encantis check` and `encantis test` report a memory declared there as well, and `encantis wasm` does not.
 
 The host sees the memory only when it is exported. Exporting it is what lets a host read a string a function returns or write an array it passes in, and WASI needs it under the name `memory` ([Starting and running](#starting-and-running)).
 
@@ -7614,6 +7796,17 @@ test "the data ends at sizeof data" {
   assert fill(7) == 7
   assert sizeof data == 100008
 }
+```
+
+```ents
+memory 1
+export memory 2 16
+
+export func one() -> u32 => 1
+```
+
+```errors
+memory is already declared: a program has one memory declaration at most (first declared at 1:1)
 ```
 
 <!-- spec:end -->
@@ -7659,7 +7852,7 @@ Rules:
 2. `comptime` is only written in the parameter list of a named function declared with `func` at module level, and in the signature a source import writes for such a function ([7.1](#71-imports)). Every parameter of such a function has a name.
 3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host (`generic function 'larger' must be called`). It can only be called. Its name is unique in its module.
 4. A type parameter's name is its own: it is not the name of a type the module declares, before or after the function, and no two parameters of the function share a name.
-5. A generic function's parameter list is checked where it is declared, whether or not anything calls it: the rules above, what a comptime parameter may be (a type, an integer type or a function type, [8.9](#89-not-implemented)), the case of each comptime parameter's name ([8.6](#86-comptime-function-parameters), [8.7](#87-comptime-value-parameters)), and that a comptime parameter does not have a def's name. Everything else is checked when the function is instantiated, with its comptime arguments filled in, and not before: its body, and the types its signature names. One that is never called is checked for its parameter list only, and nothing is emitted for it; any other mistake in it, such as an unknown type in its signature (`x: Nope`) or an unknown name in its body, is reported once something calls it, in that instance ([8.3](#83-requirements)).
+5. A generic function's parameter list is checked where it is declared, whether or not anything calls it: the rules above, what a comptime parameter may be (a type, an integer type or a function type, [8.9](#89-not-implemented)), the case of each comptime parameter's name ([8.6](#86-comptime-function-parameters), [8.7](#87-comptime-value-parameters)), and that no parameter or named result has a def's name ([3.4](#34-functions)). Everything else is checked when the function is instantiated, with its comptime arguments filled in, and not before: its body, and the types its signature names. One that is never called is checked for its parameter list only, and nothing is emitted for it; any other mistake in it, such as an unknown type in its signature (`x: Nope`) or an unknown name in its body, is reported once something calls it, in that instance ([8.3](#83-requirements)).
 
 `comptime` is a reserved word.
 
@@ -8776,6 +8969,8 @@ lib/set.ents:67:11: no function 'hash' accepts (Cell), in add(K = Cell)
   required from cells.ents:13:15
 cells.ents:13:15: add(K = Cell) cannot be instantiated: no function 'hash' accepts (Cell) (set.ents:67:11)
 ```
+
+The place in parentheses names the generic's file by its name, or, where another module of the program has a file of that name, by its path from the directory of the file the program is built from (`(x/set.ents:67:11)`).
 
 Such an error is found when the program is checked: also in a library that was checked on its own and found sound, since what an instance needs depends on its arguments. It stops the build like any other. A file checked without the files it imports (the editor's web worker, a reference example) knows an imported generic only by the signature its import writes, and checks calls against that ([7.1](#71-imports)); what an instance's body needs is found when the program is checked.
 
