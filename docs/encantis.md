@@ -4210,22 +4210,40 @@ test "a def is its value at each use" {
 
 <!-- spec:end -->
 
-A typed `def` laid out in memory is its value in its type, then widened: `def tenth: f32 = 0.1` in an `f64` of `data` is the `f32` nearest 0.1, widened, as it is in code, not the `f64` nearest 0.1. So is `-tenth`, and so is a literal typed `f32` (`0.1:f32`).
+A typed `def` laid out in memory is its value in its type, then widened: `def tenth: f32 = 0.1` in an `f64` of `data` is the `f32` nearest 0.1, widened, as it is in code, not the `f64` nearest 0.1. So is `-tenth`, so is a literal typed `f32` (`0.1:f32`, `(0.1:f32):f64`), so is an `f64` def whose value is one (`def wide: f64 = tenth`), and so is data that is the one number (`data one: f64 = tenth`). Each `data` of a number is a block of its own type, also where two of them are one def's value. An `f32` constant is the `f32` nearest the number, ties to even, in code and in data alike. The integer 0 written as a float (`def z: f32 = 0`) negated is the float -0, as `-t` is for a variable `t` that holds 0, and two integers divided where the quotient is a float are divided as floats: `1:f32 / 0` is infinity.
 
 <!-- spec:begin compile -->
 
 ```ents
 def tenth: f32 = 0.1
+def wide: f64 = tenth
+def k = 2.5:f32
+def z: f32 = 0
+def inf: f32 = 1:f32 / 0
 
-data wide: *[3]f64 = [tenth, -tenth, 0.1:f32]
+data wides: *[4]f64 = [tenth, -tenth, 0.1:f32, wide]
+data one: f64 = tenth
+data small: f32 = k
+data large: f64 = k
+data zeros: *[1]f32 = [-z]
+data tie: *[1]f32 = [1.000000059604644775390625]   // halfway between 1 and the next f32
 
 func widened() -> f64 => tenth
+func tied() -> f32 => 1.000000059604644775390625
 
 test "an f32 def widens from its own type, in data as in code" {
-  assert wide[0] == widened()
-  assert wide[1] == -widened()
-  assert wide[2] == widened()
-  assert wide[0] != 0.1
+  assert wides[0] == widened()
+  assert wides[1] == -widened()
+  assert wides[2] == widened()
+  assert wides[3] == widened()
+  assert one.* == widened()
+  assert wides[0] != 0.1
+  assert small.* == 2.5
+  assert large.* == 2.5
+  assert (zeros as *[1]u32)[0] == 0x80000000
+  assert inf > 1000000.0
+  assert tie[0] == tied()
+  assert tied() == 1.0
 }
 ```
 
@@ -4310,7 +4328,7 @@ test "data is a pointer to its bytes" {
 **A type written for data** means one of two things, by the value:
 
 - For an array, repeat or string literal, it is the type of the name: a pointer or a slice to the elements. `data cells: *[3]i32 = [1, 2, 3]` is a `*[3]i32`, `data view: []u8 = "hello"` a slice, whose type does not hold the length, and `data name: *[!]u8 = "hi"` a framed pointer ([2.5](#25-pointer-types)). A value array, `data c: [3]i32 = [...]`, is not such a type: the compiler accepts it, and the module does not assemble (a known bug).
-- For a number, a tuple or a struct, it is the type of the value laid out, and the name points to it. `data stats: Tally = mut (0, 0)` is a `*mut Tally`, `data limit: u32 = 100` a `*u32`. So write the value's type here, not a pointer: `data p: *mut Tally = mut (0, 0)` would be a `*mut *mut Tally`, a cell that holds a pointer, and the compiler leaves that cell 0 and lays out no `Tally` (a known bug).
+- For a number, a tuple or a struct, it is the type of the value laid out, and the name points to it. `data stats: Tally = mut (0, 0)` is a `*mut Tally`, `data limit: u32 = 100` a `*u32`. The value is checked against that type as any value is ([2.10](#210-type-conversions)): `data d: u32 = 1.5` and `data b: u8 = 300:u32` are errors, as they are as elements of an array. So write the value's type here, not a pointer: `data p: *mut Tally = mut (0, 0)` would be a `*mut *mut Tally`, a cell that holds a pointer, and the compiler leaves that cell 0 and lays out no `Tally` (a known bug).
 
 <!-- spec:begin compile -->
 
@@ -4336,6 +4354,24 @@ test "the type is the value's, or the pointer to an array's elements" {
   assert primes[3] == 7
   assert name.len == 8
 }
+```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+def wide: f64 = 0.1
+
+data d: u32 = 1.5
+data b: u8 = 300:u32
+data c: f32 = wide
+```
+
+```errors
+cannot assign float(1.5) to u32
+cannot assign u32 to u8
+cannot assign f64 to f32
 ```
 
 <!-- spec:end -->

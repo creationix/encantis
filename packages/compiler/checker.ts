@@ -1386,11 +1386,17 @@ class CheckContext {
   private literalLeaves(expr: AST.Expr, leaves: AST.Expr[] = []): AST.Expr[] {
     let e = ungrouped(expr)
     const annotated = e
-    while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+    let f32 = false
+    while (e.kind === 'AnnotationExpr') {
+      f32 ||= isF32(this.exprTypes.get(e))
+      e = ungrouped(e.expr)
+    }
     // A number written as an f32 (0.1:f32, a typed def's value where its
     // name is written) is that f32, which an f64 element widens: it is worked
-    // out as a computed value is, not laid out as the number written.
-    if (annotated !== e && e.kind === 'LiteralExpr' && (e.value.kind === 'float' || e.value.kind === 'int') && isF32(this.exprTypes.get(annotated))) {
+    // out as a computed value is, not laid out as the number written. So is
+    // one an f32 on the way to it: (0.1:f32):f64, and a `def wide: f64 = k`
+    // for a `def k: f32 = 0.1`, whose value is k's in f32, then widened.
+    if (annotated !== e && e.kind === 'LiteralExpr' && (e.value.kind === 'float' || e.value.kind === 'int') && f32) {
       leaves.push(annotated)
       return leaves
     }
@@ -2440,24 +2446,25 @@ class CheckContext {
     }
 
     // Regular comptime value (int, float, bool)
-    const type = declaredType ?? inferredType
     const value = this.evalComptimeExpr(decl.value)
-    const sym = value
-      ? { kind: 'def' as const, type, value }
-      : { kind: 'def' as const, type, value: { kind: 'int' as const, value: 0n } }
     // A refused value (a type's name, a refused operator) has its error
     // already, and each use of the def is a refused value too.
     const refused = !value && ((inferredType === RECOVERY && !this.readsRunTime(decl.value)) || this.refusedValue(decl.value))
-    if (refused) this.refusedDefs.set(decl.span.start, decl.ident.length)
+    // A variant is no scalar: a def is one number or bool (3.1). That is its
+    // one error, and each use of it is a refused value as well.
+    const variant = !value && !refused && unwrap(inferredType).kind === 'enum' ? exprText(decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value) : null
+    if (refused || variant !== null) this.refusedDefs.set(decl.span.start, decl.ident.length)
     if (!value && !refused) {
-      // A variant is no scalar: a def is one number or bool (3.1).
-      const variant = unwrap(inferredType).kind === 'enum' ? exprText(decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value) : null
-      // That is its one error: each use of it is a refused value.
-      if (variant !== null) this.refusedDefs.set(decl.span.start, decl.ident.length)
       this.error(decl.span.start, variant !== null
         ? `def value must be a number or a bool: ${variant} is a value of the enum ${typeToString(inferredType)}; use a global`
         : `def value must be a compile-time constant`)
     }
+    // A refused def has no type of its own to show, whatever is written
+    // (`def dv: u32 = Red` hovers as `def dv`), as its uses have none.
+    const type = refused || variant !== null ? RECOVERY : declaredType ?? inferredType
+    const sym = value
+      ? { kind: 'def' as const, type, value }
+      : { kind: 'def' as const, type, value: { kind: 'int' as const, value: 0n } }
     this.moduleScope.symbols.set(defKey, sym)
     this.currentScope.symbols.set(decl.ident, sym)
     const defIdentOff = this.findIdentOffset(decl.span.start, 'def')
@@ -2482,21 +2489,6 @@ class CheckContext {
     // (x) is x: the literal laid out is the one inside the parentheses.
     const value = ungrouped(decl.value)
 
-    // A declared type that did not resolve (an unknown type, a length that
-    // is a refused value) has its error: the data is declared all the same,
-    // of that type, so its uses say nothing more. Its values are constants
-    // or not whatever the type is.
-    if (declaredType && unresolved(declaredType)) {
-      this.requireConstants(decl.ident, value)
-      const sym = { kind: 'def' as const, type: declaredType, value: { kind: 'data_ptr' as const, id: value.span.start } }
-      this.moduleScope.symbols.set(dataKey, sym)
-      this.currentScope.symbols.set(decl.ident, sym)
-      const at = this.findIdentOffset(decl.span.start, 'data')
-      if (at !== null) this.types.set(typeKey(at, 'IdentPattern'), declaredType)
-      this.recordDeclared(decl.ident, decl.span.start, sym)
-      return
-    }
-
     // A (ptr, len) pair is a slice already: there is no literal to lay out,
     // and so nothing for the name to point at. Single quotes are codepoints,
     // which no slice is, whatever their number.
@@ -2509,6 +2501,25 @@ class CheckContext {
     }
     if (literal.kind === 'TupleExpr' && literal.elements.length === 2 && literalType && unwrap(literalType).kind === 'slice') {
       this.error(decl.span.start, `data value must be a literal to lay out: a (ptr, len) pair is a slice already`)
+      return
+    }
+
+    // A declared type that did not resolve (an unknown type, a length that
+    // is a refused value) has its error: the data is declared all the same,
+    // of that type, so its uses say nothing more. What is wrong whatever the
+    // type is is still said: a (ptr, len) pair for a slice (above), a count
+    // of elements that is not the array's, a literal with no `mut` for a
+    // *mut or []mut; and its values are constants or not whatever it is.
+    if (declaredType && unresolved(declaredType)) {
+      const reported = this.errors.length
+      this.checkExpr(value, declaredType)
+      if (this.errors.length === reported) this.requireConstants(decl.ident, value)
+      const sym = { kind: 'def' as const, type: declaredType, value: { kind: 'data_ptr' as const, id: value.span.start } }
+      this.moduleScope.symbols.set(dataKey, sym)
+      this.currentScope.symbols.set(decl.ident, sym)
+      const at = this.findIdentOffset(decl.span.start, 'data')
+      if (at !== null) this.types.set(typeKey(at, 'IdentPattern'), declaredType)
+      this.recordDeclared(decl.ident, decl.span.start, sym)
       return
     }
 
@@ -2560,17 +2571,25 @@ class CheckContext {
     // For non-array data (scalars, tuples), still serialize to data section
     const type = declaredType ?? this.concretize(inferredType)
     const expr = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
-    const dataId = expr.span.start
     if (expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr') {
-      if (expr.kind === 'LiteralExpr') {
-        (expr as AST.LiteralExpr).dataId = dataId
+      // A number written with its type (0.1:f32, or a def's value put in
+      // where its name is written) is laid out as that value: the f32
+      // nearest it, widened in an f64. It is the block of this data: one
+      // def's value used for two is two blocks, each of its own type.
+      const laidOut = value.kind === 'AnnotationExpr' && expr.kind === 'LiteralExpr' ? value : expr
+      const dataId = laidOut.span.start
+      if (laidOut.kind === 'LiteralExpr') {
+        (laidOut as AST.LiteralExpr).dataId = dataId
       }
-      // A tuple laid out as a struct gives it its fields as it would
-      // anywhere: each meets its field's type, by name where it has names.
-      if (expr.kind === 'TupleExpr' && declaredType && unwrap(declaredType).kind === 'tuple') this.checkExpr(expr, declaredType)
-      const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
-      this.addLiteral(dataId, expr, arrType)
-      this.requireConstants(decl.ident, expr)
+      // The value is checked against the type written, as any value is
+      // (2.10): a number laid out by itself as one in an array is.
+      const reported = this.errors.length
+      if (declaredType && !(expr.kind === 'TupleExpr' && unwrap(declaredType).kind !== 'tuple')) this.checkExpr(value, declaredType)
+      if (this.errors.length === reported) {
+        const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
+        this.addLiteral(dataId, laidOut, arrType)
+        this.requireConstants(decl.ident, laidOut)
+      }
       const sym = {
         kind: 'def' as const,
         type: pointer(type, false, isMut),
@@ -2583,8 +2602,18 @@ class CheckContext {
       return
     }
 
-    // A literal whose type has the error says nothing more.
-    if (!unresolved(inferredType)) this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
+    // A literal whose type has the error says nothing more, and a refused
+    // value (`data dk = -true`) neither: the data is declared all the same,
+    // refused, so its uses say nothing more either.
+    if (!unresolved(inferredType)) {
+      this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
+      return
+    }
+    const sym = { kind: 'def' as const, type: RECOVERY, value: { kind: 'data_ptr' as const, id: value.span.start } }
+    this.moduleScope.symbols.set(dataKey, sym)
+    this.currentScope.symbols.set(decl.ident, sym)
+    if (dataIdentOff !== null) this.types.set(typeKey(dataIdentOff, 'IdentPattern'), RECOVERY)
+    this.recordDeclared(decl.ident, decl.span.start, sym)
   }
 
   // `data` is laid out when the program is compiled, and no code of the
@@ -3062,6 +3091,11 @@ class CheckContext {
     // Handle unary negation
     if (expr.kind === 'UnaryExpr' && expr.op === '-') {
       const operand = this.evalComptimeExpr(expr.operand, typed)
+      // A float that holds an integer is negated as a float: -(0:f32) is -0
+      const negated = this.exprTypes.get(expr)
+      if (operand?.kind === 'int' && operand.value === 0n && negated && negated.kind !== 'comptime_int' && isFloat(unwrap(negated))) {
+        return { kind: 'float', value: -0 }
+      }
       if (operand?.kind === 'int') {
         return { kind: 'int', value: -operand.value }
       }
@@ -3086,7 +3120,12 @@ class CheckContext {
     if (expr.kind === 'BinaryExpr') {
       const left = this.evalComptimeExpr(expr.left, typed)
       const right = this.evalComptimeExpr(expr.right, typed)
-      if (left?.kind === 'int' && right?.kind === 'int') {
+      // Two integers divided as floats, where the quotient is a float
+      // (1:f32 / 0, 7 / 2 as an f64): infinity or NaN by zero, as when it
+      // runs (3.1).
+      const quotient = this.exprTypes.get(expr)
+      const floatQuotient = expr.op === '/' && quotient !== undefined && quotient.kind !== 'comptime_float' && isFloat(unwrap(quotient))
+      if (left?.kind === 'int' && right?.kind === 'int' && !floatQuotient) {
         const l = left.value
         const r = right.value
         // A sum or a product comes out the same whether its operands have
@@ -3125,7 +3164,7 @@ class CheckContext {
       const number = (v: ComptimeValue | null) => (v?.kind === 'int' || v?.kind === 'float' ? Number(v.value) : null)
       const l = number(left)
       const r = number(right)
-      if (l !== null && r !== null && (left?.kind === 'float' || right?.kind === 'float')) {
+      if (l !== null && r !== null && (left?.kind === 'float' || right?.kind === 'float' || floatQuotient)) {
         switch (expr.op) {
           case '+': return { kind: 'float', value: l + r }
           case '-': return { kind: 'float', value: l - r }
@@ -3250,13 +3289,35 @@ class CheckContext {
     return kind === 'type' || kind === 'typefunc' || (!kind && PRIMITIVE_NAMES.has(e.name))
   }
 
-  // Whether an expression reads a value known only when the program runs: a
-  // global, a parameter or a variable, whether or not its type resolved.
+  // Whether an expression is no constant whatever its type: it reads a value
+  // known only when the program runs (a global, a parameter or a variable,
+  // whether or not its type resolved), or holds an if or a match, which are
+  // never constants (3.1). The .len or .wid of one that is no slice reads
+  // nothing of it: an array's length is known when it is compiled (`p.len`
+  // for p: *[N]T, 1.5), and where the array's type did not resolve, that
+  // length is refused with it.
   private readsRunTime(expr: AST.Expr): boolean {
-    return unknownNames(expr).some((name) => {
+    if (holdsNode(expr, (node) => node.kind === 'IfExpr' || node.kind === 'MatchExpr')) return true
+    const lengthOnly = (node: { kind?: string }) => {
+      if (node.kind !== 'MemberExpr') return false
+      const member = (node as AST.MemberExpr)
+      if (member.member.kind !== 'field' || (member.member.name !== 'len' && member.member.name !== 'wid')) return false
+      const object = this.exprTypes.get(member.object)
+      return !object || unwrap(object).kind !== 'slice'
+    }
+    return unknownNames(expr, [], lengthOnly).some((name) => {
       const kind = this.lookup(name.name)?.kind
       return kind === 'global' || kind === 'local' || kind === 'param'
     })
+  }
+
+  // Whether an expression names a variant of an enum left out (declared
+  // second under a name another declaration has) that names nothing else:
+  // a refused value, the clash its one error (2.9), also where a constant is
+  // wanted (an array length, a comptime argument).
+  private namesLeftOut(expr: AST.Expr | AST.Type): boolean {
+    const names = expr.kind === 'TypeRef' ? [expr.name] : unknownNames(expr).map((n) => n.name)
+    return names.some((name) => this.leftOutVariants.has(name) && !this.lookup(name))
   }
 
   // Whether an expression is the value of a refused def, put in by the
@@ -4774,7 +4835,9 @@ class CheckContext {
     // A name nothing declares is the error of any expression, said once: a
     // signature is resolved where it is collected and again where its
     // function is checked.
-    // A name the module declares further down is no unknown one.
+    // A name the module declares further down is no unknown one. A variant
+    // of an enum left out is a refused value.
+    if (this.namesLeftOut(expr)) return null
     const unknown = unknownNames(expr).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name) && !this.valueNames.has(name.name))
     if (unknown) {
       if (!this.unknownInTypes.has(unknown.span.start)) this.error(unknown.span.start, this.unknownIdentifier(unknown.name, true))
@@ -7536,11 +7599,6 @@ class CheckContext {
   private castProblemOf(operand: AST.Expr, from: ResolvedType, to: ResolvedType): string | null {
     // A refused value, or a type that did not resolve, has its error.
     if (from === RECOVERY || to === RECOVERY) return null
-    // A pointer, a slice or an array of a type that did not resolve is one
-    // all the same: what is wrong whatever it holds is said (a pointer is no
-    // struct, a slice no number), and what depends on what it holds is not.
-    const holding = (t: ResolvedType) => ['pointer', 'slice', 'array'].includes(unwrap(t).kind)
-    if ((unresolved(from) || unresolved(to)) && holding(from) && holding(to)) return null
     // A host reference is no number and no address: nothing converts to or
     // from one, and one host type is not another. 0 is an optional one's
     // none, and a plain one widens to its optional.
@@ -7564,7 +7622,15 @@ class CheckContext {
     if (named && unwrap(to).kind !== 'func') {
       return `cannot cast ${typeToString(from)} to ${typeToString(to)}: '${named}' is a function, which has no run-time value yet`
     }
-    const problem = castProblem(from, to)
+    // A pointer, a slice or an array of a type that did not resolve is one
+    // all the same: what is wrong whatever it holds is said (a pointer is no
+    // struct, a slice no number, a slice is not cast to a pointer), and what
+    // depends on what it holds is not. Its refused parts are taken to be what
+    // the other side has there (fillRefused).
+    const filled = fillRefused(from, to)
+    const found = castProblem(filled, fillRefused(to, filled))
+    // Said of the types as they are
+    const problem = found && (castProblem(from, to) ?? found)
     const none = problem && !problem.includes(': ') ? unresolvedOptional(from, to) : null
     return none ? `${problem}: ${none}` : problem
   }
@@ -7589,6 +7655,8 @@ class CheckContext {
     // Its error is already reported: what it is used for says nothing more.
     // Nor does what is assigned to something of a type that did not resolve.
     if (actual === RECOVERY || unresolved(expected)) return
+    // A value that holds a refused part fits where the rest of it does.
+    const fitting = fillRefused(actual, expected)
     const from = unwrap(actual)
     const to = unwrap(expected)
     // An array literal's own type is a guess from its elements ([0.5, x] an
@@ -7603,7 +7671,7 @@ class CheckContext {
       this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}: ${noneIsWritten(to)}`)
       return
     }
-    if (!elementwise && !typeAssignable(expected, actual)) {
+    if (!elementwise && !typeAssignable(expected, fitting)) {
       // 0 is none of a plain host reference, which is never null.
       const why = to.kind === 'host' && !to.optional && from.kind === 'comptime_int' && from.value === 0n ? `: ${neverNull(to)}`
         : unresolvedOptional(actual, expected) ? `: ${unresolvedOptional(actual, expected)}`
@@ -7669,7 +7737,7 @@ class CheckContext {
           if (!done || !typeEquals(done, elementType)) this.coerce(element, type, elementType, prefix)
         }
       }
-    } else if (!sameRepresentation(from, to)) {
+    } else if (!sameRepresentation(unwrap(fitting), to)) {
       // Any other struct or tuple value is several wasm values already on
       // the stack: its fields can't be widened in place.
       this.error(expr.span.start, `${prefix}cannot convert ${typeToString(actual)} to ${typeToString(expected)} implicitly: convert its fields`)
@@ -8405,8 +8473,10 @@ class CheckContext {
       : valueType.kind === 'array' ? valueType.element
       : null
     // (Its type says it where it is an array of elements: looking at it as
-    // an element would leave its type taken for one.)
-    const elements = !!srcElem && typeEquals(unwrap(srcElem), unwrap(elem))
+    // an element would leave its type taken for one.) Elements whose type
+    // did not resolve are taken for the range's: a copy of them is checked
+    // as a copy (its lengths), and says nothing of what they are.
+    const elements = !!srcElem && (unresolved(srcElem) || typeEquals(unwrap(srcElem), unwrap(elem)))
     if (!srcElem || (elements ? typeAssignable(cell, valueType) : this.fits(value, cell))) {
       // A value that is no array is said to be no element.
       fill()
@@ -8642,8 +8712,11 @@ class CheckContext {
     let indexed = this.inferExpr(expr.object)
     this.insideIfLetCondition = resolvable
     const index = this.inferIndexValue(expr.index)
-    // An index whose type has the error says nothing more.
-    if (unresolved(indexed) || unresolved(index)) return RECOVERY
+    // An index whose type has the error says nothing more, nor does one of
+    // a value whose kind did not resolve. An array, or a pointer to one, of
+    // elements whose type did not resolve is checked as an array: its length
+    // and how it is held are known.
+    if (unresolvedKind(indexed) || unresolved(index)) return RECOVERY
     // A fixed array that lies in memory is indexed at run time through its
     // address, as the *[N]T it is there. A constant index picks the element
     // where it is, as in an array held in registers.
@@ -8920,7 +8993,7 @@ class CheckContext {
       this.error(at.span.start, `elements have different types: ${typeToString(odd)} and ${typeToString(type)} (cast one explicitly)`)
       return type
     }
-    for (const [i, element] of elements.entries()) if (!holdsRefused(types[i])) this.coerce(element, types[i], type)
+    for (const [i, element] of elements.entries()) if (!unresolved(types[i])) this.coerce(element, types[i], type)
     return type
   }
 
@@ -8941,7 +9014,7 @@ class CheckContext {
     // that does fits wherever it is used, and says nothing of the others.
     const own = settled.filter((t) => !holdsRefused(t))
     if (odd) return this.unifyTypes(own.length > 0 ? own : settled)
-    for (const [i, element] of elements.entries()) if (!holdsRefused(types[i])) this.coerce(element, types[i], type)
+    for (const [i, element] of elements.entries()) if (!unresolved(types[i])) this.coerce(element, types[i], type)
     return type
   }
 
@@ -9020,8 +9093,9 @@ class CheckContext {
     for (const b of valued) {
       const value = bodyValue(b.body)
       if (!value) continue
-      // A refused value fits wherever it is used.
-      if (holdsRefused(b.type)) continue
+      // A refused value fits wherever it is used (coerce takes its refused
+      // parts to be what the type has there).
+      if (unresolved(b.type)) continue
       // An array literal next to a pointer or a slice is laid out as one, as
       // it is wherever it meets that type: `if c { xs } else { [] }`.
       if (laidOutLiteral(value, b.type, type)) this.checkExpr(value, type)
@@ -9034,26 +9108,41 @@ class CheckContext {
   // widest of them. `odd` is one that doesn't widen to it, when they have no
   // such type.
   private commonType(all: ResolvedType[]): { type: ResolvedType; odd?: ResolvedType } {
-    // A refused value, or a tuple or array literal holding one, fits
-    // wherever it is used: the others say what the type is, and it is never
-    // the odd one. Constants alone say nothing of it (they have no type of
-    // their own), so with them the whole is a refused value too.
-    const types = all.filter((t) => !holdsRefused(t))
+    // A refused value fits wherever it is used: the others say what the
+    // type is, and it is never the odd one. Constants alone say nothing of
+    // it (they have no type of their own): with them the whole is refused,
+    // or a tuple or array of refused parts where they are one (refusedShape).
+    // A tuple or array literal that holds one meets the others where its
+    // other parts are: its arity, its names, and the type of each other part.
+    const types = all.filter((t) => !unresolved(t))
     if (types.length === 0) return { type: all[0] }
-    if (types.length < all.length && types.every(onlyConstants)) return { type: RECOVERY }
+    if (types.length < all.length && types.every(onlyConstants)) {
+      const shape = refusedShape(types)
+      if (shape) return { type: shape }
+    }
+    const fits = (to: ResolvedType, t: ResolvedType) => typeAssignable(to, fillRefused(t, to))
     // Tuples with constants in them agree field by field, as their fields
     // would as values by themselves: (1, 0) and (0, n) are an (i32, i32).
     // A field that is a constant in each takes the default that holds them.
+    // So do tuples that hold a refused value: (-true, 1) and (a, 2) are
+    // whatever a is, and an i32.
     const tuples = types.filter((t): t is TupleRT => t.kind === 'tuple')
     const [first] = tuples
     const alike = tuples.length === types.length && tuples.every(t =>
       t.fields.length === first.fields.length && t.fields.every((f, i) => f.name === first.fields[i].name))
-    if (alike && tuples.some(holdsConstant)) {
+    if (alike && tuples.some((t) => holdsConstant(t) || holdsRefused(t))) {
       const tupleType = tuple(first.fields.map((f, i) => {
         const of = tuples.map(t => t.fields[i].type)
         return { ...f, type: of.every(isComptimeNumber) ? this.concretize(standIn(of)) : this.commonType(of).type }
       }))
-      return { type: tupleType, odd: types.find(t => !typeAssignable(tupleType, t)) }
+      return { type: tupleType, odd: types.find(t => !fits(tupleType, t)) }
+    }
+    // A tuple that holds a refused value next to one of another shape is
+    // the odd one, whichever comes first.
+    const whole = types.filter((t) => !holdsRefused(t))
+    if (whole.length > 0 && whole.length < types.length) {
+      const { type, odd } = this.commonType(whole)
+      return { type, odd: odd ?? types.find((t) => !fits(type, t)) }
     }
     let type = types[0]
     for (const t of types) {
@@ -9811,8 +9900,10 @@ class CheckContext {
       this.error(arg.span.start, message)
       return null
     }
-    // The value of a refused def has its one error, at the def.
+    // The value of a refused def has its one error, at the def, and a
+    // variant of an enum left out the clash.
     if (this.refusedDefUse(arg.kind === 'ValueArg' ? ungrouped(arg.value) : arg)) return null
+    if (this.namesLeftOut(arg.kind === 'ValueArg' ? arg.value : arg)) return null
     if (arg.kind !== 'ValueArg') return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
     // As in a length: a def declared further down is a number here too
     this.collectDefsIn(arg.value)
@@ -10498,12 +10589,20 @@ class CheckContext {
       // `comptime m: u8` is 255.
       const constant = this.typeApplied(arg) ? null : this.evalComptimeExpr(arg)
       if (constant === null || constant.kind === 'data_ptr' || constant.kind === 'type' || constant.kind === 'func') {
-        // A refused value (a refused operator, a use of a refused def) has
-        // its one error: that it is no constant is not said as well.
-        if (this.refusedDefUse(ungrouped(arg))) return null
+        // A refused value (a refused operator, a use of a refused def, a
+        // variant of an enum left out) has its one error: that it is no
+        // constant is not said as well.
+        if (this.refusedDefUse(ungrouped(arg)) || this.namesLeftOut(arg)) return null
+        // Its value is inferred to tell which it is. A refused value's own
+        // error is said, and so is that of a refused operator on a value read
+        // at run time (`ct(-b)`, b a bool parameter); any other value read at
+        // run time is the one error below, not what its code would be told
+        // as well (`d[i]` an index that needs an if let).
         if (constant === null && !this.typeApplied(arg) && unknownNames(arg).every((n) => this.lookup(n.name))) {
-          this.inferExpr(arg)
-          if (this.refusedValue(arg)) return null
+          const type = this.attempt(null, () => this.inferExpr(arg))
+          const refused = this.refusedValue(arg)
+          if (refused || type === RECOVERY) this.inferExpr(arg)
+          if (refused) return null
         }
         const unknown = constant === null ? unknownNames(arg).find((n) => !this.lookup(n.name)) : undefined
         if (unknown && !this.typeApplied(arg)) {
@@ -11703,6 +11802,74 @@ function unresolved(type: ResolvedType): boolean {
   return (type.kind === 'slice' || type.kind === 'array') && unresolved(type.element)
 }
 
+// Whether a type's own kind did not resolve: the recovery type, a name for
+// it, or a pointer straight to one. An array, or a pointer to an array,
+// whose element did not resolve is still one: its length and how it is held
+// are known.
+function unresolvedKind(type: ResolvedType): boolean {
+  if (type === RECOVERY) return true
+  if (type.kind === 'named') return unresolvedKind(type.type)
+  if (type.kind === 'pointer') return unwrap(type.pointee).kind !== 'array' && unresolved(type.pointee)
+  // A slice of them says nothing more where it is indexed (its length is a
+  // run-time value either way).
+  return type.kind === 'slice' && unresolved(type)
+}
+
+// A type that holds a refused part, with each such part taken to be what
+// the type it meets has in that place: a refused value fits wherever it is
+// used, and the rest of what holds it still has to fit ((-true, 1) meets
+// (u8, bool) as (u8, int(1)), which does not; a []Nope meets a []u8 as one).
+function fillRefused(from: ResolvedType, to: ResolvedType): ResolvedType {
+  if (from === RECOVERY) return to
+  if (!holdsRefused(from)) return from
+  const f = unwrap(from)
+  const t = unwrap(to)
+  if (f.kind === 'tuple') {
+    if (t.kind !== 'tuple' || t.fields.length !== f.fields.length) return from
+    return tuple(f.fields.map((field, i) => ({ ...field, type: fillRefused(field.type, t.fields[i].type) })))
+  }
+  if (f.kind === 'pointer') {
+    if (t.kind === 'pointer') return { ...f, pointee: fillRefused(f.pointee, t.pointee) }
+    // *[N]T meets a []T as the slice it is
+    const array = unwrap(f.pointee)
+    if (t.kind === 'slice' && array.kind === 'array') return { ...f, pointee: { ...array, element: fillRefused(array.element, t.element) } }
+    return from
+  }
+  if (f.kind === 'slice' || f.kind === 'array') {
+    return t.kind === 'slice' || t.kind === 'array' ? { ...f, element: fillRefused(f.element, t.element) } : from
+  }
+  if (f.kind === 'comptime_array') {
+    return t.kind === 'array' || t.kind === 'comptime_array' ? { ...f, element: fillRefused(f.element, t.element) } : from
+  }
+  if (f.kind === 'comptime_list' && (t.kind === 'array' || t.kind === 'comptime_array')) {
+    return { ...f, elements: f.elements.map((e) => fillRefused(e, t.element)) }
+  }
+  return from
+}
+
+// What constants next to a refused value are, as one: a constant number
+// says nothing of the type (the refused value could be any number), so it is
+// refused too; a tuple or an array literal of them is still a tuple or an
+// array of that many, whose parts are refused. Null where they do not all
+// have one shape, which is then their own mismatch.
+function refusedShape(types: ResolvedType[]): ResolvedType | null {
+  const [first] = types
+  if (types.every(isComptimeNumber)) return RECOVERY
+  if (first.kind === 'tuple') {
+    const tuples = types.filter((t): t is TupleRT => t.kind === 'tuple' && t.fields.length === first.fields.length && t.fields.every((f, i) => f.name === first.fields[i].name))
+    if (tuples.length !== types.length) return null
+    const fields = first.fields.map((f, i) => ({ ...f, type: refusedShape(tuples.map((t) => t.fields[i].type)) }))
+    return fields.every((f) => f.type) ? tuple(fields as typeof first.fields) : null
+  }
+  if (first.kind === 'comptime_array') {
+    const arrays = types.filter((t) => t.kind === 'comptime_array' && t.count === first.count) as (typeof first)[]
+    if (arrays.length !== types.length) return null
+    const element = refusedShape(arrays.map((a) => a.element))
+    return element ? { ...first, element } : null
+  }
+  return null
+}
+
 // Whether a type is f32, a name for it too
 function isF32(type: ResolvedType | undefined): boolean {
   const t = type && unwrap(type)
@@ -12615,15 +12782,25 @@ function annotationsIn(expr: unknown, found: AST.AnnotationExpr[] = []): AST.Ann
 }
 
 // The names an expression reads, for the one it cannot be computed without
-function unknownNames(expr: unknown, found: AST.IdentExpr[] = []): AST.IdentExpr[] {
+// Whether an expression, or any part of it, is a node `is` says it is.
+function holdsNode(expr: unknown, is: (node: { kind?: string }) => boolean): boolean {
+  if (Array.isArray(expr)) return expr.some((e) => holdsNode(e, is))
+  if (expr === null || typeof expr !== 'object' || expr instanceof Uint8Array) return false
+  if (is(expr as { kind?: string })) return true
+  return Object.entries(expr).some(([key, value]) => key !== 'span' && holdsNode(value, is))
+}
+
+// The names an expression reads, but none inside a node `skip` says to leave.
+function unknownNames(expr: unknown, found: AST.IdentExpr[] = [], skip?: (node: { kind?: string }) => boolean): AST.IdentExpr[] {
   if (Array.isArray(expr)) {
-    for (const e of expr) unknownNames(e, found)
+    for (const e of expr) unknownNames(e, found, skip)
   } else if (expr !== null && typeof expr === 'object' && !(expr instanceof Uint8Array)) {
     const n = expr as { kind?: string }
+    if (skip?.(n)) return found
     if (n.kind === 'IdentExpr') found.push(n as AST.IdentExpr)
     // A member's name and a type's are no names of values.
     if (n.kind === 'SizeofExpr') return found
-    for (const [key, value] of Object.entries(n)) if (key !== 'span' && key !== 'member') unknownNames(value, found)
+    for (const [key, value] of Object.entries(n)) if (key !== 'span' && key !== 'member') unknownNames(value, found, skip)
   }
   return found
 }

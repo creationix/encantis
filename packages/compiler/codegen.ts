@@ -369,7 +369,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
         throw new Error(`Missing type for float literal at offset ${expr.span.start}`)
       }
       const wt = typeToWasmSingle(type)
-      return `(${wt}.const ${numberText(lit.value)})`
+      return `(${wt}.const ${floatConstText(wt, lit.value)})`
     }
 
     case 'bool':
@@ -393,6 +393,16 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
 // A number as WAT writes it. -0 is a float of its own: `${-0}` is "0".
 function numberText(value: number | bigint): string {
   return Object.is(value, -0) ? '-0' : `${value}`
+}
+
+// A float constant of a wasm type as WAT writes it. An f32 is the f32 the
+// compiler holds, as data lays it out (the nearest f32, ties to even), in
+// text that reads back as exactly that f32: an f64's shortest text may lie
+// on the other side of the midpoint of two f32s, and wabt would round it to
+// the other (1.000000059604644775390625, halfway between 1 and the next f32,
+// is 1, and the f64's text 1.0000000596046448 would be the next).
+function floatConstText(wt: string, value: number): string {
+  return numberText(wt === 'f32' ? Math.fround(value) : value)
 }
 
 // A literal that lies in the data section, as the slice over all of it.
@@ -559,7 +569,7 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
       }
       if (val.kind === 'float') {
         const wt = typeToWasmSingle(sym.type)
-        return `(${wt}.const ${numberText(val.value)})`
+        return `(${wt}.const ${floatConstText(wt, val.value)})`
       }
       if (val.kind === 'bool') {
         return `(i32.const ${val.value ? 1 : 0})`
@@ -3047,7 +3057,7 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
         if (p.kind === 'literal') {
           const litValue =
             p.value.kind === 'int' || p.value.kind === 'float'
-              ? `(${wt}.const ${numberText(p.value.value)})`
+              ? `(${wt}.const ${p.value.kind === 'float' ? floatConstText(wt, p.value.value) : numberText(p.value.value)})`
               : p.value.kind === 'bool'
                 ? `(i32.const ${p.value.value ? 1 : 0})`
                 : '(i32.const 0)'
@@ -4357,8 +4367,17 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
     if (decl.kind === 'DataDecl') {
       const sym = checkResult.symbols.get(decl.ident)
       if (!sym || sym.kind === 'generic' || sym.kind === 'typefunc') continue
+      // A number written with its type is laid out as itself (0.1:f32,
+      // also in parentheses)
+      let value = decl.value
+      for (;;) {
+        const inner = value.kind === 'GroupExpr' ? value.expr
+          : value.kind === 'TupleExpr' && value.elements.length === 1 && !value.elements[0].name ? value.elements[0].value : null
+        if (!inner) break
+        value = inner
+      }
       const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
-      const ref = literalRefs.get(expr.span.start)
+      const ref = literalRefs.get(value.span.start) ?? literalRefs.get(expr.span.start)
       if (ref) dataBuilder.addLabel(ref.ptr, `${decl.ident}: ${RT.typeToString(sym.type)}`)
     }
     if (decl.kind === 'DefDecl') {

@@ -1558,7 +1558,13 @@ export const semanticsActions: Record<string, SemanticAction> = {
     const lit = inner.kind === 'AnnotationExpr' ? inner.expr
               : inner.kind === 'CastExpr' ? inner.expr
               : inner
-    if (lit.kind === 'LiteralExpr' && (lit.value.kind === 'int' || lit.value.kind === 'float')) {
+    // The integer 0 written as a float (`def z: f32 = 0`, whose use is
+    // (0:f32)) is no negative integer: negated, it is the float -0, as -t
+    // is for a variable t that holds 0, so it is negated as a float is.
+    const typed = inner.kind === 'AnnotationExpr' || inner.kind === 'CastExpr' ? inner.type : null
+    const floatZero = typed?.kind === 'PrimitiveType' && (typed.name === 'f32' || typed.name === 'f64')
+      && lit.kind === 'LiteralExpr' && lit.value.kind === 'int' && BigInt(lit.value.value) === 0n
+    if (!floatZero && lit.kind === 'LiteralExpr' && (lit.value.kind === 'int' || lit.value.kind === 'float')) {
       // A new value, not a change to this one: every use of a def shares the
       // value of the def's literal.
       lit.value = { ...lit.value, value: -lit.value.value } as AST.LiteralValue

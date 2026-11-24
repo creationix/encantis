@@ -733,6 +733,11 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSect
     return applyFramings(rawBytes, framings, getElementSize(elementType))
   }
 
+  // A number written with its type, laid out by itself (`data x: f64 =
+  // 0.1:f32`, a def's value): as an element is, its value as the checker
+  // worked it out where it did (the f32 nearest 0.1, widened)
+  if (expr.kind === 'AnnotationExpr') return buildElementBytes(expr, elementType, framings, builder)
+
   // For array expressions, serialize each element then apply outer framings
   if (expr.kind === 'ArrayExpr') {
     const elementParts: Bytes[] = []
