@@ -3940,3 +3940,50 @@ export func two() -> u32 => gapply(u32, 2) + gapply(u64, 3)
     expect(parse('export "\\xe2\\x82\\xac" func f() -> u32 => 1').errors).toEqual([])
   })
 })
+
+describe('nested functions: names, places and the editor (eighth review)', () => {
+  // A name several functions of the module share is named as the import
+  // writes it, a ':' of its own included (7.1, 12.4)
+  test('the shared-name message keeps a colon of the import\'s name', () => {
+    expect(errorsOf(`import "env" ("a:b" func(a: i32) "a:b" func(a: i64))
+import "env" ("a" func(a: i32) "a" func(a: i64))
+import "env" (":" func(a: i32) ":" func(a: i64))
+test "t" {
+  import "env" "a:b" func(a: f32)
+  import "env" "a" func(a: f32)
+  import "env" ":" func(a: f32)
+  assert true
+}`)).toEqual([
+      `'a:b' is the name of several functions of the module: a function declared in a test cannot take it over`,
+      `'a' is the name of several functions of the module: a function declared in a test cannot take it over`,
+      `':' is the name of several functions of the module: a function declared in a test cannot take it over`,
+    ])
+  })
+
+  // Module code below a test reads a name as if the test were not there: a
+  // clash there is told the module's declaration, also after the test's
+  // grouped import of the name; in the test, its first item (12.4, 3.3)
+  test('module code below a test is told the module\'s declaration of a name', () => {
+    expect(errorsOf(`func f(x: u32) -> u32 => x
+export func m() -> u32 => f(1)
+test "t" {
+  import "env" ("a1" func f(x: u32) -> u32 "a2" func f(x: u32) -> u32)
+  let f: u32 = 1
+  assert f > 0
+}
+test "u" {
+  import "env" "b1" func f(x: u32) -> u32
+  assert f(1) > 0
+}
+export func m2() -> u32 {
+  let f: u32 = 3
+  let f: u32 = 4
+  return f
+}`)).toEqual([
+      `'f' is already declared in this test`,
+      `'f' is already declared in this scope (first declared at 4:27)`,
+      `'f' is already declared in this scope (first declared at 1:6)`,
+      `'f' is already declared in this scope (first declared at 1:6)`,
+    ])
+  })
+})

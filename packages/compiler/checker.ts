@@ -1766,9 +1766,13 @@ class CheckContext {
   // a name of the module's where it is declared (an import where it is
   // imported). Nothing where that is not known.
   declaredFirst(name: string, found: Symbol): string {
-    const sym = this.firstOf(found)
-    const pinned = this.firstText.get(sym)
+    const first = this.firstOf(found)
+    const pinned = this.firstText.get(first)
     if (pinned !== undefined) return pinned
+    // What a test declared is, outside that test, what it replaced there
+    // (seenAs): module code below the test is told the module's own
+    // declaration of the name, not a place inside the test
+    const sym = this.seenAs(first) ?? first
     const at = this.declaredAt.get(sym) ?? this.localDefs.get(sym) ??
       (this.moduleScope.symbols.get(name) === sym ? this.symbolDefOffsets.get(name) : undefined)
     if (at !== undefined) return this.firstDeclared(at)
@@ -2282,7 +2286,10 @@ class CheckContext {
   // in the build that ships. Reports that, and says whether it did.
   private sharedByModule(name: string, offset: number): boolean {
     if (!this.shared(name)) return false
-    this.error(offset, `'${declaredName(name)}' is the name of several functions of the module: a function declared in a test cannot take it over`)
+    // The name as written: an import that cannot be called is known with a
+    // % first (callableName), and its name can hold a ':' of its own ("a:b")
+    const written = name.startsWith('%') ? name.slice(1) : name
+    this.error(offset, `'${written}' is the name of several functions of the module: a function declared in a test cannot take it over`)
     return true
   }
 
@@ -3488,10 +3495,16 @@ class CheckContext {
             const own = imported.item.kind === 'ImportFunc' ? this.funcSyms.get(imported.item) : imported.item.kind === 'ImportGlobal' ? this.importedGlobalAt.get(imported.item) : undefined
             if (own && !this.declaredAt.has(own)) this.declaredAt.set(own, imported.item.span.start)
             if (firstOfName && own && named.has(name)) firstImported.set(name, own)
+            const key = imported.item.kind === 'ImportFunc' ? callableName(imported) : name
+            // One a later item replaced is the test's all the same: outside
+            // the test it is what the name was before the import (seenAs)
+            if (own && !this.declaredInTest.has(own)) {
+              this.declaredInTest.set(own, decl)
+              this.replacedByTest.set(own, known.get(key))
+            }
             // Refused as a second of the test's names, it is the name all
             // the same, as a function is (below): the first of the test's,
             // an earlier item of this import's or a declaration above it
-            const key = imported.item.kind === 'ImportFunc' ? callableName(imported) : name
             const first = firstImported.get(name) ?? known.get(key)
             const after = own ?? this.moduleScope.symbols.get(key)
             if (this.errors.length > refusals && first && after && after !== first) this.clashed(after, first, true)
