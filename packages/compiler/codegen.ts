@@ -760,7 +760,7 @@ function checkNesting(wat: string, what: string, offset: number): void {
   const nesting = nestingOf(wat)
   if (nesting <= MAX_NESTING) return
   throw new NestingLimitError(
-    `${what} nests its code ${nesting} deep in wasm, more than the ${MAX_NESTING} that wasm text tools read (a block or a loop counts 50, an if 46, a float constant 1200, any other instruction 30): keep fewer loops, ifs and matches one inside another`,
+    `${what} nests its code ${nesting} deep in wasm, more than the ${MAX_NESTING} that wasm text tools read (a block or a loop counts 50 and an if 46, 30 and 28 in the condition of an if, a float constant 1200, any other instruction 30): keep fewer loops, ifs and matches one inside another`,
     offset,
   )
 }

@@ -1267,6 +1267,19 @@ export memory 1
     expect([run(0), run(597), run(598), run(600)]).toEqual([1, 1, 0, 0])
     expect(nestingOf(watOf(`export func run(x: u32) -> bool => ${tests(248)}\n`, '(func $run'))).toBe(6994)
     expect(() => wat(`export func run(x: u32) -> bool => ${tests(249)}\n`)).toThrow("function 'run' nests its code 7022 deep")
+    // As the condition of an if, the chain is in one more if: 247 tests are
+    // within the limit; as that of a while, in a block and a loop too: 242
+    // (2.12)
+    const inIf = (n: number) => `export func run(x: u32) -> bool {\nif ${tests(n)} { return true }\nreturn false\n}\n`
+    const inWhile = (n: number) => `export func run(x: u32) -> bool {\nwhile ${tests(n)} { return true }\nreturn false\n}\n`
+    expect(() => wat(inIf(247))).not.toThrow()
+    expect(() => wat(inIf(248))).toThrow("function 'run' nests its code 7022 deep")
+    expect(() => wat(inWhile(242))).not.toThrow()
+    expect(() => wat(inWhile(243))).toThrow("function 'run' nests its code 7014 deep")
+    // A block or a loop that is the condition of an if counts 30, as an
+    // operand does
+    expect(nestingOf('(if (block (result i32) (i32.const 1)) (then))')).toBe(106)
+    expect(nestingOf('(if (i32.const 1) (then (drop (block (result i32) (i32.const 1)))))')).toBe(156)
   })
 
   test('a float constant counts what wabt reads it with', () => {
