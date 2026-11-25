@@ -864,6 +864,17 @@ describe('refused values, clashes and left-out declarations in the editor', () =
     )
   })
 
+  test('a rename to a name the error already says for another thing goes through', async () => {
+    // `argument 1 of 'n' ...: n is a comptime value parameter` is the
+    // program's error, renamed, though its other n is the parameter's
+    const file = 'file:///ws/pn.ents'
+    const text = 'func idf(comptime n: u32) -> u32 => n\nexport func f(x: u32) -> u32 => idf(x)\n'
+    const s = server()
+    await s.open(file, text)
+    const edit = await s.at<Promise<WorkspaceEdit>>('onRenameRequest', file, text, text.indexOf('idf'), { newName: 'n' })
+    expect(edit.changes?.[file]?.length).toBe(2)
+  })
+
   test('a function with a type that did not resolve hovers as written at a call too', async () => {
     const file = 'file:///ws/sc.ents'
     const text = 'func u(p: Nope) -> (r: Nope) { r = p }\nexport func f() -> u32 {\n  let r1 = u(1)\n  return 0\n}\n'

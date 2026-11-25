@@ -1123,9 +1123,14 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     // edits taken back. One said at another place is new, though its message
     // with the old name is one the program has (`'total' is already
     // declared` at another declaration, for the one renamed to `total`).
-    const renamedName = new RegExp(`(?<![\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`, 'g');
+    // The names are put back either way: the new name may be another's in
+    // the message as well (`argument 1 of 'n' ...: n is a comptime value
+    // parameter`, for `idf` renamed to its parameter's name).
+    const named = (n: string) => new RegExp(`(?<![\\w-])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`, 'g');
+    const renamedName = named(name);
+    const oldNamed = named(oldName);
     const said = (offset: number, message: string) => `${offset} ${withoutPlaces(message)}`;
-    const before = new Set(analysis.check.errors.map((e) => said(e.offset, e.message)));
+    const before = new Set(analysis.check.errors.flatMap((e) => [said(e.offset, e.message), said(e.offset, e.message.replace(oldNamed, name))]));
     const added = check.errors.filter((e) => {
       const at = offsetBeforeEdits(renamed.edits, e.offset);
       return !before.has(said(at, e.message)) && !before.has(said(at, e.message.replace(renamedName, oldName)));
