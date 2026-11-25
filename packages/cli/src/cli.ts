@@ -478,7 +478,7 @@ switch (command) {
           const lm = new LineMap(src)
           const p = lm.offsetToPosition(s.offset)
           const exp = s.exported ? ' [exported]' : ''
-          console.log(`${s.filePath}:${p.line + 1}:${p.col + 1} ${s.kind} ${s.name}: ${s.type}${exp}`)
+          console.log(`${s.filePath}:${p.line + 1}:${p.col + 1} ${s.kind} ${s.name}${s.type ? `: ${s.type}` : ''}${exp}`)
         }
       }
     }

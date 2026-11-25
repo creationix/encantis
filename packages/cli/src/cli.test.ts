@@ -208,6 +208,24 @@ describe('code nested deeper than wasm text tools read', () => {
   }
 })
 
+// A refused global has no type to show, in a file's symbols and in a
+// directory's; a signature written over several lines is listed on one.
+describe('symbols of a refused global and a function of a type that did not resolve', () => {
+  test('are one line each, the global with no type', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      const file = join(dir, 'sym.ents')
+      await writeFile(file, 'global gg = -true\nfunc z(\n  a: u32,\n  b: Nope\n) -> u32 => a\n')
+      for (const target of [file, dir]) {
+        const run = Bun.spawnSync([process.execPath, CLI, 'symbols', target], { timeout: 60000 })
+        expect(run.stdout.toString().split('\n').filter(Boolean).map((line) => line.replace(/^.*sym\.ents:/, ''))).toEqual(['1:1 global gg', '2:1 func z: func(a: u32, b: Nope) -> u32'])
+      }
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+})
+
 // The queries answer for the name where it stands: a local where it is
 // defined, the binding of an if let at its name, each name of a for, and a
 // field as a field. Before, each was looked up by name, and a rename from one

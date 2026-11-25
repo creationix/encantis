@@ -847,6 +847,43 @@ describe('refused values, clashes and left-out declarations in the editor', () =
       "renamed to 'Txt', use.ents, which uses this module, would not check: Json has no variant 'Text'",
     )
   })
+
+  test('a rename whose new clash is at another declaration is refused, though the program has one of the old name', async () => {
+    const file = 'file:///ws/rc.ents'
+    const text = 'global count: u32 = 0\nglobal count: u32 = 1\nexport global total: u32 = 5\nexport func bump() -> u32 {\n  count = count + 1\n  return count\n}\n'
+    const s = server()
+    await s.open(file, text)
+    await expect(s.at<Promise<WorkspaceEdit>>('onRenameRequest', file, text, text.indexOf('count'), { newName: 'total' })).rejects.toThrow(
+      "renamed to 'total', the program would not check: 'total' is already declared",
+    )
+    const local = 'export func f() -> u32 {\n  let x: u32 = 1\n  let x: u32 = 2\n  let y: u32 = 3\n  return y + x\n}\n'
+    const other = 'file:///ws/rc2.ents'
+    await s.open(other, local)
+    await expect(s.at<Promise<WorkspaceEdit>>('onRenameRequest', other, local, local.indexOf('x:'), { newName: 'y' })).rejects.toThrow(
+      "the program would not check: 'y' is already declared in this scope (first declared at 2:7)",
+    )
+  })
+
+  test('a function with a type that did not resolve hovers as written at a call too', async () => {
+    const file = 'file:///ws/sc.ents'
+    const text = 'func u(p: Nope) -> (r: Nope) { r = p }\nexport func f() -> u32 {\n  let r1 = u(1)\n  return 0\n}\n'
+    const s = server()
+    await s.open(file, text)
+    expect(hoverAt(s, file, text, text.indexOf('u(1)'))).toBe('func u(p:Nope) -> (r:Nope)')
+  })
+
+  test('a generic type declared second answers nothing at its name, and is listed with no type', async () => {
+    const file = 'file:///ws/lg.ents'
+    const text = 'func G(comptime U: type) -> type => (v: U)\nfunc G(comptime U: type) -> type => (w: U)\nenum Q { A }\nenum Q { B }\nexport func h(z: G(u32), q: Q) -> u32 => z.v\n'
+    const s = server()
+    await s.open(file, text)
+    const second = text.indexOf('G(comptime', 10)
+    expect(hoverAt(s, file, text, second)).toBeNull()
+    expect(s.at('onDefinition', file, text, second)).toBeNull()
+    expect(s.at<unknown[] | null>('onReferences', file, text, second, { context: { includeDeclaration: true } }) ?? []).toEqual([])
+    const symbols = s.ask<DocumentSymbol[]>('onDocumentSymbol', { textDocument: { uri: file } })
+    expect(symbols.filter((d) => d.name === 'G' || d.name === 'Q').map((d) => d.detail ?? '')).toEqual(['(comptime U:type) -> type => (v:U)', '', 'enum { A }', ''])
+  })
 })
 
 describe('completion', () => {

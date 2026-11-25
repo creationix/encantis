@@ -97,6 +97,8 @@ export function leftOutNameAt(module: AST.Module, checkResult: TypeCheckResult, 
     // A type declared second under a name another declaration has declares
     // nothing either: its name is no use of the first's
     if (decl.kind === 'TypeDecl' && checkResult.leftOut.has(decl) && decl.ident.span.start === start) return true
+    // So does a generic type: its name is all it has between `func` and `(`
+    if (decl.kind === 'TypeFuncDecl' && checkResult.leftOut.has(decl) && start > decl.span.start && start < (decl.params[0]?.span.start ?? decl.body.span.start)) return true
     if (decl.kind !== 'EnumDecl' || !checkResult.leftOut.has(decl) || start < decl.span.start || start >= decl.span.end) continue
     return decl.identSpan.start === start || decl.variants.some((v) => v.span.start === start || (v.fields ?? []).some((f) => f.ident !== null && (f.identSpan?.start ?? f.span.start) === start))
   }
@@ -708,8 +710,9 @@ export function documentSymbols(
         })
         break
       case 'EnumDecl': {
-        // An enum, then its variants
-        const sym = checkResult.symbols.get(decl.ident)
+        // An enum, then its variants. One left out (declared second under a
+        // name another declaration has) is not the type of that name.
+        const sym = checkResult.leftOut.has(decl) ? undefined : checkResult.symbols.get(decl.ident)
         symbols.push({
           name: decl.ident,
           kind: 'type',
@@ -732,7 +735,7 @@ export function documentSymbols(
         break
       }
       case 'TypeFuncDecl': {
-        const sym = checkResult.symbols.get(decl.ident)
+        const sym = checkResult.leftOut.has(decl) ? undefined : checkResult.symbols.get(decl.ident)
         symbols.push({
           name: decl.ident,
           kind: 'type',
@@ -782,7 +785,7 @@ export function documentSymbols(
             exported: true,
           })
         } else if (item.kind === 'TypeFuncDecl') {
-          const sym = checkResult.symbols.get(item.ident)
+          const sym = checkResult.leftOut.has(item) ? undefined : checkResult.symbols.get(item.ident)
           symbols.push({
             name: item.ident,
             kind: 'type',
@@ -828,8 +831,10 @@ export function signatureHelp(
   if (ft?.kind !== 'func') return null
 
   // A parameter or a result of a type that did not resolve is shown as its
-  // type is written (p: Nope), as the function hovers
-  const decl = !called && [...ft.params, ...ft.returns].some((f) => isRefusedType(f.type)) ? funcDeclNamed(module, name) : null
+  // type is written (p: Nope), as the function hovers: at its name and at a
+  // call of it (not of another function of that name)
+  const own = !called || (sym?.kind === 'func' && typeToString(called) === typeToString(sym.type))
+  const decl = own && [...ft.params, ...ft.returns].some((f) => isRefusedType(f.type)) ? funcDeclNamed(module, name) : null
   const written = (list: AST.Type | undefined, i: number, type: ResolvedType): string => {
     const field = list?.kind === 'CompositeType' ? list.fields[i] : i === 0 ? null : undefined
     const at = field ? field.type : field === null ? list : undefined
@@ -922,8 +927,10 @@ function typeCostAnnotation(type: ResolvedType): string {
 
 // A signature as it is written: (p: Nope) -> (r: Nope)
 function writtenSignature(source: string, { input, output }: AST.FuncSignature): string {
-  const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${source.slice(output.span.start, output.span.end)}`
-  return `${source.slice(input.span.start, input.span.end)}${returns}`
+  // On one line, as a hover shows it, however many it is written over
+  const text = (from: number, to: number) => source.slice(from, to).replace(/\s+/g, ' ').replace(/\( /g, '(').replace(/ \)/g, ')').replace(/,\)/g, ')')
+  const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${text(output.span.start, output.span.end)}`
+  return `${text(input.span.start, input.span.end)}${returns}`
 }
 
 function symbolTypeString(sym: CheckSymbol, source?: string, name?: string, signature?: AST.FuncSignature): string {

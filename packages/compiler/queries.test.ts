@@ -1426,3 +1426,24 @@ describe('a value too large to hold', () => {
     expect(hover(code, result.module!, check, code.indexOf('s.c'))?.name).toBe('s')
   })
 })
+
+describe('a function with a type that did not resolve, as written', () => {
+  const code = 'func u(p: Nope) -> (r: Nope) { r = p }\nfunc z(\n  a: u32,\n  b: Nope\n) -> u32 => a\nfunc G(comptime U: type) -> type => (v: U)\nfunc G(comptime U: type) -> type => (w: U)\nexport func f() -> u32 => u(1) + z(1, 2)\n'
+  const result = parse(code)
+  const check = typecheck(result.module!)
+  test('signature help shows it at a call as at its name', () => {
+    expect(signatureHelp(code, result.module!, check, code.indexOf('u(1)'))).toEqual({ name: 'u', params: [{ name: 'p', type: 'Nope' }], returnType: 'r: Nope' })
+    expect(signatureHelp(code, result.module!, check, code.indexOf('u(p'))).toEqual({ name: 'u', params: [{ name: 'p', type: 'Nope' }], returnType: 'r: Nope' })
+  })
+  test('the outline lists it on one line, however many it is written over', () => {
+    const symbols = documentSymbols(code, result.module!, check)
+    expect(symbols.find((s) => s.name === 'z')?.type).toBe('func(a: u32, b: Nope) -> u32')
+  })
+  test('a generic type declared second answers nothing at its name, and is listed with no type', () => {
+    const second = code.indexOf('G(comptime', code.indexOf('G(comptime') + 1)
+    expect(hover(code, result.module!, check, second)).toBeNull()
+    expect(findReferences(code, result.module!, check, second)).toBeNull()
+    expect(gotoDefinition(code, result.module!, check, second)).toBeNull()
+    expect(documentSymbols(code, result.module!, check).filter((s) => s.name === 'G').map((s) => s.type)).toEqual(['generic type(comptime U: type) -> type => (v: U)', ''])
+  })
+})

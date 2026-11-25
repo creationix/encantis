@@ -446,6 +446,20 @@ function withoutPlaces(message: string): string {
   return message.replace(/\b\d+:\d+\b/g, 'L:C');
 }
 
+// A place in a text that edits made, in the text they were made to: one in
+// what an edit wrote is in what it replaced. The edits are in order.
+type TextEdit = { start: number; end: number; newText: string };
+function offsetBeforeEdits(edits: TextEdit[], offset: number): number {
+  let shift = 0;
+  for (const edit of edits) {
+    const start = edit.start + shift;
+    if (offset < start) break;
+    if (offset < start + edit.newText.length) return edit.start + Math.min(offset - start, edit.end - edit.start);
+    shift += edit.newText.length - (edit.end - edit.start);
+  }
+  return offset - shift;
+}
+
 export function startServer(connection: Connection, options: ServerOptions = {}): void {
   const documents = new TextDocuments(TextDocument);
 
@@ -1096,7 +1110,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // Why the renamed text would not mean what the text does, or null: it adds
   // an error, or the new name is not, at each place, what the old one was
   // (another name of that spelling is seen there instead, or hides it).
-  async function renameProblem(uri: string, analysis: Analysis, renamed: { text: string; places: number[] }, name: string, oldName: string): Promise<string | null> {
+  async function renameProblem(uri: string, analysis: Analysis, renamed: { text: string; places: number[]; edits: TextEdit[] }, name: string, oldName: string): Promise<string | null> {
     const parsed = parse(renamed.text);
     let module = parsed.module ?? recoverParse(renamed.text, parse, parsed)?.module;
     if (!module) return 'the renamed text does not parse';
@@ -1105,10 +1119,17 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     const check = program?.checkResult ?? typecheck(module, { source: renamed.text });
     // An error the program has already may say where something is (`first
     // declared at 1:15`), which the rename moves, or name what is renamed:
-    // it is the same error.
+    // it is the same error where it is said at the same place, the rename's
+    // edits taken back. One said at another place is new, though its message
+    // with the old name is one the program has (`'total' is already
+    // declared` at another declaration, for the one renamed to `total`).
     const renamedName = new RegExp(`(?<![\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`, 'g');
-    const before = new Set(analysis.check.errors.map((e) => withoutPlaces(e.message)));
-    const added = check.errors.filter((e) => !before.has(withoutPlaces(e.message)) && !before.has(withoutPlaces(e.message.replace(renamedName, oldName))));
+    const said = (offset: number, message: string) => `${offset} ${withoutPlaces(message)}`;
+    const before = new Set(analysis.check.errors.map((e) => said(e.offset, e.message)));
+    const added = check.errors.filter((e) => {
+      const at = offsetBeforeEdits(renamed.edits, e.offset);
+      return !before.has(said(at, e.message)) && !before.has(said(at, e.message.replace(renamedName, oldName)));
+    });
     if (check.errors.length > analysis.check.errors.length || added.length > 0) {
       return `renamed to '${name}', the program would not check: ${added[0]?.message ?? check.errors[0]?.message}`;
     }

@@ -1124,7 +1124,9 @@ class MetaBuilder {
 
   private generateHintsForTypeFunc(decl: AST.TypeFuncDecl): void {
     const symbolIndex = this.symbolIndexByName.get(decl.ident)
-    if (symbolIndex === undefined || this.checkResult.symbols.get(decl.ident)?.kind !== 'typefunc') return
+    // One declared second declares nothing (2.9): its name is no use of the
+    // first's either
+    if (symbolIndex === undefined || this.checkResult.symbols.get(decl.ident)?.kind !== 'typefunc' || this.checkResult.leftOut.has(decl)) return
     this.addHint(this.typeFuncIdentOffset(decl), decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
   }
 
@@ -1326,6 +1328,12 @@ class MetaBuilder {
         // A variant is its own enum's, whatever its place expects (where that
         // is another enum, the error says so).
         if (symbolIndex !== undefined && this.symbols[symbolIndex].kind === 'variant') {
+          this.addHint(expr.span.start, expr.name.length, this.symbols[symbolIndex].type, symbolIndex)
+          break
+        }
+        // A function with a parameter or a result of a type that did not
+        // resolve is shown as it is written, at a call as at its name
+        if (symbolIndex !== undefined && this.symbols[symbolIndex].kind === 'func' && type?.kind === 'func' && [...type.params, ...type.returns].some((f) => isRefusedType(f.type))) {
           this.addHint(expr.span.start, expr.name.length, this.symbols[symbolIndex].type, symbolIndex)
           break
         }
