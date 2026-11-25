@@ -4164,4 +4164,31 @@ export func two() -> u32 => gapply(u32, 2) + gapply(u64, 3)
     expect(typeAt('h(a')).toBe('func(a: *[!]u8, b: *[?]u8, c: *[2][!]u8, d: [][!]u8, e: *[!]mut T, f: T) -> T')
     expect(typeAt('k(a')).toBe('func(a: T, g: func(T) -> T, m: func(T, T) -> (T, u32), e: T) -> T')
   })
+
+  // The known bugs of 12.4: a call in a function of the test that captures
+  // nothing, declared above the test's function of the name, calls the
+  // module's; where the wasm types differ, a call whose value is dropped
+  // assembles and runs the test's function
+  test('a call above a test\'s function in a function of the test, and one whose value is dropped', async () => {
+    expect(await runTestsOfSource(`func f(x: u32) -> u32 => x + 1
+export func m() -> u32 => f(1)
+test "a" {
+  func h(x: u32) -> u32 => f(x)
+  assert h(5) == 6
+  func f(x: i32) -> i32 => x * 10
+}
+`)).toEqual({ ran: ['a'], failed: [] })
+    expect(await runTestsOfSource(`global seen: u64 = 0
+func f(x: u32) -> u32 => x + 1
+export func m() -> u32 => f(1)
+test "a" {
+  f(5)
+  assert seen == 50
+  func f(x: u32) -> u64 {
+    seen = x as u64 * 10
+    return seen
+  }
+}
+`)).toEqual({ ran: ['a'], failed: [] })
+  })
 })
