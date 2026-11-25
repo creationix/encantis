@@ -1805,6 +1805,13 @@ describe('the values in a literal that is laid out', () => {
     expect(errs('data d: [][]u8 = [[300, 1], [3, 4]]')).toEqual(['cannot assign int(300) to u8'])
     expect(errs('data d: [][]u32 = [[1, 2], [3, 4]]\ndata e: *[2][2]u8 = [[1, 2], [3, 4]]')).toEqual([])
   })
+
+  test('a tuple given for data of a number or a bool meets it; one given for a pointer is the known bug', () => {
+    expect(errs('data t: u32 = (1, 2)\ndata b: bool = (1, 2)')).toEqual(['cannot assign (int(1), int(2)) to u32', 'cannot assign (int(1), int(2)) to bool'])
+    // 3.2: `data p: *mut Pt = mut (0, 0)` is a cell that holds a pointer,
+    // left 0, and no error (a known bug)
+    expect(errs('data p: *mut Pt = mut (0, 0)\ndata q: *(u32, u32) = (1, 2)\ndata s: Pt = (1, 2)')).toEqual([])
+  })
 })
 
 describe('a slice from a pointer and a length', () => {

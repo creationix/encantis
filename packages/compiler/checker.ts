@@ -2599,9 +2599,11 @@ class CheckContext {
         (laidOut as AST.LiteralExpr).dataId = dataId
       }
       // The value is checked against the type written, as any value is
-      // (2.10): a number laid out by itself as one in an array is.
+      // (2.10): a number laid out by itself as one in an array is. (A tuple
+      // given for a pointer is not, the known bug 3.2 names: the cell is
+      // left 0.)
       const reported = this.errors.length
-      if (declaredType) this.checkExpr(value, declaredType)
+      if (declaredType && !(expr.kind === 'TupleExpr' && unwrap(declaredType).kind === 'pointer')) this.checkExpr(value, declaredType)
       if (this.errors.length === reported) {
         const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
         this.addLiteral(dataId, laidOut, arrType)
