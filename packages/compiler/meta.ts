@@ -197,6 +197,12 @@ class MetaBuilder {
   // that name, in another function or in another block of this one, and a
   // global would be taken for a parameter spelled like it.
   private symbolIndexByDef = new Map<number, number>()
+  // The symbol listed for a test's function or import with a type of its
+  // own (funcSyms, refusedOwn), by its declaration. One refused its name is
+  // recorded nowhere, and by name it would be another declaration of the
+  // name in its test, listed after it (a function and an import of a name
+  // several functions of the module share).
+  private testSymbols = new Map<AST.FuncDecl | AST.ImportFunc, number>()
   private hints: Record<string, MetaHint> = {}
   private literalMap: Map<number, DataRef> = new Map()
   // While the body of a generic is gone through: the copies of its nodes in
@@ -360,7 +366,13 @@ class MetaBuilder {
         // function does (see collectFunc), and so does a test's import. One
         // refused its name is listed as the name it was refused is (a
         // function of the module), with the type of its own (refusedOwn).
-        const own = this.checkResult.takenOver.get(item.item.span.start) ?? this.checkResult.funcSyms?.get(item.item)
+        // One whose name the last item of its import of the name took, a
+        // global (the test's second name, refused), is not the name: by its
+        // name it would be found where the global is. It is listed as what
+        // the name is, or not at all.
+        const last = [...decl.items].reverse().find((later) => later.item.kind !== 'ImportTypeFunc' && (later.item.ident ?? later.name) === name)
+        const replaced = last !== item && last?.item.kind === 'ImportGlobal'
+        const own = this.checkResult.takenOver.get(item.item.span.start) ?? (replaced ? undefined : this.checkResult.funcSyms?.get(item.item))
         const sym = own ?? this.checkResult.symbols.get(known)
         const refused = this.checkResult.refusedOwn?.get(item.item)
         // The same function imported again is the first import's, found at
@@ -370,12 +382,14 @@ class MetaBuilder {
           // Find the position of the function name in the import
           const offset = this.findImportFuncOffset(item, name)
           const recorded = this.checkResult.references.has(item.item.span.start) ? item.item.span.start : undefined
-          this.addSymbol(name, 'func', refused?.kind === 'func' ? refused.type : sym.type, offset, undefined, undefined, known, recorded)
+          const index = this.addSymbol(name, 'func', refused?.kind === 'func' ? refused.type : sym.type, offset, undefined, undefined, known, recorded)
+          if (this.inTest && (own || refused)) this.testSymbols.set(item.item, index)
         } else if (sym?.kind === 'generic') {
           // Another module's generic is listed as one of this module's is,
           // with the signature written here: the editor then finds its name
           // at the import and at its calls.
-          this.addSymbol(name, 'func', this.writtenSignature(item.item.signature), this.findImportFuncOffset(item, name))
+          const index = this.addSymbol(name, 'func', this.writtenSignature(item.item.signature), this.findImportFuncOffset(item, name))
+          if (this.inTest) this.testSymbols.set(item.item, index)
         }
       } else if (item.item.kind === 'ImportTypeFunc') {
         const name = item.item.ident
@@ -460,6 +474,7 @@ class MetaBuilder {
         // signature of the instance.
         const symbolIndex = this.addSymbol(decl.ident, 'func', this.writtenSignature(decl.signature), this.findFuncIdentOffset(decl))
         if (sym.decl === decl) this.genericSymbols.set(symbolIndex, decl)
+        else if (this.inTest) this.testSymbols.set(this.checked(decl), symbolIndex)
         // What its parameters and the names in its body are depends on the
         // instance: their hints are made from the first one, and then say
         // what they are in each (see annotateInstances). A generic nothing
@@ -492,6 +507,7 @@ class MetaBuilder {
       const own = this.checkResult.takenOver.get(checked.span.start) ?? this.checkResult.funcSyms?.get(checked) ?? this.checkResult.refusedOwn?.get(checked)
       const type = own?.kind === 'func' ? own.type : sym.type
       const symbolIndex = this.addSymbol(decl.ident, 'func', type, offset, undefined, decl.inline, known, recorded)
+      if (this.inTest && (this.checkResult.funcSyms?.has(checked) || this.checkResult.refusedOwn?.has(checked))) this.testSymbols.set(checked, symbolIndex)
 
       // Collect params and locals (also adds hints for params/returns)
       this.collectFuncBody(decl, symbolIndex)
@@ -1109,7 +1125,7 @@ class MetaBuilder {
         const offset = this.findImportFuncOffset(item, name)
         const again = this.checkResult.symbolRefs.get(offset)
         // (another module's generic is recorded where the item starts)
-        const symbolIndex = again !== undefined ? this.symbolIndexByDef.get(again) : this.ownSymbolAt(item.item.span.start, 'func', offset) ?? this.ownSymbolAt(item.span.start, 'func', offset) ?? this.symbolIndexByName.get(this.checkResult.funcNames.get(item.item) ?? name)
+        const symbolIndex = again !== undefined ? this.symbolIndexByDef.get(again) : this.ownSymbolAt(item.item.span.start, 'func', offset) ?? this.ownSymbolAt(item.span.start, 'func', offset) ?? this.testSymbols.get(item.item) ?? this.symbolIndexByName.get(this.checkResult.funcNames.get(item.item) ?? name)
         if (symbolIndex !== undefined) {
           this.addHint(offset, name.length, this.symbols[symbolIndex].type, symbolIndex)
         }
@@ -1129,7 +1145,7 @@ class MetaBuilder {
     // in its test, refused, is listed after it, see ownSymbolAt)
     if (decl.ident) {
       const offset = this.findFuncIdentOffset(decl)
-      const symbolIndex = this.ownSymbolAt(this.checked(decl).span.start, 'func', offset) ?? this.symbolIndexByName.get(this.checkResult.funcNames.get(decl) ?? decl.ident)
+      const symbolIndex = this.ownSymbolAt(this.checked(decl).span.start, 'func', offset) ?? this.testSymbols.get(this.checked(decl)) ?? this.symbolIndexByName.get(this.checkResult.funcNames.get(decl) ?? decl.ident)
       if (symbolIndex !== undefined) {
         // Hint for function name
         this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)

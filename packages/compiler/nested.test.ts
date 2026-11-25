@@ -4146,4 +4146,22 @@ test "g" {
       `'f' is already declared: a loop variable cannot reuse the name of a global (first declared at 3:16)`,
     ])
   })
+
+  // Where a generic's nested function has other signatures in its
+  // instances, the generic's is shown as a type is: framing written, one
+  // type in parentheses that type, a function type func(...) -> ... (Tools)
+  test('a generic\'s nested function shows framed, grouped and function types as a type is shown', () => {
+    const source = `func gapply(comptime T: type, x: T) -> u32 {
+  func h(a: *[!]u8, b: *[?]u8, c: *[2][!]u8, d: [][!]u8, e: *[!]mut T, f: T) -> T => f
+  func k(a: (T), g: (T) -> T, m: ((T, T) -> (T, u32)), e: T) -> (T) => e
+  return 0
+}
+export func two() -> u32 => gapply(u32, 2) + gapply(u64, 3)
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    const typeAt = (text: string) => hover(source, parsed.module!, result, source.indexOf(text))?.type
+    expect(typeAt('h(a')).toBe('func(a: *[!]u8, b: *[?]u8, c: *[2][!]u8, d: [][!]u8, e: *[!]mut T, f: T) -> T')
+    expect(typeAt('k(a')).toBe('func(a: T, g: func(T) -> T, m: func(T, T) -> (T, u32), e: T) -> T')
+  })
 })

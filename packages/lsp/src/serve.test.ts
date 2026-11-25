@@ -1197,4 +1197,62 @@ test "t" {
     const ask = serverFor(source)
     expect(ask('onDefinition', source.indexOf('g + sg'))).toBeNull()
   })
+
+  // A test's function and import of one name, both refused it (a name
+  // several functions of the module share, an import's, a generic's): each
+  // shows its own type, as encantis hover does (ninth review)
+  test('a test\'s function and import refused one name each show their own type', () => {
+    const source = `func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+import "env" "log" func log(x: u32)
+func pick(comptime T: type, a: T) -> T => a
+test "t" {
+  func hash(k: i64) -> i64 => k
+  import "env" "hash" func hash(z: f64) -> f64
+  import "env" "warn" func log(x: f64)
+  func log(x: f32, y: f32) {}
+  func pick(x: u64) -> u64 => x
+  import "env" "pick" func pick(y: f32) -> f32
+  assert true
+}
+export func m() -> u32 {
+  log(1)
+  return hash(2:u32) + pick(u32, 3)
+}
+`
+    const at = hoverIn(source)
+    expect(at(source.indexOf('hash(k: i64'))).toContain('func hash(k:i64) -> i64')
+    expect(at(source.indexOf('hash(z'))).toContain('func hash(z:f64) -> f64')
+    expect(at(source.indexOf('log(x: f64'))).toContain('func log(x:f64)')
+    expect(at(source.indexOf('log(x: f32'))).toContain('func log(x:f32, y:f32)')
+    expect(at(source.indexOf('pick(x'))).toContain('func pick(x:u64) -> u64')
+    expect(at(source.indexOf('pick(y'))).toContain('func pick(y:f32) -> f32')
+    const ask = serverFor(source)
+    expect((ask('onDefinition', source.indexOf('hash(k: i64')) as Location | null)?.range.start.line).toBe(5)
+  })
+
+  // A test's import whose name the last item of its group of the name took
+  // (a global, the test's second name) is not the name: the global's import
+  // and a use of the global are not that function (ninth review)
+  test('a grouped import\'s function whose name a later global took is not found by its name', () => {
+    const source = `test "t" {
+  let y: u32 = 1
+  import "env" ("x" func now() -> u32 "z" global now: u32)
+  match y { now => {} _ => {} }
+  assert true
+}
+test "u" {
+  import "env" ("a" func two(x: u64) -> u64 "b" func two() -> u32)
+  assert true
+}
+`
+    const at = hoverIn(source)
+    expect(at(source.indexOf('now: u32'))).toBeNull()
+    expect(at(source.indexOf('now =>'))).toBeNull()
+    // One whose later item of the name is a function is its own
+    expect(at(source.indexOf('two(x'))).toContain('func two(x:u64) -> u64')
+    const ask = serverFor(source)
+    const def = ask('onDefinition', source.indexOf('two(x')) as Location | null
+    expect(def?.range.start).toEqual({ line: 7, character: 25 })
+  })
 })

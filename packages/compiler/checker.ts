@@ -12024,6 +12024,40 @@ export function typeText(type: AST.Type): string {
   }
 }
 
+// A type as it is shown (typeToString), from how it is written: one type in
+// parentheses is that type, a function type is func(...) -> ..., and an
+// array's framing is written, [!]T, [5x?]T. Where the instances of a
+// generic's nested function differ, the generic's signature is shown so.
+export function shownTypeText(type: AST.Type): string {
+  const list = (t: AST.Type) => t.kind === 'CompositeType'
+    ? `(${t.fields.map((f) => (f.ident ? `${f.ident}: ` : '') + shownTypeText(f.type)).join(', ')})`
+    : `(${shownTypeText(t)})`
+  switch (type.kind) {
+    case 'CompositeType': {
+      const inner = ungroupedType(type)
+      return inner === type ? list(type) : shownTypeText(inner)
+    }
+    case 'FuncType': {
+      const output = ungroupedType(type.output)
+      return `func${list(type.input)}${output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${shownTypeText(output)}`}`
+    }
+    case 'TypeApply':
+      return `${type.name}(${type.args.map((a) => (a.kind === 'ValueArg' ? lengthText(a.value) : shownTypeText(a))).join(', ')})`
+    case 'PointerType':
+      return `${type.optional ? '?' : ''}*${type.mutable ? 'mut ' : ''}${shownTypeText(type.pointee)}`
+    case 'IndexedType': {
+      const size = type.manyPointer ? '*' : type.size === null ? '' : Array.isArray(type.size) ? type.size.join('x') : type.size === 'inferred' ? '_'
+        : type.size === 'expr' ? lengthText(type.length as AST.Expr) : `${type.size}`
+      const sizes = [...(size ? [size] : []), ...type.specifiers.map((s) => (s.kind === 'null' ? '!' : '?'))].join('x')
+      return `${type.optional ? '?' : ''}[${sizes}]${type.mutable ? 'mut ' : ''}${shownTypeText(type.element)}`
+    }
+    case 'OptionalType':
+      return `?${shownTypeText(type.type)}`
+    default:
+      return typeText(type)
+  }
+}
+
 // A function's type as a comptime function parameter declares it: the types
 // of its parameters and results, without their names. Several results keep
 // theirs, which are what makes them the fields of a struct.

@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { NestedFunc, TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, spellString, typeText, INSTANCE_STRIDE } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, spellString, shownTypeText, INSTANCE_STRIDE } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap, isValueArray } from './types'
 import { typeToWasm } from './codegen'
@@ -367,10 +367,9 @@ function nestedHover(module: AST.Module, checkResult: TypeCheckResult, defined: 
   // signature the generic writes, as a type is shown, from its own
   // declaration (an instance's copy has T replaced), and each instance's;
   // otherwise the one they all have
-  const { input, output } = (declStartingAt(generic.body, nested.decl.span.start % INSTANCE_STRIDE) ?? nested.decl).signature
+  const { input, output, span } = (declStartingAt(generic.body, nested.decl.span.start % INSTANCE_STRIDE) ?? nested.decl).signature
   const signed = new Set(copies.map((n) => typeToString(n.type))).size > 1
-  const results = output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${typeText(output)}`
-  const type = signed ? `func${typeText(input)}${results}` : typeToString(nested.type)
+  const type = signed ? shownTypeText({ kind: 'FuncType', input, output, span }) : typeToString(nested.type)
   const groups = new Map<string, { in: string[]; type: string; signature?: string }>()
   for (const n of copies) {
     const captures = capturesText(n) ?? 'nothing'
