@@ -4037,4 +4037,25 @@ export func two() -> u32 => gapply(u32, 2) + gapply(u64, 3)
     const result = typecheck(parsed.module!, { source })
     expect(hover(source, parsed.module!, result, source.indexOf('gh('))?.type).toBe('func(a: [4:u32]T, b: ?*T, c: *T) -> T')
   })
+
+  // The known bug of 12.4: a call above a test's function of the name calls
+  // the test's function. Where the wasm types agree the test build runs it;
+  // where they differ it does not assemble.
+  test('a call above a test\'s function of another signature', async () => {
+    const agree = await runTestsOfSource(`func f(x: u32) -> u32 => x + 1
+export func m() -> u32 => f(1)
+test "a" {
+  assert f(1) == 11
+  func f(x: i32) -> i32 => x + 10
+}
+`)
+    expect(agree).toEqual({ ran: ['a'], failed: [] })
+    await expect(runTestsOfSource(`func f(x: u32) -> u32 => x / 2
+export func m() -> u32 => f(1)
+test "a" {
+  assert f(8) == 4
+  func f(x: i64) -> i64 => x / 2
+}
+`)).rejects.toThrow(/type mismatch in call/)
+  })
 })
