@@ -698,8 +698,9 @@ function controlDepth(wat: string): number {
 // the way to the deepest one counts what wabt's stack was seen to take for it
 // at most, with a little to spare: a block or a loop 50, an if 46 (wabt
 // reads one if inside another 154 deep, a block 141 deep where its label is
-// used), any other instruction 30 (243 deep), and so does a block, a loop or
-// an if that is the condition of an if (an `a || b || c` chain: 255 deep). A
+// used), any other instruction 30 (243 deep), and so does a block or a loop
+// that is the condition of an if; an if that is the condition of an if counts
+// 28 (an `a || b || c` chain: wabt reads 255 of them one inside another). A
 // float constant written in decimals counts 1200: wabt reads it with the C
 // library's strtod, whose stack frame is large (an f64.const in each of 208
 // additions one inside another is as deep as wabt reads, where a local is
@@ -727,7 +728,7 @@ export function nestingOf(wat: string): number {
       if (parent && (word === 'then' || word === 'else')) parent.condition = false
       const inCondition = parent?.condition === true && !/^(?:result|param|type)$/.test(word)
       let weight = word === 'block' || word === 'loop' ? 50 : word === 'if' ? 46 : /^(?:func|then|else|result|param|local|type)$/.test(word) ? 0 : 30
-      if (inCondition && weight > 30) weight = 30
+      if (inCondition && weight > 30) weight = word === 'if' ? 28 : 30
       if ((word === 'f32.const' || word === 'f64.const') && decimalFloat(wat, i + 1 + word.length)) weight = 1200
       open.push({ weight, condition: word === 'if' })
       depth += weight

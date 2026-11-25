@@ -1256,15 +1256,17 @@ export memory 1
     expect(() => wat(`export func run() -> u32 {\nlet acc: u32 = 0\n${shallow}\nreturn acc\n}\n`)).not.toThrow()
   })
 
-  test('an if that is the condition of another counts as an operand does', async () => {
+  test('an if that is the condition of another counts less than one in a branch', async () => {
     // `a || b || c ...` is ifs each in the condition of the next, which wabt
-    // reads 255 deep: 200 tests are within the limit, as main assembles them
+    // reads 255 deep: 200 tests are within the limit, as main assembles them,
+    // and so are 248
     const tests = (n: number) => Array.from({ length: n }, (_, k) => `x == ${k * 3}`).join(' || ')
     const source = `export func run(x: u32) -> bool => ${tests(200)}\n`
     expect(nestingOf(watOf(source, '(func $run'))).toBeLessThanOrEqual(MAX_NESTING)
     const run = (await instance(source)).run as (x: number) => number
     expect([run(0), run(597), run(598), run(600)]).toEqual([1, 1, 0, 0])
-    expect(() => wat(`export func run(x: u32) -> bool => ${tests(240)}\n`)).toThrow("function 'run' nests its code 7246 deep")
+    expect(nestingOf(watOf(`export func run(x: u32) -> bool => ${tests(248)}\n`, '(func $run'))).toBe(6994)
+    expect(() => wat(`export func run(x: u32) -> bool => ${tests(249)}\n`)).toThrow("function 'run' nests its code 7022 deep")
   })
 
   test('a float constant counts what wabt reads it with', () => {
