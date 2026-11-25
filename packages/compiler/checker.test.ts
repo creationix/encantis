@@ -4849,6 +4849,46 @@ describe('a refused value says nothing more where it is used', () => {
   test('data given a refused value is declared, refused', () => {
     expect(placed('data dk = -true\nexport func f() -> u32 {\n  let m = dk\n  return 0\n}')).toEqual(["1:11 '-' needs a number, not bool"])
   })
+  test('data of a type written, given a refused value, is of that type all the same', () => {
+    expect(placed('data dk: u32 = -true\ndata dp: *[2]u8 = -true\nexport func h() -> bool => dk\nexport func i() -> *[2]u8 => dp')).toEqual([
+      "1:16 '-' needs a number, not bool",
+      "2:19 '-' needs a number, not bool",
+      '3:28 cannot assign *u32 to bool',
+    ])
+  })
+  test('a run-time value for a comptime parameter says what is wrong with its code', () => {
+    expect(placed('type P = (x: u32, y: u32)\nfunc ct(comptime n: u32) -> u32 => n\nfunc two(a: u32) -> u32 => a\nexport func f(s: P, b: bool, i: u32, t: []u32, p: *u32) -> u32 {\n  let a = ct(s < s) + ct(!i) + ct(t.nofield) + ct(two(1, 2)) + ct(p[3]) + ct(t[i])\n  return 0\n}')).toEqual([
+      "5:14 '<' cannot be applied to P and P",
+      "5:14 argument 1 of 'ct' must be a compile-time constant: n is a comptime value parameter",
+      "5:27 operand of '!' must be bool, not u32",
+      "5:26 argument 1 of 'ct' must be a compile-time constant: n is a comptime value parameter",
+      "5:35 no field 'nofield' on type []u32",
+      "5:35 argument 1 of 'ct' must be a compile-time constant: n is a comptime value parameter",
+      "5:51 'two' expected 1 argument, got 2",
+      "5:51 argument 1 of 'ct' must be a compile-time constant: n is a comptime value parameter",
+      "5:69 cannot index *u32 past its one element: read it with .*, or index a [*]u32",
+      "5:67 argument 1 of 'ct' must be a compile-time constant: n is a comptime value parameter",
+      "5:78 argument 1 of 'ct' must be a compile-time constant: n is a comptime value parameter",
+    ])
+  })
+  test('a variant of an enum left out leaves what else is wrong where a constant is wanted', () => {
+    expect(placed('enum Q { A }\nenum Q { B }\nfunc idf(comptime n: u32) -> u32 => n\nglobal g2: [B + nofunc()]u8\nglobal g3: [B + -true]u8\nglobal g4: [B + 1]u8\nexport func f(x: u32) -> u32 => idf(B + x) + idf(-true + B) + idf(B + zz) + idf(B * 2)')).toEqual([
+      "2:6 'Q' is already declared",
+      "4:17 unknown identifier 'nofunc'",
+      '5:13 array length must be a compile-time constant',
+      "7:37 argument 1 of 'idf' must be a compile-time constant: n is a comptime value parameter",
+      "7:50 '-' needs a number, not bool",
+      "7:71 unknown identifier 'zz' — did you mean 'x'?",
+    ])
+  })
+  test('a read of an element whose type did not resolve may be optional, and is refused', () => {
+    expect(placed('export func f(t: *[4]*u8, u: *[4]Nope, w: *mut [4]Nope, n: u32) -> u32 {\n  let a = t[n]\n  let b = u[n]\n  let c = u[5]\n  w[n] = 5\n  return 0\n}')).toEqual([
+      "1:34 unknown type 'Nope'",
+      "1:51 unknown type 'Nope'",
+      '4:13 index 5 out of bounds for *[4]i32',
+      '5:5 writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])',
+    ])
+  })
   test('next to other values: elements, branches, a template', () => {
     expect(errs('type P = (x: u32, y: u32)\nfunc a(b: bool, s: P, x: f32) -> u32 {\n  let t = [-b, true]\n  let u = [s & 1, s]\n  let v = [~x, true]\n  let w = if b { -b } else { P(1, 2) }\n  let m = `a${-b}b`\n  return 0\n}')).toEqual([
       "'-' needs a number, not bool",

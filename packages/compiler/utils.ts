@@ -164,6 +164,52 @@ export function serializeFloat(value: number, typeName: string): Uint8Array | nu
   }
 }
 
+// The f32 nearest a decimal float literal (`1.25`, `-3.0e-5`), where it is
+// not the f32 nearest the f64 its text is read as. Rounding the decimal to
+// an f64 first and then to an f32 lands on the wrong f32 only where the f64
+// is exactly halfway between two f32s and the decimal is not:
+// 1.0000000596046448 is above 1 + 2^-24, whose f64 it is read as, and its
+// f32 is 1 + 2^-23, not 1 (ties to even). Undefined where Math.fround of
+// the f64 is the f32 nearest the decimal.
+export function decimalF32(text: string): number | undefined {
+  const m = /^([+-]?)(\d+)\.(\d+)(?:[eE]([+-]?\d+))?$/.exec(text)
+  if (!m) return undefined
+  const x = Math.abs(Number.parseFloat(text))
+  const near = Math.fround(x)
+  if (!Number.isFinite(x) || near === x) return undefined
+  // The f32s on either side of x, and the midpoint between them (2^128
+  // stands for the one past the largest f32)
+  const bits = new DataView(new ArrayBuffer(4))
+  bits.setFloat32(0, near)
+  const step = (by: number) => {
+    bits.setUint32(0, bits.getUint32(0) + by)
+    return bits.getFloat32(0)
+  }
+  const [lo, hi] = near < x ? [near, step(1)] : [step(-1), near]
+  const mid = (lo + (Number.isFinite(hi) ? hi : 2 ** 128)) / 2
+  if (mid !== x) return undefined
+  // The decimal, n * 10^e, against the midpoint, the f64 x: k * 2^p
+  const n = BigInt(m[2] + m[3])
+  const e = Number(m[4] ?? 0) - m[3].length
+  const f64 = new DataView(new ArrayBuffer(8))
+  f64.setFloat64(0, x)
+  const raw = f64.getBigUint64(0)
+  const biased = Number(raw >> 52n)
+  const k = (raw & ((1n << 52n) - 1n)) | (biased === 0 ? 0n : 1n << 52n)
+  const p = (biased === 0 ? 1 : biased) - 1075
+  const decimal = n * 10n ** BigInt(Math.max(e, 0)) * 2n ** BigInt(Math.max(-p, 0))
+  const binary = k * 2n ** BigInt(Math.max(p, 0)) * 10n ** BigInt(Math.max(-e, 0))
+  const nearest = decimal > binary ? hi : decimal < binary ? lo : near
+  if (nearest === near) return undefined
+  return m[1] === '-' ? -nearest : nearest
+}
+
+// The f32 a float constant is: the one worked out from its decimals where
+// that is not the f64's (decimalF32), or the f64's nearest
+export function f32Of(value: { value: number; f32?: number }): number {
+  return value.f32 ?? Math.fround(value.value)
+}
+
 /** Fast f64 serialization (common for floats) */
 export function serializeF64(value: number): Uint8Array {
   const buf = new Uint8Array(8)

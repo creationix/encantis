@@ -21,6 +21,7 @@ import {
 import * as RT from './types'
 import { dataToWat, buildDataSection, buildProgramDataSection, literalLength, type DataRef, type DataSectionBuilder } from './data-pack'
 import { wideCall, wideHelperName, wideHelpersFor, type WideBinaryOp } from './wide-int'
+import { f32Of } from './utils'
 
 // === Context ===
 
@@ -369,7 +370,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
         throw new Error(`Missing type for float literal at offset ${expr.span.start}`)
       }
       const wt = typeToWasmSingle(type)
-      return `(${wt}.const ${floatConstText(wt, lit.value)})`
+      return `(${wt}.const ${floatConstText(wt, lit)})`
     }
 
     case 'bool':
@@ -396,13 +397,14 @@ function numberText(value: number | bigint): string {
 }
 
 // A float constant of a wasm type as WAT writes it. An f32 is the f32 the
-// compiler holds, as data lays it out (the nearest f32, ties to even), in
-// text that reads back as exactly that f32: an f64's shortest text may lie
-// on the other side of the midpoint of two f32s, and wabt would round it to
-// the other (1.000000059604644775390625, halfway between 1 and the next f32,
-// is 1, and the f64's text 1.0000000596046448 would be the next).
-function floatConstText(wt: string, value: number): string {
-  return numberText(wt === 'f32' ? Math.fround(value) : value)
+// compiler holds, as data lays it out (the f32 nearest the decimals written,
+// ties to even), in text that reads back as exactly that f32: an f64's
+// shortest text may lie on the other side of the midpoint of two f32s, and
+// wabt would round it to the other (1.000000059604644775390625, halfway
+// between 1 and the next f32, is 1, and the f64's text 1.0000000596046448
+// would be the next).
+function floatConstText(wt: string, value: { value: number; f32?: number }): string {
+  return numberText(wt === 'f32' ? f32Of(value) : value.value)
 }
 
 // A literal that lies in the data section, as the slice over all of it.
@@ -569,7 +571,7 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
       }
       if (val.kind === 'float') {
         const wt = typeToWasmSingle(sym.type)
-        return `(${wt}.const ${floatConstText(wt, val.value)})`
+        return `(${wt}.const ${floatConstText(wt, val)})`
       }
       if (val.kind === 'bool') {
         return `(i32.const ${val.value ? 1 : 0})`
@@ -3076,7 +3078,7 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
         if (p.kind === 'literal') {
           const litValue =
             p.value.kind === 'int' || p.value.kind === 'float'
-              ? `(${wt}.const ${p.value.kind === 'float' ? floatConstText(wt, p.value.value) : numberText(p.value.value)})`
+              ? `(${wt}.const ${p.value.kind === 'float' ? floatConstText(wt, p.value) : numberText(p.value.value)})`
               : p.value.kind === 'bool'
                 ? `(i32.const ${p.value.value ? 1 : 0})`
                 : '(i32.const 0)'
@@ -4879,7 +4881,7 @@ function constantToWat(value: ComptimeValue, type: ResolvedType): string | null 
   if (value.kind === 'bool') return `(i32.const ${value.value ? 1 : 0})`
   if (value.kind === 'data_ptr' || value.kind === 'type' || value.kind === 'func') return null
   if (wt === 'f32' || wt === 'f64') {
-    const v = wt === 'f32' ? Math.fround(Number(value.value)) : Number(value.value)
+    const v = wt === 'f32' ? (value.kind === 'float' ? f32Of(value) : Math.fround(Number(value.value))) : Number(value.value)
     const text = Number.isNaN(v) ? 'nan' : !Number.isFinite(v) ? (v > 0 ? 'inf' : '-inf') : Object.is(v, -0) ? '-0' : `${v}`
     return `(${wt}.const ${text})`
   }

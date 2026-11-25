@@ -515,9 +515,19 @@ export interface LiteralExpr extends BaseNode {
 
 export type LiteralValue =
   | { kind: 'int'; value: bigint; radix: 10 | 16 | 2 | 8 | 12 }
-  | { kind: 'float'; value: number }
+  // f32: the f32 nearest the decimals written, where it is not the f32
+  // nearest `value` (a decimal just past halfway between two f32s)
+  | { kind: 'float'; value: number; f32?: number }
   | { kind: 'string'; bytes: Uint8Array }
   | { kind: 'bool'; value: boolean }
+
+// A number literal's value negated: a new value, its f32 too where it has
+// one of its own (utils' decimalF32)
+export function negatedLiteral(value: LiteralValue): LiteralValue {
+  if (value.kind === 'float') return value.f32 === undefined ? { ...value, value: -value.value } : { ...value, value: -value.value, f32: -value.f32 }
+  if (value.kind === 'int') return { ...value, value: -value.value }
+  return value
+}
 
 // [expr, expr, ...]
 export interface ArrayExpr extends BaseNode {

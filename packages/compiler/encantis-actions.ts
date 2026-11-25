@@ -1,7 +1,8 @@
 import * as ohm from 'ohm-js'
 import type * as AST from './ast'
+import { negatedLiteral } from './ast'
 import type { Span } from './ast'
-import { hexToBytes } from './utils'
+import { decimalF32, hexToBytes } from './utils'
 
 // Per-parse defs map used to inline def values during parsing
 // Stores both the value and optional type annotation for wrapping inlined
@@ -1560,14 +1561,16 @@ export const semanticsActions: Record<string, SemanticAction> = {
               : inner
     // The integer 0 written as a float (`def z: f32 = 0`, whose use is
     // (0:f32)) is no negative integer: negated, it is the float -0, as -t
-    // is for a variable t that holds 0, so it is negated as a float is.
+    // is for a variable t that holds 0, so it is negated as a float is. So
+    // may it be where the type is a name (`def zf: F = 0` for `type F =
+    // f32`), which the checker sees through.
     const typed = inner.kind === 'AnnotationExpr' || inner.kind === 'CastExpr' ? inner.type : null
-    const floatZero = typed?.kind === 'PrimitiveType' && (typed.name === 'f32' || typed.name === 'f64')
-      && lit.kind === 'LiteralExpr' && lit.value.kind === 'int' && BigInt(lit.value.value) === 0n
+    const mayBeFloat = typed?.kind === 'TypeRef' || (typed?.kind === 'PrimitiveType' && (typed.name === 'f32' || typed.name === 'f64'))
+    const floatZero = mayBeFloat && lit.kind === 'LiteralExpr' && lit.value.kind === 'int' && BigInt(lit.value.value) === 0n
     if (!floatZero && lit.kind === 'LiteralExpr' && (lit.value.kind === 'int' || lit.value.kind === 'float')) {
       // A new value, not a change to this one: every use of a def shares the
       // value of the def's literal.
-      lit.value = { ...lit.value, value: -lit.value.value } as AST.LiteralValue
+      lit.value = negatedLiteral(lit.value)
       lit.span = { start: s.start, end: lit.span.end }
       inner.span = s
       return inner
@@ -2087,9 +2090,12 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   floatLiteral(_neg, _int, _dot, _frac, _exp) {
+    // Its f32, where rounding the f64 it is read as would land on another
+    // (decimalF32)
+    const f32 = decimalF32(this.sourceString)
     return {
       kind: 'LiteralExpr',
-      value: { kind: 'float', value: parseFloat(this.sourceString) },
+      value: f32 === undefined ? { kind: 'float', value: parseFloat(this.sourceString) } : { kind: 'float', value: parseFloat(this.sourceString), f32 },
       span: span(this),
     } as AST.LiteralExpr
   },

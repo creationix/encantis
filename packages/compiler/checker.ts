@@ -2,8 +2,9 @@
 // Produces a TypeCheckResult with concrete types attached to all AST nodes
 
 import type * as AST from './ast'
-import { argValue, ungroupedType, walkFuncBody, walkStatement } from './ast'
+import { argValue, negatedLiteral, ungroupedType, walkFuncBody, walkStatement } from './ast'
 import { isSourceImport, resolveModulePath } from './loader'
+import { f32Of } from './utils'
 import {
   type ResolvedType,
   type ForwardRefRT,
@@ -89,7 +90,9 @@ import {
 // parameter is given
 export type ComptimeValue =
   | { kind: 'int'; value: bigint }
-  | { kind: 'float'; value: number }
+  // f32: a literal's own f32, where it is not the f32 nearest `value`
+  // (AST.LiteralValue)
+  | { kind: 'float'; value: number; f32?: number }
   | { kind: 'bool'; value: boolean }
   | { kind: 'data_ptr'; id: number }  // pointer to data section literal (id is AST offset for literalRefs lookup)
   | { kind: 'type'; type: ResolvedType }  // the argument of `comptime T: type`
@@ -1059,6 +1062,10 @@ class CheckContext {
   moduleScope: Scope = { parent: null, symbols: new Map() }
   currentScope: Scope = this.moduleScope
   insideIfLetCondition = false
+  // Inside a value read at run time given for a comptime value parameter,
+  // which is that one error: an index in it is not told it needs an if let
+  // (evalComptimeArg)
+  runTimeArgument = 0
   currentReturnType: ResolvedType | null = null
   // The named results an expression body is being checked against, when
   // there are several: its value fills them in order.
@@ -2445,8 +2452,15 @@ class CheckContext {
       this.error(decl.span.start, `def cannot contain array/string literals — use 'data ${decl.ident} = ...' instead`)
     }
 
-    // Regular comptime value (int, float, bool)
-    const value = this.evalComptimeExpr(decl.value)
+    // Regular comptime value (int, float, bool). One of a float type is its
+    // value in that type, as each use of it is, which the parser puts in as
+    // (value):type: (7 / 2):f64 is 3.5, and (1 / 0):f64 infinity (3.1).
+    let value = this.evalComptimeExpr(decl.value)
+    if (decl.type && declaredType && isFloat(unwrap(declaredType)) && !isFloat(unwrap(inferredType))) {
+      const annotated: AST.AnnotationExpr = { kind: 'AnnotationExpr', expr: decl.value, type: decl.type, span: decl.value.span }
+      this.attempt(null, () => this.inferExpr(annotated))
+      value = this.evalComptimeExpr(annotated) ?? value
+    }
     // A refused value (a type's name, a refused operator) has its error
     // already, and each use of the def is a refused value too.
     const refused = !value && ((inferredType === RECOVERY && !this.readsRunTime(decl.value)) || this.refusedValue(decl.value))
@@ -2571,12 +2585,15 @@ class CheckContext {
     // For non-array data (scalars, tuples), still serialize to data section
     const type = declaredType ?? this.concretize(inferredType)
     const expr = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
-    if (expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr') {
+    // A number negated is one number too: -z for a `def z: f32 = 0` is -0,
+    // which the parser leaves to the checker to work out (3.2).
+    const negated = expr.kind === 'UnaryExpr' && expr.op === '-' && expr.operand.kind === 'AnnotationExpr' && isNumberLiteral(expr.operand)
+    if (expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr' || negated) {
       // A number written with its type (0.1:f32, or a def's value put in
       // where its name is written) is laid out as that value: the f32
       // nearest it, widened in an f64. It is the block of this data: one
       // def's value used for two is two blocks, each of its own type.
-      const laidOut = value.kind === 'AnnotationExpr' && expr.kind === 'LiteralExpr' ? value : expr
+      const laidOut = value.kind === 'AnnotationExpr' && (expr.kind === 'LiteralExpr' || negated) ? value : expr
       const dataId = laidOut.span.start
       if (laidOut.kind === 'LiteralExpr') {
         (laidOut as AST.LiteralExpr).dataId = dataId
@@ -2584,7 +2601,7 @@ class CheckContext {
       // The value is checked against the type written, as any value is
       // (2.10): a number laid out by itself as one in an array is.
       const reported = this.errors.length
-      if (declaredType && !(expr.kind === 'TupleExpr' && unwrap(declaredType).kind !== 'tuple')) this.checkExpr(value, declaredType)
+      if (declaredType) this.checkExpr(value, declaredType)
       if (this.errors.length === reported) {
         const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
         this.addLiteral(dataId, laidOut, arrType)
@@ -2604,15 +2621,19 @@ class CheckContext {
 
     // A literal whose type has the error says nothing more, and a refused
     // value (`data dk = -true`) neither: the data is declared all the same,
-    // refused, so its uses say nothing more either.
+    // refused, so its uses say nothing more either. With a type written, it
+    // is of the type that says (`data dk: u32 = -true` is a *u32), whatever
+    // the value: a pointer or a slice written is the name's own type.
     if (!unresolved(inferredType)) {
       this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
       return
     }
-    const sym = { kind: 'def' as const, type: RECOVERY, value: { kind: 'data_ptr' as const, id: value.span.start } }
+    const addressed = declaredType && (unwrap(declaredType).kind === 'pointer' || unwrap(declaredType).kind === 'slice')
+    const refusedType = !declaredType ? RECOVERY : addressed ? declaredType : pointer(declaredType, false, isMut)
+    const sym = { kind: 'def' as const, type: refusedType, value: { kind: 'data_ptr' as const, id: value.span.start } }
     this.moduleScope.symbols.set(dataKey, sym)
     this.currentScope.symbols.set(decl.ident, sym)
-    if (dataIdentOff !== null) this.types.set(typeKey(dataIdentOff, 'IdentPattern'), RECOVERY)
+    if (dataIdentOff !== null) this.types.set(typeKey(dataIdentOff, 'IdentPattern'), refusedType)
     this.recordDeclared(decl.ident, decl.span.start, sym)
   }
 
@@ -3075,7 +3096,7 @@ class CheckContext {
         return { kind: 'int', value: lit.value }
       }
       if (lit.kind === 'float') {
-        return { kind: 'float', value: lit.value }
+        return lit.f32 === undefined ? { kind: 'float', value: lit.value } : { kind: 'float', value: lit.value, f32: lit.f32 }
       }
       if (lit.kind === 'bool') {
         return { kind: 'bool', value: lit.value }
@@ -3100,7 +3121,7 @@ class CheckContext {
         return { kind: 'int', value: -operand.value }
       }
       if (operand?.kind === 'float') {
-        return { kind: 'float', value: -operand.value }
+        return operand.f32 === undefined ? { kind: 'float', value: -operand.value } : { kind: 'float', value: -operand.value, f32: -operand.f32 }
       }
     }
 
@@ -3181,6 +3202,9 @@ class CheckContext {
       if (sym?.kind === 'def') {
         return sym.value
       }
+      // A variant of an enum left out, taken for a number to see whether
+      // what is around it is a constant (constantBesidesLeftOut)
+      if (this.leftOutValue !== null && this.isLeftOut(expr.name)) return { kind: 'int', value: this.leftOutValue }
     }
 
     // Handle member access: .len and .wid on pointer-to-array types
@@ -3317,8 +3341,34 @@ class CheckContext {
   // wanted (an array length, a comptime argument).
   private namesLeftOut(expr: AST.Expr | AST.Type): boolean {
     const names = expr.kind === 'TypeRef' ? [expr.name] : unknownNames(expr).map((n) => n.name)
-    return names.some((name) => this.leftOutVariants.has(name) && !this.lookup(name))
+    return names.some((name) => this.isLeftOut(name))
   }
+
+  // Whether a name is a variant of an enum left out, and names nothing else
+  private isLeftOut(name: string): boolean {
+    return this.leftOutVariants.has(name) && !this.lookup(name)
+  }
+
+  // Whether an expression that names a variant of an enum left out is a
+  // constant whatever number the variant stands for: then the variant is its
+  // one error; otherwise what else is wrong with it is said as it would be
+  // (`B + nofunc()`, `B + x` for a parameter x).
+  private constantBesidesLeftOut(expr: AST.Expr): boolean {
+    const outer = this.leftOutValue
+    try {
+      for (const stand of [1n, 2n]) {
+        this.leftOutValue = stand
+        if (this.evalComptimeExpr(expr) !== null) return true
+      }
+      return false
+    } finally {
+      this.leftOutValue = outer
+    }
+  }
+
+  // The number a variant of an enum left out stands for while
+  // constantBesidesLeftOut evaluates around it
+  private leftOutValue: bigint | null = null
 
   // Whether an expression is the value of a refused def, put in by the
   // parser where the def's name is written: a refused value, its error said
@@ -4836,9 +4886,10 @@ class CheckContext {
     // signature is resolved where it is collected and again where its
     // function is checked.
     // A name the module declares further down is no unknown one. A variant
-    // of an enum left out is a refused value.
-    if (this.namesLeftOut(expr)) return null
-    const unknown = unknownNames(expr).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name) && !this.valueNames.has(name.name))
+    // of an enum left out is a refused value: the clash is its one error,
+    // and what else is wrong is said.
+    if (this.namesLeftOut(expr) && this.constantBesidesLeftOut(expr)) return null
+    const unknown = unknownNames(expr).find((name) => !this.lookup(name.name) && !this.isLeftOut(name.name) && !this.signatureNames?.has(name.name) && !this.valueNames.has(name.name))
     if (unknown) {
       if (!this.unknownInTypes.has(unknown.span.start)) this.error(unknown.span.start, this.unknownIdentifier(unknown.name, true))
       this.unknownInTypes.add(unknown.span.start)
@@ -8733,13 +8784,16 @@ class CheckContext {
     // when it can be one, checked when it is read; otherwise if let or ??
     // has to resolve the index where it is taken.
     const unproven = (elem: ResolvedType, problem: string, why = ''): ResolvedType => {
+      // An element whose type did not resolve may be one that has an
+      // optional (a pointer): read, it is refused, and says nothing more
+      if (!row && unresolved(elem) && this.writingTo !== expr) return RECOVERY
       if (!row && (unwrap(elem).kind === 'pointer' || unwrap(elem).kind === 'slice')) {
         if (this.looking && !this.unproven.has(expr)) this.lookUnproven.push(expr)
         this.unproven.add(expr)
         return optionalOf(elem)
       }
       if (this.writingTo === expr) this.unprovenWrite(expr)
-      else if (!this.insideIfLetCondition) {
+      else if (!this.insideIfLetCondition && this.runTimeArgument === 0) {
         this.error(expr.index.span.start, `${problem} requires 'if let' or '??'${why} (${noOptional(elem)})`)
       }
       return row ?? elem
@@ -8825,7 +8879,7 @@ class CheckContext {
         const elem = packed ? pointer(array(arrayType.element, sizes.slice(1)), false, objType.mutable) : arrayType.element
         const shown = packed ? typeToString(pointer(arrayType)) : `*[${sizes?.[0]}]${typeToString(elem)}`
         const notOptional = (problem: string): ResolvedType => {
-          if (!this.insideIfLetCondition) this.error(expr.index.span.start, `${problem} requires 'if let' or '??' (rows are not optional)`)
+          if (!this.insideIfLetCondition && this.runTimeArgument === 0) this.error(expr.index.span.start, `${problem} requires 'if let' or '??' (rows are not optional)`)
           return elem
         }
         // Fixed-size pointer array *[N]T: check bounds
@@ -9903,18 +9957,18 @@ class CheckContext {
     // The value of a refused def has its one error, at the def, and a
     // variant of an enum left out the clash.
     if (this.refusedDefUse(arg.kind === 'ValueArg' ? ungrouped(arg.value) : arg)) return null
-    if (this.namesLeftOut(arg.kind === 'ValueArg' ? arg.value : arg)) return null
+    if (arg.kind === 'ValueArg' ? this.namesLeftOut(arg.value) && this.constantBesidesLeftOut(arg.value) : this.namesLeftOut(arg)) return null
     if (arg.kind !== 'ValueArg') return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
     // As in a length: a def declared further down is a number here too
     this.collectDefsIn(arg.value)
     const value = this.evalComptimeExpr(arg.value)
     if (value === null) {
-      const unknown = unknownNames(arg.value).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name))
+      const unknown = unknownNames(arg.value).find((name) => !this.lookup(name.name) && !this.isLeftOut(name.name) && !this.signatureNames?.has(name.name))
       if (unknown) return fail(this.unknownIdentifier(unknown.name, true))
       if (this.dividesByZero(arg.value)) return fail(`${place} divides by zero`)
       // A refused value (a refused operator) has its one error. (A name of
       // the signature's, a parameter, is no value here.)
-      if (unknownNames(arg.value).every((name) => this.lookup(name.name))) {
+      if (unknownNames(arg.value).every((name) => this.lookup(name.name) || this.isLeftOut(name.name))) {
         this.inferExpr(arg.value)
         if (this.refusedValue(arg.value)) return null
       }
@@ -10592,19 +10646,22 @@ class CheckContext {
         // A refused value (a refused operator, a use of a refused def, a
         // variant of an enum left out) has its one error: that it is no
         // constant is not said as well.
-        if (this.refusedDefUse(ungrouped(arg)) || this.namesLeftOut(arg)) return null
-        // Its value is inferred to tell which it is. A refused value's own
-        // error is said, and so is that of a refused operator on a value read
-        // at run time (`ct(-b)`, b a bool parameter); any other value read at
-        // run time is the one error below, not what its code would be told
-        // as well (`d[i]` an index that needs an if let).
-        if (constant === null && !this.typeApplied(arg) && unknownNames(arg).every((n) => this.lookup(n.name))) {
-          const type = this.attempt(null, () => this.inferExpr(arg))
-          const refused = this.refusedValue(arg)
-          if (refused || type === RECOVERY) this.inferExpr(arg)
-          if (refused) return null
+        if (this.refusedDefUse(ungrouped(arg)) || (this.namesLeftOut(arg) && this.constantBesidesLeftOut(arg))) return null
+        // Its value is inferred to tell which it is. Its code's own errors
+        // are said (a refused operator, `ct(-b)` for b a bool parameter, a
+        // field it has not, a call of the wrong arity), and a value read at
+        // run time is the one error below as well; an index in it is not
+        // told it needs an if let (`d[i]`), as it is no constant either way.
+        if (constant === null && !this.typeApplied(arg) && unknownNames(arg).every((n) => this.lookup(n.name) || this.isLeftOut(n.name))) {
+          this.runTimeArgument++
+          try {
+            this.inferExpr(arg)
+          } finally {
+            this.runTimeArgument--
+          }
+          if (this.refusedValue(arg)) return null
         }
-        const unknown = constant === null ? unknownNames(arg).find((n) => !this.lookup(n.name)) : undefined
+        const unknown = constant === null ? unknownNames(arg).find((n) => !this.lookup(n.name) && !this.isLeftOut(n.name)) : undefined
         if (unknown && !this.typeApplied(arg)) {
           this.error(unknown.span.start, this.unknownIdentifier(unknown.name, true))
           return null
@@ -12619,7 +12676,7 @@ function negatedNumber(expr: AST.UnaryExpr): AST.Expr | null {
   const inner = expr.operand
   const lit = inner.kind === 'AnnotationExpr' || inner.kind === 'CastExpr' ? inner.expr : inner
   if (lit.kind !== 'LiteralExpr' || lit.param === undefined || (lit.value.kind !== 'int' && lit.value.kind !== 'float')) return null
-  const negated: AST.LiteralExpr = { ...lit, value: { ...lit.value, value: -lit.value.value } as AST.LiteralValue, span: { start: expr.span.start, end: lit.span.end } }
+  const negated: AST.LiteralExpr = { ...lit, value: negatedLiteral(lit.value), span: { start: expr.span.start, end: lit.span.end } }
   if (inner === lit) return { ...negated, span: expr.span }
   return { ...inner, expr: negated, span: expr.span } as AST.Expr
 }
@@ -12944,7 +13001,7 @@ function constantIn(value: ComptimeValue, type: ResolvedType): ComptimeValue {
   if (t.kind !== 'primitive' || isBool(t) || (value.kind !== 'int' && value.kind !== 'float')) return value
   if (isFloat(t)) {
     if (t.name === 'f64') return { kind: 'float', value: Number(value.value) }
-    return { kind: 'float', value: value.kind === 'int' ? nearestF32(value.value) : Math.fround(value.value) }
+    return { kind: 'float', value: value.kind === 'int' ? nearestF32(value.value) : f32Of(value) }
   }
   if (value.kind === 'float') return value
   const bits = (byteSize(t) ?? 4) * 8
@@ -13283,6 +13340,14 @@ function isVariable(sym: Symbol): sym is Extract<Symbol, { kind: 'local' | 'para
 function ungrouped(expr: AST.Expr): AST.Expr {
   const inner = groupedExpr(expr)
   return inner ? ungrouped(inner) : expr
+}
+
+// Whether an expression is a number as written, with its type written
+// (0:f32) or not
+function isNumberLiteral(expr: AST.Expr): boolean {
+  let e = ungrouped(expr)
+  while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+  return e.kind === 'LiteralExpr' && (e.value.kind === 'int' || e.value.kind === 'float')
 }
 
 // What to say of a struct value whose fields are those of the struct

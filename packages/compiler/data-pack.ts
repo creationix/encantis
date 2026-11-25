@@ -11,6 +11,7 @@ import {
   serializeI32,
   serializeF64,
   serializeFloat,
+  f32Of,
 } from './utils'
 
 // Helper to extract framing specifiers from sizes array
@@ -688,7 +689,7 @@ function constantBytes(value: ComptimeValue, type: ResolvedType, builder: DataSe
   if (value.kind === 'bool') return new Uint8Array([value.value ? 1 : 0])
   if (value.kind === 'int' && t.kind === 'primitive') return serializeInt(value.value, t.name) ?? serializeFloat(Number(value.value), t.name)
   if (value.kind === 'int' && t.kind === 'pointer') return serializeInt(value.value, 'u32')
-  if (value.kind === 'float' && t.kind === 'primitive') return serializeFloat(value.value, t.name)
+  if (value.kind === 'float' && t.kind === 'primitive') return serializeFloat(t.name === 'f32' ? f32Of(value) : value.value, t.name)
   return null
 }
 
@@ -736,7 +737,8 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSect
   // A number written with its type, laid out by itself (`data x: f64 =
   // 0.1:f32`, a def's value): as an element is, its value as the checker
   // worked it out where it did (the f32 nearest 0.1, widened)
-  if (expr.kind === 'AnnotationExpr') return buildElementBytes(expr, elementType, framings, builder)
+  // So is a number negated (-z, for a `def z: f32 = 0`, is -0).
+  if (expr.kind === 'AnnotationExpr' || expr.kind === 'UnaryExpr') return buildElementBytes(expr, elementType, framings, builder)
 
   // For array expressions, serialize each element then apply outer framings
   if (expr.kind === 'ArrayExpr') {
@@ -1173,7 +1175,8 @@ function literalToBytes(expr: AST.LiteralExpr, written: ResolvedType): Uint8Arra
 
   if (lit.kind === 'float') {
     if (elementType.kind === 'primitive') {
-      const bytes = serializeFloat(lit.value, elementType.name)
+      // An f32 is the one nearest the decimals written (f32Of)
+      const bytes = serializeFloat(elementType.name === 'f32' ? f32Of(lit) : lit.value, elementType.name)
       if (bytes) return bytes
     }
     // Default comptime_float to f64
