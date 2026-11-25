@@ -493,6 +493,11 @@ export interface TypeCheckResult {
   // of another test's, would be the last one declared (#74), and the output
   // would give each of them that one's signature
   funcSyms: Map<AST.FuncDecl | AST.ImportFunc, Symbol>
+  // A test's function or import refused its name (an import's, a generic's,
+  // a global's, a name several functions of the module share): the type it
+  // has of its own all the same, which the editor shows at it. It is no
+  // name, so it is not in funcSyms.
+  refusedOwn: Map<AST.FuncDecl | AST.ImportFunc, Symbol>
   // How the program names each of its modules, by path: by its file's name,
   // or its path where two files share a name (see typecheckProgram)
   fileNames?: ReadonlyMap<string, string>
@@ -748,6 +753,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     takenOver: ctx.takenOver,
     unseen: ctx.unseen,
     funcSyms: ctx.funcSyms,
+    refusedOwn: ctx.refusedOwn,
     fileNames: ctx.fileNames,
   }
 }
@@ -1394,6 +1400,8 @@ class CheckContext {
   }
   // What each function declaration is (TypeCheckResult)
   funcSyms = new Map<AST.FuncDecl | AST.ImportFunc, Symbol>()
+  // A refused test function's or import's own type (TypeCheckResult)
+  refusedOwn = new Map<AST.FuncDecl | AST.ImportFunc, Symbol>()
   private openTests: AST.TestDecl[] = []
   // The name the output gives each function a test declares at its top, or
   // imports from the host, by its symbol: what an instance given it calls
@@ -2195,18 +2203,19 @@ class CheckContext {
   }
 
   // A test's function or import refused its name has a type of its own all
-  // the same, which the editor shows at it (funcSyms): the one it writes, or
-  // the function of another module it imports, resolved without saying
-  // again what is wrong with it (its body, checked, says that).
+  // the same, which the editor shows at it (refusedOwn): the one it writes,
+  // or the function of another module it imports, resolved without saying
+  // again what is wrong with it (its body, checked, says that). It is kept
+  // out of funcSyms, which holds what is declared.
   private keepOwn(decl: AST.FuncDecl | AST.ImportFunc, exported?: Symbol): void {
     if (isGenericSignature(decl.signature)) return
     if (exported) {
-      if (exported.kind === 'func') this.funcSyms.set(decl, { kind: 'func', type: exported.type, inline: exported.inline })
+      if (exported.kind === 'func') this.refusedOwn.set(decl, { kind: 'func', type: exported.type, inline: exported.inline })
       return
     }
     const errors = this.errors.length
     const reported = this.errorsReported
-    this.funcSyms.set(decl, { kind: 'func', type: this.resolveSignature(decl.signature), inline: decl.kind === 'FuncDecl' && decl.inline })
+    this.refusedOwn.set(decl, { kind: 'func', type: this.resolveSignature(decl.signature), inline: decl.kind === 'FuncDecl' && decl.inline })
     this.errors.length = errors
     this.errorsReported = reported
   }

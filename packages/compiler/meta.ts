@@ -357,10 +357,12 @@ class MetaBuilder {
         const name = item.item.ident ?? item.name
         const known = this.checkResult.funcNames.get(item.item) ?? name
         // One whose name a test took over has its own type and uses, as a
-        // function does (see collectFunc), and so does a test's import, also
-        // one refused its name (funcSyms)
+        // function does (see collectFunc), and so does a test's import. One
+        // refused its name is listed as the name it was refused is (a
+        // function of the module), with the type of its own (refusedOwn).
         const own = this.checkResult.takenOver.get(item.item.span.start) ?? this.checkResult.funcSyms?.get(item.item)
         const sym = own ?? this.checkResult.symbols.get(known)
+        const refused = this.checkResult.refusedOwn?.get(item.item)
         // The same function imported again is the first import's, found at
         // its local name as one more place of it (generateHintsForImport)
         if (this.checkResult.symbolRefs.has(this.findImportFuncOffset(item, name))) continue
@@ -368,7 +370,7 @@ class MetaBuilder {
           // Find the position of the function name in the import
           const offset = this.findImportFuncOffset(item, name)
           const recorded = this.checkResult.references.has(item.item.span.start) ? item.item.span.start : undefined
-          this.addSymbol(name, 'func', sym.type, offset, undefined, undefined, known, recorded)
+          this.addSymbol(name, 'func', refused?.kind === 'func' ? refused.type : sym.type, offset, undefined, undefined, known, recorded)
         } else if (sym?.kind === 'generic') {
           // Another module's generic is listed as one of this module's is,
           // with the signature written here: the editor then finds its name
@@ -487,7 +489,7 @@ class MetaBuilder {
       const checked = this.checked(decl)
       const recorded = this.checkResult.references.has(checked.span.start) ? checked.span.start : undefined
       // (or one refused its name, which has a type of its own all the same)
-      const own = this.checkResult.takenOver.get(checked.span.start) ?? this.checkResult.funcSyms?.get(checked)
+      const own = this.checkResult.takenOver.get(checked.span.start) ?? this.checkResult.funcSyms?.get(checked) ?? this.checkResult.refusedOwn?.get(checked)
       const type = own?.kind === 'func' ? own.type : sym.type
       const symbolIndex = this.addSymbol(decl.ident, 'func', type, offset, undefined, decl.inline, known, recorded)
 

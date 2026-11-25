@@ -513,9 +513,9 @@ export function hover(
   // Check module-scope symbols first. A function that shares its name is, at
   // its own declaration, the one declared there, and so is one whose name a
   // test took over, and a test's function refused its name, which has a
-  // type of its own all the same (funcSyms).
+  // type of its own all the same (refusedOwn).
   const declaration = funcDeclaredAt(module, checkResult, start, name)
-  const sym = testOwn ?? (declaration && (checkResult.takenOver.get(declaration.span.start) ?? checkResult.funcSyms?.get(declaration)))
+  const sym = testOwn ?? (declaration && (checkResult.takenOver.get(declaration.span.start) ?? checkResult.funcSyms?.get(declaration) ?? checkResult.refusedOwn?.get(declaration)))
     ?? checkResult.symbols.get(declaredAt(module, checkResult, start, name) ?? name)
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded

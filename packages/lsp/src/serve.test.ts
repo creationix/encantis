@@ -1175,4 +1175,26 @@ export func m() -> u32 {
     expect(at(source.indexOf('hash(k: f32'))).toContain('func hash(k:f32) -> f32')
     expect(at(source.indexOf('log(1)'))).toContain('func log(x:u32)')
   })
+
+  // A test's import or function refused a global's name is no name: module
+  // code's use of the global, and the global's import, are the global's
+  test('a test\'s import refused a global\'s name leaves the global its uses', () => {
+    const source = `import "env" "g" global g: u32
+global sg: u32 = 3
+export func f() -> u32 => g + sg
+test "t" {
+  func g() -> u32 => 1
+  import "env" "x" func g(x: u32) -> u32
+  import "env" "y" func sg()
+  assert true
+}
+`
+    const at = hoverIn(source)
+    expect(at(source.indexOf('g + sg'))).toContain('g:u32')
+    expect(at(source.indexOf('g + sg'))).not.toContain('func')
+    expect(at(source.indexOf('sg\n'))).toContain('global sg:u32')
+    expect(at(source.indexOf('g: u32'))).toBeNull()
+    const ask = serverFor(source)
+    expect(ask('onDefinition', source.indexOf('g + sg'))).toBeNull()
+  })
 })
