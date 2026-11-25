@@ -2206,7 +2206,7 @@ class CheckContext {
     }
     const errors = this.errors.length
     const reported = this.errorsReported
-    this.funcSyms.set(decl, { kind: 'func', type: this.resolveSignature(decl.signature) })
+    this.funcSyms.set(decl, { kind: 'func', type: this.resolveSignature(decl.signature), inline: decl.kind === 'FuncDecl' && decl.inline })
     this.errors.length = errors
     this.errorsReported = reported
   }
