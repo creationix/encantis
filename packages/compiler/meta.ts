@@ -357,8 +357,9 @@ class MetaBuilder {
         const name = item.item.ident ?? item.name
         const known = this.checkResult.funcNames.get(item.item) ?? name
         // One whose name a test took over has its own type and uses, as a
-        // function does (see collectFunc), and so does a test's import
-        const own = this.checkResult.takenOver.get(item.item.span.start)
+        // function does (see collectFunc), and so does a test's import, also
+        // one refused its name (funcSyms)
+        const own = this.checkResult.takenOver.get(item.item.span.start) ?? this.checkResult.funcSyms?.get(item.item)
         const sym = own ?? this.checkResult.symbols.get(known)
         // The same function imported again is the first import's, found at
         // its local name as one more place of it (generateHintsForImport)
@@ -1559,8 +1560,12 @@ class MetaBuilder {
     for (let next = this.checkResult.calls.get(last); next?.kind === 'CallExpr'; next = this.checkResult.calls.get(last)) last = next
     const called = last.callee.kind === 'IdentExpr' ? last.callee.name : name
     // Where the checker recorded which declaration the name is (a generic's
-    // call, also where a second generic of the name was refused), that one
-    const recorded = method === null ? this.checkResult.symbolRefs.get(this.checked(callee).span.start) : undefined
+    // call, also where a second generic of the name was refused, a generic's
+    // nested function), that one: for x.f(a), at the call f(x, a) it built,
+    // which starts at the method's name. In a generic's body it is recorded
+    // at the generic's own offset, for the first instance (these hints').
+    const at = method === null ? this.checked(callee).span.start : meant.callee.span.start
+    const recorded = this.checkResult.symbolRefs.get(at - this.shift)
     const symbolIndex = (recorded !== undefined ? this.symbolIndexByDef.get(recorded) : undefined) ?? this.symbolIndexByName.get(called) ?? this.symbolIndexByName.get(name)
     if (method !== null) this.generateHintsForExpr((callee as AST.MemberExpr).object)
     // The checker typed the callee it resolved: f of f(x, a), or the name as written.

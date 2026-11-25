@@ -3986,4 +3986,55 @@ export func m2() -> u32 {
       `'f' is already declared in this scope (first declared at 1:6)`,
     ])
   })
+
+  // A test's function or import refused its name shows its own type in
+  // hover: refused an import's name, a generic's and a shared one (12.4)
+  test('hover at a test\'s function or import refused its name shows its own type', () => {
+    const source = `func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+import "env" "log" func log(x: u32)
+func gen(comptime T: type, x: T) -> T => x
+test "a" {
+  func log(x: f32, y: f32) {}
+  import "env" "warn" func log(x: f64)
+  import "env" "h" func hash(k: f32) -> f32
+  func gen(x: f64) -> f64 => x
+  import "env" "g" func gen(x: i64) -> i64
+  assert true
+}
+export func m() -> u32 {
+  log(1)
+  return hash(2:u32) + gen(3:u32)
+}
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    const typeAt = (text: string) => hover(source, parsed.module!, result, source.indexOf(text))?.type
+    expect(typeAt('log(x: f32')).toBe('func(x: f32, y: f32)')
+    expect(typeAt('log(x: f64')).toBe('func(x: f64)')
+    expect(typeAt('hash(k: f32')).toBe('func(k: f32) -> f32')
+    expect(typeAt('gen(x: f64')).toBe('func(x: f64) -> f64')
+    expect(typeAt('gen(x: i64')).toBe('func(x: i64) -> i64')
+    // The module's keep theirs, at their declarations and calls
+    expect(typeAt('log(x: u32')).toBe('func(x: u32)')
+    expect(typeAt('log(1)')).toBe('func(x: u32)')
+    // and no error is said twice for them
+    expect(result.errors.map((e) => e.message).filter((m) => m.startsWith('unknown'))).toEqual([])
+  })
+
+  // Where a generic's nested function has other signatures in its
+  // instances, the generic's is shown as a type is: [4:u32]T, ?*T (Tools)
+  test('a generic\'s nested function shows its signature as a type is shown', () => {
+    const source = `func gapply(comptime T: type, x: T) -> u32 {
+  let v: T = x
+  func gh(a: [4:u32]T, b: ?  *T, c: *  T) -> T => v
+  let arr: [4]T = [x, x, x, x]
+  return gh(arr, 0 as ?*T, 0 as *T) as u32
+}
+export func two() -> u32 => gapply(u32, 2) + gapply(u64, 3)
+`
+    const parsed = parse(source, { filePath: 'test.ents' })
+    const result = typecheck(parsed.module!, { source })
+    expect(hover(source, parsed.module!, result, source.indexOf('gh('))?.type).toBe('func(a: [4:u32]T, b: ?*T, c: *T) -> T')
+  })
 })

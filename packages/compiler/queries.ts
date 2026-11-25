@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { NestedFunc, TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, spellString, INSTANCE_STRIDE } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, spellString, typeText, INSTANCE_STRIDE } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap, isValueArray } from './types'
 import { typeToWasm } from './codegen'
@@ -352,7 +352,7 @@ function nestedDefinedAt(checkResult: TypeCheckResult, defined: number): NestedF
 // nested in the generic (its path with the generic's name for the
 // instance's label), and its signature and what it captures in each, those
 // alike listed together.
-function nestedHover(module: AST.Module, checkResult: TypeCheckResult, defined: number, nested: NestedFunc, source: string): Pick<HoverResult, 'type' | 'nestedIn' | 'captures' | 'capturesIn'> {
+function nestedHover(module: AST.Module, checkResult: TypeCheckResult, defined: number, nested: NestedFunc): Pick<HoverResult, 'type' | 'nestedIn' | 'captures' | 'capturesIn'> {
   const copies = [...checkResult.nested.values()].filter((n) => n.nameAt >= INSTANCE_STRIDE && n.nameAt % INSTANCE_STRIDE === defined)
   const generic = genericAround(module, defined)
   if (copies.length < 2 || !generic?.ident) {
@@ -364,14 +364,13 @@ function nestedHover(module: AST.Module, checkResult: TypeCheckResult, defined: 
   const parent = nestedParent(nested)
   const nestedIn = label && parent.startsWith(label) ? `${generic.ident}${parent.slice(label.length)}` : parent
   // Where the instances' signatures differ (one written in terms of T), the
-  // signature the generic's source writes, and each instance's; otherwise
-  // the one they all have
-  const { input, output } = nested.decl.signature
-  const at = (offset: number) => offset % INSTANCE_STRIDE
-  const written = (node: AST.Type) => writtenType(source.slice(at(node.span.start), at(node.span.end)))
+  // signature the generic writes, as a type is shown, from its own
+  // declaration (an instance's copy has T replaced), and each instance's;
+  // otherwise the one they all have
+  const { input, output } = (declStartingAt(generic.body, nested.decl.span.start % INSTANCE_STRIDE) ?? nested.decl).signature
   const signed = new Set(copies.map((n) => typeToString(n.type))).size > 1
-  const results = output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${written(output)}`
-  const type = signed ? `func${written(input)}${results}` : typeToString(nested.type)
+  const results = output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${typeText(output)}`
+  const type = signed ? `func${typeText(input)}${results}` : typeToString(nested.type)
   const groups = new Map<string, { in: string[]; type: string; signature?: string }>()
   for (const n of copies) {
     const captures = capturesText(n) ?? 'nothing'
@@ -384,17 +383,24 @@ function nestedHover(module: AST.Module, checkResult: TypeCheckResult, defined: 
   return { type, nestedIn, capturesIn: [...groups.values()] }
 }
 
-// A type as the source writes it, on one line, without its comments and
-// spaced as a type is shown: func(y: T, z: T) -> T
-function writtenType(text: string): string {
-  return text
-    .replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/\s*([,:])\s*/g, '$1 ')
-    .replace(/\s*->\s*/g, ' -> ')
-    .replace(/\s+/g, ' ')
-    .replace(/([([])\s+/g, '$1')
-    .replace(/\s+([)\]])/g, '$1')
-    .trim()
+// The function declared in `node` (a generic's body) that starts at `start`
+function declStartingAt(node: unknown, start: number): AST.FuncDecl | undefined {
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      const found = declStartingAt(n, start)
+      if (found) return found
+    }
+    return undefined
+  }
+  if (node === null || typeof node !== 'object' || node instanceof Uint8Array) return undefined
+  const { kind, span } = node as { kind?: string; span?: AST.Span }
+  if (kind === 'FuncDecl' && span?.start === start) return node as AST.FuncDecl
+  if (span && (start < span.start || start >= span.end)) return undefined
+  for (const value of Object.values(node)) {
+    const found = declStartingAt(value, start)
+    if (found) return found
+  }
+  return undefined
 }
 
 // The innermost nested function whose declaration holds `offset`, of those
@@ -478,7 +484,7 @@ export function hover(
   // A nested function, where it is declared, called or given
   const nested = defined === undefined ? undefined : nestedDefinedAt(checkResult, defined)
   if (nested && defined !== undefined) {
-    const { type, ...shown } = nestedHover(module, checkResult, defined, nested, source)
+    const { type, ...shown } = nestedHover(module, checkResult, defined, nested)
     return { name, type, kind: 'func', ...shown }
   }
   // A function whose name a test took over (#74), where it is the one

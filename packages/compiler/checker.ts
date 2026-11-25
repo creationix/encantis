@@ -1848,8 +1848,10 @@ class CheckContext {
           // with a % first, which no other name has (see callableName).
           const name = callableName(item)
           if (name !== item.name && !item.item.ident) this.funcNames.set(item.item, name)
-          if (this.takenByGeneric(name, item.span.start)) break
-          if (this.takenByAnother(name, item.span.start, 'func', inTest, true)) break
+          if (this.takenByGeneric(name, item.span.start) || this.takenByAnother(name, item.span.start, 'func', inTest, true)) {
+            if (inTest) this.keepOwn(item.item, depExports?.get(item.name))
+            break
+          }
           // A test takes no name of an import of the module (12.4). A
           // function of another source module imported again is that one
           // again (3.4); a host function is not, whatever its parameters
@@ -1861,6 +1863,7 @@ class CheckContext {
           const known = inTest && !this.shared(name) ? this.importedFuncs.get(name) : undefined
           if (known && (!isSource || known.key !== imported)) {
             this.error(item.span.start, `'${declaredName(name)}' is already declared: an import in a test cannot reuse the name of an import of the module${this.firstDeclared(known.at)}`)
+            this.keepOwn(item.item, depExports?.get(item.name))
             break
           }
           if (!inTest && !this.importedFuncs.has(name)) this.importedFuncs.set(name, { key: imported, at: item.item.span.start })
@@ -2174,18 +2177,38 @@ class CheckContext {
       return
     }
     if (!decl.ident) return // Anonymous function
-    if (this.takenByGeneric(decl.ident, decl.span.start)) return
-    if (this.takenByAnother(decl.ident, decl.span.start, 'func', inTest)) return
+    if (this.takenByGeneric(decl.ident, decl.span.start) || this.takenByAnother(decl.ident, decl.span.start, 'func', inTest)) {
+      if (inTest) this.keepOwn(decl)
+      return
+    }
     // A name several functions of the module share has its own message
     // (sharedByModule)
     const imported = inTest && !this.shared(decl.ident) ? this.importedFuncs.get(decl.ident) : undefined
     if (imported) {
       this.error(decl.span.start, `'${decl.ident}' is already declared: a function declared in a test cannot reuse the name of an import${this.firstDeclared(imported.at)}`)
+      this.keepOwn(decl)
       return
     }
     for (const { at, message } of this.defNamedFields(decl)) this.error(at, message)
     const sig = this.resolveSignature(decl.signature)
     this.declareFunc(decl, decl.ident, { kind: 'func', type: sig, inline: decl.inline }, inTest)
+  }
+
+  // A test's function or import refused its name has a type of its own all
+  // the same, which the editor shows at it (funcSyms): the one it writes, or
+  // the function of another module it imports, resolved without saying
+  // again what is wrong with it (its body, checked, says that).
+  private keepOwn(decl: AST.FuncDecl | AST.ImportFunc, exported?: Symbol): void {
+    if (isGenericSignature(decl.signature)) return
+    if (exported) {
+      if (exported.kind === 'func') this.funcSyms.set(decl, { kind: 'func', type: exported.type, inline: exported.inline })
+      return
+    }
+    const errors = this.errors.length
+    const reported = this.errorsReported
+    this.funcSyms.set(decl, { kind: 'func', type: this.resolveSignature(decl.signature) })
+    this.errors.length = errors
+    this.errorsReported = reported
   }
 
   // A parameter and a named result are variables of the body, where a def's

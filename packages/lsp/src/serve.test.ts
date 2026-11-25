@@ -1115,4 +1115,64 @@ export func agree2() -> u32 => gapply(u32, 2) + gapply(u64, 3)
     const shown = hoverIn(pointers)(pointers.indexOf('gh(a'))
     expect(shown).toContain('- in `gapply(T = u32)`: `func(a: [*]u32, b: [*]u32) -> u32`, captures nothing')
   })
+
+  // A method call x.f() is the function the checker found for the call
+  // f(x) it stands for: the first generic of a name where a second is
+  // refused, and a generic's own nested function, not a test's function of
+  // its name (eighth review)
+  test('a method call is the function the checker found for it', () => {
+    const lines = (found: unknown) => (found as { range: { start: { line: number } } }[] | null)?.map((l) => l.range.start.line)
+    const refused = `func apply(comptime T: type, x: T) -> T => x
+func apply(comptime T: type, x: T) -> T => x + 1
+export func m() -> u32 => apply(u32, 1) +
+  (2:u32).apply(u32)
+`
+    const ask = serverFor(refused)
+    const call = refused.indexOf('apply(u32)\n')
+    expect((ask('onDefinition', call) as Location | null)?.range.start.line).toBe(0)
+    expect(lines(ask('onReferences', call, { context: { includeDeclaration: true } }))).toEqual([0, 2, 3])
+    expect(lines(ask('onDocumentHighlight', call))).toEqual([0, 2, 3])
+    const nested = `func gen(comptime T: type, x: T) -> T {
+  func other(y: T) -> T => y
+  return x.other()
+}
+export func a() -> u32 => gen(u32, 1)
+test "t" {
+  func other(x: u32) -> u32 => x + 1
+  assert other(1) == 2 && gen(u32, 3) == 3
+}
+`
+    const askNested = serverFor(nested)
+    const method = nested.indexOf('other()')
+    expect((askNested('onDefinition', method) as Location | null)?.range.start.line).toBe(1)
+    expect(lines(askNested('onReferences', method, { context: { includeDeclaration: true } }))).toEqual([1, 2])
+    expect(lines(askNested('onReferences', nested.indexOf('other(1)'), { context: { includeDeclaration: true } }))).toEqual([6, 7])
+  })
+
+  // A test's function or import refused its name shows its own type, as
+  // encantis hover does (eighth review)
+  test('hover at a test\'s function or import refused its name shows its own type', () => {
+    const source = `func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+import "env" "log" func log(x: u32)
+test "a" {
+  func log(x: f32, y: f32) {}
+  assert true
+}
+test "b" {
+  import "env" "warn" func log(x: f64)
+  import "env" "h" func hash(k: f32) -> f32
+  assert true
+}
+export func m() -> u32 {
+  log(1)
+  return hash(2:u32)
+}
+`
+    const at = hoverIn(source)
+    expect(at(source.indexOf('log(x: f32'))).toContain('func log(x:f32, y:f32)')
+    expect(at(source.indexOf('log(x: f64'))).toContain('func log(x:f64)')
+    expect(at(source.indexOf('hash(k: f32'))).toContain('func hash(k:f32) -> f32')
+    expect(at(source.indexOf('log(1)'))).toContain('func log(x:u32)')
+  })
 })
