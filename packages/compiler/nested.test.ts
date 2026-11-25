@@ -4059,3 +4059,91 @@ test "a" {
 `)).rejects.toThrow(/type mismatch in call/)
   })
 })
+
+describe('nested functions: names, places and the editor (ninth review)', () => {
+  // A test's function or import refused its name has its own type for the
+  // editor, resolved without saying what is wrong with it again: what is
+  // said once (a generic type's application or declaration that fails, an
+  // unknown name in a length) is still said, by the function's body, module
+  // code or a later test (12.4)
+  test('a refused test function\'s own type takes no error away for good', () => {
+    expect(errorsOf(`func Box(comptime T: type) -> type => (v: T, w: [sizeof(T) - 2]u8)
+global f: u32 = 0
+export func get() -> u32 => f
+test "t" {
+  func f(b: Box(u8)) -> u32 => 1
+  assert 1 == 1
+}
+export func use() -> u32 {
+  let b: Box(u8) = 0
+  return 0
+}`)).toEqual([
+      `'f' is already declared`,
+      `array length cannot be negative: it is -1, in Box(u8)`,
+    ])
+    expect(errorsOf(`func Loop(comptime T: type) -> type => (v: T, next: Loop(T))
+global f: u32 = 0
+export func get() -> u32 => f
+test "t" {
+  import "env" "h" func f(b: *Loop(u8)) -> u32
+  assert 1 == 1
+}
+test "u" {
+  let p: Loop(u8) = 0
+  assert 1 == 1
+}`)).toEqual([
+      `'f' is already declared`,
+      `generic type 'Loop' contains itself: a type can only refer to itself through a pointer or a slice`,
+    ])
+    expect(errorsOf(`func Wrap(comptime T: type) -> type => (v: T, w: Nope)
+global f: u32 = 0
+export func get() -> u32 => f
+test "t" {
+  func f(b: Wrap(u8), c: *[nope]u8) -> u32 => 1
+  assert 1 == 1
+}`)).toEqual([
+      `'f' is already declared`,
+      `unknown type 'Nope'`,
+      `unknown identifier 'nope'`,
+    ])
+  })
+
+  // A third declaration of a name in a group, after a nested test declared
+  // it again, is told the first of the group's, not the group's second one
+  // that was refused (12.4, 3.3)
+  test('a third clash in a group is told the group\'s first declaration', () => {
+    expect(errorsOf(`func f() -> u32 => 1
+test "g" {
+  func f() -> u32 => 2
+  func f(x: u64) -> u32 => 3
+  test "n" {
+    func f() -> u32 => 4
+    assert f() == 4
+  }
+  test "m" {
+    let f: u32 = 5
+    assert f == 5
+  }
+}`)).toEqual([
+      `'f' is already declared in this test`,
+      `'f' is already declared in this scope (first declared at 3:8)`,
+    ])
+    expect(errorsOf(`test "g" {
+  import "env" (
+    "a" global f: u32
+    "b" global f: u32
+  )
+  test "n" {
+    import "env" "c" global f: u32
+    assert f == 0
+  }
+  test "m" {
+    for f in 3 { }
+    assert true
+  }
+}`)).toEqual([
+      `'f' is already declared in this test`,
+      `'f' is already declared: a loop variable cannot reuse the name of a global (first declared at 3:16)`,
+    ])
+  })
+})

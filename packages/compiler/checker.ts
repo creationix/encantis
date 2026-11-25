@@ -1779,8 +1779,11 @@ class CheckContext {
     if (pinned !== undefined) return pinned
     // What a test declared is, outside that test, what it replaced there
     // (seenAs): module code below the test is told the module's own
-    // declaration of the name, not a place inside the test
-    const sym = this.seenAs(first) ?? first
+    // declaration of the name, not a place inside the test. What it
+    // replaced can be a second declaration of the name, refused in a group
+    // the test is in, which is the first of the name in turn (firstOf).
+    const seen = this.seenAs(first)
+    const sym = seen ? this.firstOf(seen) : first
     const at = this.declaredAt.get(sym) ?? this.localDefs.get(sym) ??
       (this.moduleScope.symbols.get(name) === sym ? this.symbolDefOffsets.get(name) : undefined)
     if (at !== undefined) return this.firstDeclared(at)
@@ -2215,7 +2218,24 @@ class CheckContext {
     }
     const errors = this.errors.length
     const reported = this.errorsReported
+    // What is said once is marked as said: a generic type's application
+    // that fails (cached as nothing), its declaration found wrong (not
+    // valid, its names checked), an unknown name in a length. The errors
+    // are taken back, and so are the marks, for the next use (the
+    // function's body, module code, a later test) to say them.
+    const typeFuncs = [...this.moduleScope.symbols.values()].flatMap((sym) => (sym.kind === 'typefunc' ? [{ sym, valid: sym.valid, named: sym.named, cached: new Set(sym.cache.keys()) }] : []))
+    const unknown = new Set(this.unknownInTypes)
     this.refusedOwn.set(decl, { kind: 'func', type: this.resolveSignature(decl.signature), inline: decl.kind === 'FuncDecl' && decl.inline })
+    if (this.errorsReported > reported) {
+      for (const { sym, valid, named, cached } of typeFuncs) {
+        if (valid && !sym.valid) {
+          sym.valid = true
+          sym.named = named
+        }
+        for (const [key, type] of sym.cache) if (type === RECOVERY && !cached.has(key)) sym.cache.delete(key)
+      }
+      this.unknownInTypes = unknown
+    }
     this.errors.length = errors
     this.errorsReported = reported
   }
