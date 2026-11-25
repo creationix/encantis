@@ -4896,6 +4896,33 @@ describe('a refused value says nothing more where it is used', () => {
       '5:5 writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])',
     ])
   })
+  test('an element that is a pointer or a slice to a type that did not resolve is optional read, whatever that type is', () => {
+    expect(placed('func take(x: u32) {}\nfunc f(xs: *[4]*[2]Nope, ys: *[4][]Nope, i: u32) {\n  if let p = xs[i] { p[0] = p[1] }\n  if xs[i] { return }\n  if let s = ys[i] { take(s) }\n}')).toEqual([
+      "2:20 unknown type 'Nope'",
+      "2:36 unknown type 'Nope'",
+      '3:22 cannot write through const pointer — use *mut for mutable access',
+      '4:6 condition must be bool, not ?*[2]i32',
+      '5:27 argument 1: cannot assign []i32 to u32',
+    ])
+  })
+  test('a variant of an enum left out is a constant to what is around it in a comptime argument', () => {
+    expect(placed('enum Q { A }\nenum Q { B }\nfunc idf(comptime n: u32) -> u32 => n\nfunc two() -> u32 => 2\nfunc Buf(comptime n: u32) -> type => (items: [n]u8)\nglobal g: [B / 0]u8\nexport func f(r: Buf(B + two())) -> u32 => idf(B + two()) + idf(B % 0) + idf(B + true)')).toEqual([
+      "2:6 'Q' is already declared",
+      '6:12 array length divides by zero',
+      "7:22 argument 1 of 'Buf' must be a compile-time constant: n is a comptime value parameter",
+      "7:48 argument 1 of 'idf' must be a compile-time constant: n is a comptime value parameter",
+      "7:65 argument 1 of 'idf' divides by zero",
+      "7:78 '+' cannot be applied to bool: cast it to an integer first",
+    ])
+  })
+  test('a def of a float type is that float where an integer is wanted', () => {
+    expect(placed('func idf(comptime n: u32) -> u32 => n\ndef m: f64 = 1 / 0\ndef nn: f32 = 0 / 0\nglobal g1: [m]u8\nglobal g2: [nn]u8\nexport func f(x: u32#(m)) -> u32 => idf(m)')).toEqual([
+      '4:13 array length must be an integer: it is float(Infinity)',
+      '5:13 array length must be an integer: it is float(NaN)',
+      '6:23 range bound must be an integer: it is float(Infinity)',
+      '6:41 argument 1: cannot assign f64 to u32',
+    ])
+  })
   test('next to other values: elements, branches, a template', () => {
     expect(errs('type P = (x: u32, y: u32)\nfunc a(b: bool, s: P, x: f32) -> u32 {\n  let t = [-b, true]\n  let u = [s & 1, s]\n  let v = [~x, true]\n  let w = if b { -b } else { P(1, 2) }\n  let m = `a${-b}b`\n  return 0\n}')).toEqual([
       "'-' needs a number, not bool",

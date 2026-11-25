@@ -4210,7 +4210,7 @@ test "a def is its value at each use" {
 
 <!-- spec:end -->
 
-A typed `def` laid out in memory is its value in its type, then widened: `def tenth: f32 = 0.1` in an `f64` of `data` is the `f32` nearest 0.1, widened, as it is in code, not the `f64` nearest 0.1. So is `-tenth`, so is a literal typed `f32` (`0.1:f32`, `(0.1:f32):f64`), so is an `f64` def whose value is one (`def wide: f64 = tenth`), and so is data that is the one number (`data one: f64 = tenth`). Each `data` of a number is a block of its own type, also where two of them are one def's value. An `f32` constant is the `f32` nearest the number written, ties to even, in code and in data alike: 1.0000000596046448 is just past halfway between 1 and the next `f32`, so it is the next, though the `f64` nearest it is that halfway point. The integer 0 written as a float (`def z: f32 = 0`, or of a type that names one) negated is the float -0, as `-t` is for a variable `t` that holds 0, also as data of its own (`data nz: f32 = -z`), and two integers divided where the quotient is a float are divided as floats: `1:f32 / 0` is infinity, and so is `def m: f64 = 1 / 0`.
+A typed `def` laid out in memory is its value in its type, then widened: `def tenth: f32 = 0.1` in an `f64` of `data` is the `f32` nearest 0.1, widened, as it is in code, not the `f64` nearest 0.1. So is `-tenth`, so is a literal typed `f32` (`0.1:f32`, `(0.1:f32):f64`), so is an `f64` def whose value is one (`def wide: f64 = tenth`), and so is data that is the one number (`data one: f64 = tenth`). Each `data` of a number is a block of its own type, also where two of them are one def's value. An `f32` constant is the `f32` nearest the number written, ties to even, in code and in data alike: 1.0000000596046448 is just past halfway between 1 and the next `f32`, so it is the next, though the `f64` nearest it is that halfway point. Cast, the number is that `f64`, which the cast rounds as at run time: `1.0000000596046448 as f32` is 1, in a global and in data as in code. The integer 0 written as a float (`def z: f32 = 0`, or of a type that names one) negated is the float -0, as `-t` is for a variable `t` that holds 0, also as data of its own (`data nz: f32 = -z`), and two integers divided where the quotient is a float are divided as floats: `1:f32 / 0` is infinity, and so is `def m: f64 = 1 / 0`.
 
 <!-- spec:begin compile -->
 
@@ -4234,10 +4234,13 @@ data nz: f32 = -z
 data nzs: Single = -zs
 data tie: *[1]f32 = [1.000000059604644775390625]   // halfway between 1 and the next f32
 data past: *[1]f32 = [1.0000000596046448]          // just past it
+global cast: f32 = 1.0000000596046448 as f32       // the f64 it is read as, rounded
+data casts: *[1]f32 = [1.0000000596046448 as f32]
 
 func widened() -> f64 => tenth
 func tied() -> f32 => 1.000000059604644775390625
 func passed() -> f32 => 1.0000000596046448
+func casted() -> f32 => 1.0000000596046448 as f32
 
 test "an f32 def widens from its own type, in data as in code" {
   assert wides[0] == widened()
@@ -4257,6 +4260,9 @@ test "an f32 def widens from its own type, in data as in code" {
   assert m > 1000000.0
   assert past[0] == passed()
   assert passed() == 1.00000011920928955078125
+  assert cast == casted()
+  assert casts[0] == casted()
+  assert casted() == 1.0
 }
 ```
 

@@ -3372,6 +3372,22 @@ class CheckContext {
   // constantBesidesLeftOut evaluates around it
   private leftOutValue: bigint | null = null
 
+  // What else is wrong with a value that names a variant of an enum left
+  // out, worked out as it is for a constant in its place: its inference says
+  // the errors of the rest (`B + true`, as `1 + true`), and dividesByZero sees
+  // `B / 0`. The variant itself keeps the refused type.
+  private besidesLeftOut<T>(expr: AST.Expr, work: () => T): T {
+    if (!this.namesLeftOut(expr)) return work()
+    const outer = this.leftOutValue
+    this.leftOutValue = 1n
+    try {
+      return work()
+    } finally {
+      this.leftOutValue = outer
+      for (const name of unknownNames(expr)) if (this.isLeftOut(name.name) && this.exprTypes.has(name)) this.exprTypes.set(name, RECOVERY)
+    }
+  }
+
   // Whether an expression is the value of a refused def, put in by the
   // parser where the def's name is written: a refused value, its error said
   // at the def (`def unit: u32 = Point`), and nothing said where it is used.
@@ -4875,6 +4891,7 @@ class CheckContext {
     // A typed constant is what it is in any expression: 300:u8 is an error,
     // and ~0:u8 is 255 (see comptimeValue).
     const before = this.errorsReported
+    this.inferFloatAnnotations(expr)
     for (const annotated of annotationsIn(expr)) if (this.evalComptimeExpr(annotated)) this.inferExpr(annotated)
     if (this.errorsReported > before) return null
     const value = this.evalComptimeExpr(expr)
@@ -4897,7 +4914,7 @@ class CheckContext {
       this.unknownInTypes.add(unknown.span.start)
       return null
     }
-    if (this.dividesByZero(expr)) {
+    if (this.besidesLeftOut(expr, () => this.dividesByZero(expr))) {
       this.error(expr.span.start, `${what} divides by zero`)
       return null
     }
@@ -4909,6 +4926,17 @@ class CheckContext {
   }
 
   private unknownInTypes = new Set<number>()
+
+  // A number written with a float type that is no integer constant (a def's
+  // value put in where its name is written, `(1 / 0):f64` for `def m: f64 =
+  // 1 / 0`) is its value in that type, as at the def (collectDef): it is
+  // inferred, so that it is evaluated as that float (infinity).
+  private inferFloatAnnotations(expr: AST.Expr): void {
+    for (const annotated of annotationsIn(expr)) {
+      if (this.exprTypes.has(annotated) || this.evalComptimeExpr(annotated) !== null) continue
+      if (this.attempt(null, () => isFloat(unwrap(this.resolveType(annotated.type))))) this.attempt(null, () => this.inferExpr(annotated))
+    }
+  }
 
   // The type a pointer being resolved points to (see the D9 size of a table)
   private pointee: AST.Type | null = null
@@ -6169,8 +6197,9 @@ class CheckContext {
         return RECOVERY
       }
       // A variant of an enum left out has the enum's error: its use is a
-      // refused value.
-      if (this.leftOutVariants.has(expr.name)) return RECOVERY
+      // refused value. Where what is around it is seen as if it were a
+      // constant (besidesLeftOut), it is the number it stands for.
+      if (this.leftOutVariants.has(expr.name)) return this.leftOutValue !== null ? comptimeInt(this.leftOutValue) : RECOVERY
       this.error(expr.span.start, this.unknownIdentifier(expr.name))
       // A capitalised name stands for a variant or a type: called, it is
       // no function either.
@@ -8786,9 +8815,10 @@ class CheckContext {
     // when it can be one, checked when it is read; otherwise if let or ??
     // has to resolve the index where it is taken.
     const unproven = (elem: ResolvedType, problem: string, why = ''): ResolvedType => {
-      // An element whose type did not resolve may be one that has an
-      // optional (a pointer): read, it is refused, and says nothing more
-      if (!row && unresolved(elem) && this.writingTo !== expr) return RECOVERY
+      // An element whose own type did not resolve may be one that has an
+      // optional (a pointer): read, it is refused, and says nothing more. A
+      // pointer or a slice to such a type is one, whatever that type is.
+      if (!row && unwrap(elem) === RECOVERY && this.writingTo !== expr) return RECOVERY
       if (!row && (unwrap(elem).kind === 'pointer' || unwrap(elem).kind === 'slice')) {
         if (this.looking && !this.unproven.has(expr)) this.lookUnproven.push(expr)
         this.unproven.add(expr)
@@ -9963,16 +9993,18 @@ class CheckContext {
     if (arg.kind !== 'ValueArg') return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
     // As in a length: a def declared further down is a number here too
     this.collectDefsIn(arg.value)
+    this.inferFloatAnnotations(arg.value)
     const value = this.evalComptimeExpr(arg.value)
     if (value === null) {
       const unknown = unknownNames(arg.value).find((name) => !this.lookup(name.name) && !this.isLeftOut(name.name) && !this.signatureNames?.has(name.name))
       if (unknown) return fail(this.unknownIdentifier(unknown.name, true))
-      if (this.dividesByZero(arg.value)) return fail(`${place} divides by zero`)
+      const given = arg.value
+      if (this.besidesLeftOut(given, () => this.dividesByZero(given))) return fail(`${place} divides by zero`)
       // A refused value (a refused operator) has its one error. (A name of
       // the signature's, a parameter, is no value here.)
-      if (unknownNames(arg.value).every((name) => this.lookup(name.name) || this.isLeftOut(name.name))) {
-        this.inferExpr(arg.value)
-        if (this.refusedValue(arg.value)) return null
+      if (unknownNames(given).every((name) => this.lookup(name.name) || this.isLeftOut(name.name))) {
+        this.besidesLeftOut(given, () => this.inferExpr(given))
+        if (this.refusedValue(given)) return null
       }
       return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
     }
@@ -10643,6 +10675,7 @@ class CheckContext {
       // module, and checked against the parameter's type as any argument
       // is. The instance gets the value it has in that type: ~0 for a
       // `comptime m: u8` is 255.
+      if (!this.typeApplied(arg)) this.inferFloatAnnotations(arg)
       const constant = this.typeApplied(arg) ? null : this.evalComptimeExpr(arg)
       if (constant === null || constant.kind === 'data_ptr' || constant.kind === 'type' || constant.kind === 'func') {
         // A refused value (a refused operator, a use of a refused def, a
@@ -10657,7 +10690,7 @@ class CheckContext {
         if (constant === null && !this.typeApplied(arg) && unknownNames(arg).every((n) => this.lookup(n.name) || this.isLeftOut(n.name))) {
           this.runTimeArgument++
           try {
-            this.inferExpr(arg)
+            this.besidesLeftOut(arg, () => this.inferExpr(arg))
           } finally {
             this.runTimeArgument--
           }
@@ -10668,7 +10701,7 @@ class CheckContext {
           this.error(unknown.span.start, this.unknownIdentifier(unknown.name, true))
           return null
         }
-        if (constant === null && this.dividesByZero(arg)) {
+        if (constant === null && this.besidesLeftOut(arg, () => this.dividesByZero(arg))) {
           this.error(arg.span.start, `${place} of '${callee}' divides by zero`)
           return null
         }
@@ -13028,7 +13061,11 @@ function castConstant(value: ComptimeValue, to: ResolvedType): ComptimeValue | n
   const t = unwrap(to)
   if (value.kind === 'data_ptr') return null
   if (isBool(t)) return value.kind === 'bool' ? value : null
-  const number: ComptimeValue = value.kind === 'bool' ? { kind: 'int', value: value.value ? 1n : 0n } : value
+  // A float operand of no type of its own (a literal, an untyped def) is an
+  // f64 at run time, which the cast rounds: its f32 is that of the f64, not
+  // the one nearest its decimals (decimalF32). One typed f32 is already
+  // that f32.
+  const number: ComptimeValue = value.kind === 'bool' ? { kind: 'int', value: value.value ? 1n : 0n } : value.kind === 'float' ? { kind: 'float', value: value.value } : value
   if (number.kind === 'float' && !isFloat(t)) {
     // Toward zero, into the i32 or i64 the type is held in, then cut to the type.
     const whole = Math.trunc(number.value)
