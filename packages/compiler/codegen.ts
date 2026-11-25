@@ -696,14 +696,21 @@ function controlDepth(wat: string): number {
 // the way to the deepest one counts what wabt's stack was seen to take for it
 // at most, with a little to spare: a block or a loop 50, an if 46 (wabt
 // reads one if inside another 154 deep, a block 141 deep where its label is
-// used), any other instruction 30 (243 deep). A function nested deeper is one
-// error (NestingLimitError): 140 blocks or loops, 152 ifs or 233 other
-// instructions, or a mix of them.
+// used), any other instruction 30 (243 deep), and so does a block, a loop or
+// an if that is the condition of an if (an `a || b || c` chain: 255 deep). A
+// float constant written in decimals counts 1200: wabt reads it with the C
+// library's strtod, whose stack frame is large (an f64.const in each of 208
+// additions one inside another is as deep as wabt reads, where a local is
+// read 243 deep); `nan`, `inf` and hex floats are read by wabt itself and
+// count 30. A function nested deeper is one error (NestingLimitError): 151
+// ifs, 139 blocks or loops or 233 other instructions, or a mix of them.
 export const MAX_NESTING = 7000
 
 // How deep some WAT nests, as MAX_NESTING counts it.
 export function nestingOf(wat: string): number {
-  const open: number[] = []
+  // Each open instruction's weight, and for an if whether its condition is
+  // still being read (it has had no `then` yet)
+  const open: { weight: number; condition: boolean }[] = []
   let depth = 0
   let max = 0
   for (let i = 0; i < wat.length; i++) {
@@ -714,15 +721,27 @@ export function nestingOf(wat: string): number {
       while (i < wat.length && wat[i] !== '\n') i++
     } else if (c === '(') {
       const word = /^[\w.]*/.exec(wat.slice(i + 1, i + 24))?.[0] ?? ''
-      const weight = word === 'block' || word === 'loop' ? 50 : word === 'if' ? 46 : /^(?:func|then|else|result|param|local|type)$/.test(word) ? 0 : 30
-      open.push(weight)
+      const parent = open[open.length - 1]
+      if (parent && (word === 'then' || word === 'else')) parent.condition = false
+      const inCondition = parent?.condition === true && !/^(?:result|param|type)$/.test(word)
+      let weight = word === 'block' || word === 'loop' ? 50 : word === 'if' ? 46 : /^(?:func|then|else|result|param|local|type)$/.test(word) ? 0 : 30
+      if (inCondition && weight > 30) weight = 30
+      if ((word === 'f32.const' || word === 'f64.const') && decimalFloat(wat, i + 1 + word.length)) weight = 1200
+      open.push({ weight, condition: word === 'if' })
       depth += weight
       if (depth > max) max = depth
     } else if (c === ')') {
-      depth -= open.pop() ?? 0
+      depth -= open.pop()?.weight ?? 0
     }
   }
   return max
+}
+
+// Whether the float constant written at `at` (after its instruction's name)
+// is in decimals, which wabt reads with strtod: not nan, inf or a hex float.
+function decimalFloat(wat: string, at: number): boolean {
+  const text = /^\s*([^\s()]*)/.exec(wat.slice(at, at + 64))?.[1] ?? ''
+  return !/^[+-]?(?:nan|inf|0x)/.test(text)
 }
 
 // A function, or a test, whose code nests deeper than MAX_NESTING: at the
@@ -738,7 +757,7 @@ function checkNesting(wat: string, what: string, offset: number): void {
   const nesting = nestingOf(wat)
   if (nesting <= MAX_NESTING) return
   throw new NestingLimitError(
-    `${what} nests its code ${nesting} deep in wasm, more than the ${MAX_NESTING} that wasm text tools read (a block or a loop counts 50, an if 46, any other instruction 30): keep fewer loops, ifs and matches one inside another`,
+    `${what} nests its code ${nesting} deep in wasm, more than the ${MAX_NESTING} that wasm text tools read (a block or a loop counts 50, an if 46, a float constant 1200, any other instruction 30): keep fewer loops, ifs and matches one inside another`,
     offset,
   )
 }
@@ -3752,7 +3771,7 @@ export function funcToWat(
   // or in one another's arms can be, is written again with each chain in the
   // form that nests less: the depth that counts is the function's.
   let wat = write(false)
-  if (controlDepth(wat) > MAX_NESTED_DEPTH) wat = write(true)
+  if (controlDepth(wat) > MAX_NESTED_DEPTH || nestingOf(wat) > MAX_NESTING) wat = write(true)
   const name = checkResult.funcNames.get(decl) ?? decl.ident ?? 'anonymous'
   checkNesting(wat, `function '${name}'`, scratchId(decl.span.start))
   return wat
@@ -4706,7 +4725,7 @@ function emitTestDecl(
     }
     // As funcToWat does: code nested too deep is written again to nest less.
     let body = write(false)
-    if (controlDepth(body) > MAX_NESTED_DEPTH) body = write(true)
+    if (controlDepth(body) > MAX_NESTED_DEPTH || nestingOf(body) > MAX_NESTING) body = write(true)
     ctx.shallow = false
     checkNesting(body, `test ${JSON.stringify(decl.name)}`, decl.span.start)
     ctx.testMode = false

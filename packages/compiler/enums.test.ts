@@ -4,7 +4,7 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: this is a test, it's fine */
 import { describe, expect, test } from 'bun:test'
 import { typecheck, type TypeCheckResult } from './checker'
-import { moduleToWat, type NestingLimitError } from './codegen'
+import { MAX_NESTING, moduleToWat, nestingOf, type NestingLimitError } from './codegen'
 import { buildMeta } from './meta'
 import { documentSymbols, findReferences, gotoDefinition, hover, hoverText, rename } from './queries'
 import { parse } from './parser'
@@ -1254,6 +1254,41 @@ export memory 1
     let shallow = 'acc += 1'
     for (let i = 59; i >= 0; i--) shallow = `let w${i}: u32 = 0\nwhile w${i} < 1 {\nw${i} += 1\n${shallow}\n}`
     expect(() => wat(`export func run() -> u32 {\nlet acc: u32 = 0\n${shallow}\nreturn acc\n}\n`)).not.toThrow()
+  })
+
+  test('an if that is the condition of another counts as an operand does', async () => {
+    // `a || b || c ...` is ifs each in the condition of the next, which wabt
+    // reads 255 deep: 200 tests are within the limit, as main assembles them
+    const tests = (n: number) => Array.from({ length: n }, (_, k) => `x == ${k * 3}`).join(' || ')
+    const source = `export func run(x: u32) -> bool => ${tests(200)}\n`
+    expect(nestingOf(watOf(source, '(func $run'))).toBeLessThanOrEqual(MAX_NESTING)
+    const run = (await instance(source)).run as (x: number) => number
+    expect([run(0), run(597), run(598), run(600)]).toEqual([1, 1, 0, 0])
+    expect(() => wat(`export func run(x: u32) -> bool => ${tests(240)}\n`)).toThrow("function 'run' nests its code 7246 deep")
+  })
+
+  test('a float constant counts what wabt reads it with', () => {
+    // wabt reads a decimal float with strtod, whose stack frame is 8 KiB: 210
+    // additions of 1.5 are past the limit (wabt hangs on them), of 1 not
+    const sum = (term: string) => `export func run(x: f64) -> f64 => x${` + ${term}`.repeat(210)}\n`
+    expect(() => wat(sum('1.5'))).toThrow("function 'run' nests its code 7500 deep")
+    expect(() => wat(sum('x'))).not.toThrow()
+    // nan, inf and hex floats are read by wabt itself
+    expect(nestingOf('(f64.add (f64.const 1.5) (f64.const -0))')).toBe(1230)
+    expect(nestingOf('(f64.add (f64.const inf) (f64.const nan))')).toBe(60)
+    expect(nestingOf('(f32.add (f32.const 0x1p+0) (f32.const -nan))')).toBe(60)
+  })
+
+  test('a function past the limit only because a chain is nested is written with it flat', async () => {
+    // A 60-arm match whose _ arm is a 147-term sum: with the match nested the
+    // sum is 60 ifs deep, past the limit; flat, it is 2
+    const sum = Array.from({ length: 147 }, () => 'y').join(' + ')
+    const source = `export func run(x: u32, y: u32) -> u32 => match x { ${numbered(60, (k) => `${k * 7 + 1}`)} _ => ${sum} }\n`
+    const text = watOf(source, '(func $run')
+    expect(text.split('(block $__tests').length - 1).toBe(1)
+    expect(nestingOf(text)).toBeLessThanOrEqual(MAX_NESTING)
+    const run = (await instance(source)).run as (x: number, y: number) => number
+    expect([run(0, 3), run(59, 3), run(60, 3), run(69, 1)]).toEqual([1, 414, 441, 147])
   })
 })
 
