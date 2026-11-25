@@ -9,6 +9,7 @@ import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, 
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
 import { buildDataSection, type DataRef } from './data-pack'
+import { calledDecl, writtenParam, writtenResult } from './queries'
 
 // === Builtin Function Signatures ===
 // Note: Many builtins are polymorphic. These signatures are for LSP display.
@@ -1333,6 +1334,11 @@ class MetaBuilder {
         }
         // A function with a parameter or a result of a type that did not
         // resolve is shown as it is written, at a call as at its name
+        const written = this.writtenCall(expr.span.start, type)
+        if (written !== null) {
+          this.addHint(expr.span.start, expr.name.length, written, symbolIndex)
+          break
+        }
         if (symbolIndex !== undefined && this.symbols[symbolIndex].kind === 'func' && type?.kind === 'func' && [...type.params, ...type.returns].some((f) => isRefusedType(f.type))) {
           this.addHint(expr.span.start, expr.name.length, this.symbols[symbolIndex].type, symbolIndex)
           break
@@ -1633,9 +1639,25 @@ class MetaBuilder {
     const type = this.checkResult.exprTypes.get(method !== null ? meant.callee : this.checked(callee)) ?? BUILTIN_SIGNATURES[name]
     if (type) {
       const offset = method !== null ? callee.span.end - name.length : callee.span.start
-      this.addHint(offset, name.length, this.typeRegistry.register(type), symbolIndex)
+      this.addHint(offset, name.length, this.writtenCall(offset, type) ?? this.typeRegistry.register(type), symbolIndex)
     }
     return true
+  }
+
+  // The type a call of a function with a parameter or a result of a type
+  // that did not resolve is shown with: each such part as the function the
+  // call means writes it, the rest as the call has it (`(x:u32,y:Nope)->u32`
+  // for gen(z, 1), of `gen(comptime T: type, x: T, y: Nope) -> T`). Null for
+  // any other call.
+  private writtenCall(offset: number, type: ResolvedType | undefined): number | null {
+    if (type?.kind !== 'func' || ![...type.params, ...type.returns].some((f) => isRefusedType(f.type))) return null
+    const decl = calledDecl(this.module, this.checkResult, offset)
+    if (!decl) return null
+    const part = (name: string | null | undefined, text: string) => (name ? `${name}:${text}` : text)
+    const params = type.params.map((p, i) => part(p.name, writtenParam(this.source, decl, p, i))).join(',')
+    const results = type.returns.map((r, i) => part(r.name, writtenResult(this.source, decl, i, r.type)))
+    const returns = results.length === 0 ? '()' : results.length === 1 && !type.returns[0].name ? results[0] : `(${results.join(',')})`
+    return this.typeRegistry.registerText(`(${params})->${returns}`)
   }
 
   private generateHintsForTypeExpr(type: AST.Type): void {

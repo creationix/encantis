@@ -831,25 +831,60 @@ export function signatureHelp(
   if (ft?.kind !== 'func') return null
 
   // A parameter or a result of a type that did not resolve is shown as its
-  // type is written (p: Nope), as the function hovers: at its name and at a
-  // call of it (not of another function of that name)
-  const own = !called || (sym?.kind === 'func' && typeToString(called) === typeToString(sym.type))
-  const decl = own && [...ft.params, ...ft.returns].some((f) => isRefusedType(f.type)) ? funcDeclNamed(module, name) : null
-  const written = (list: AST.Type | undefined, i: number, type: ResolvedType): string => {
-    const field = list?.kind === 'CompositeType' ? list.fields[i] : i === 0 ? null : undefined
-    const at = field ? field.type : field === null ? list : undefined
-    return at && isRefusedType(type) ? source.slice(at.span.start, at.span.end) : typeToString(type)
-  }
+  // type is written (p: Nope), as the function hovers: at its name, and at a
+  // call of it, as the function the call means declares it (a test's own
+  // function, one of several of a name, the generic of an instance)
+  const refused = [...ft.params, ...ft.returns].some((f) => isRefusedType(f.type))
+  const decl = !refused ? null : called ? calledDecl(module, checkResult, wordStart(source, offset)) : funcDeclNamed(module, name)
   return {
     name,
     params: ft.params.map((p, i) => ({
       name: p.name ?? '',
-      type: written(decl?.signature.input, i, p.type),
+      type: writtenParam(source, decl, p, i),
     })),
     returnType: ft.returns.length === 0
       ? '()'
-      : ft.returns.map((r, i) => r.name ? `${r.name}: ${written(decl?.signature.output, i, r.type)}` : written(decl?.signature.output, i, r.type)).join(', '),
+      : ft.returns.map((r, i) => r.name ? `${r.name}: ${writtenResult(source, decl, i, r.type)}` : writtenResult(source, decl, i, r.type)).join(', '),
   }
+}
+
+// A parameter's type as its declaration writes it, where it did not resolve:
+// the parameter of its name (an instance has no comptime parameters), or the
+// one at its place
+export function writtenParam(source: string, decl: { signature: AST.FuncSignature } | null, param: { name?: string | null; type: ResolvedType }, i: number): string {
+  const input = decl?.signature.input
+  const fields = input?.kind === 'CompositeType' ? input.fields : []
+  const field = fields.find((f) => param.name && f.ident === param.name) ?? (fields.some((f) => f.comptime) ? undefined : fields[i])
+  return field && isRefusedType(param.type) ? source.slice(field.type.span.start, field.type.span.end) : typeToString(param.type)
+}
+
+// A result's type as its declaration writes it, where it did not resolve
+export function writtenResult(source: string, decl: { signature: AST.FuncSignature } | null, i: number, type: ResolvedType): string {
+  const list = decl?.signature.output
+  const field = list?.kind === 'CompositeType' ? list.fields[i] : i === 0 ? null : undefined
+  const at = field ? field.type : field === null ? list : undefined
+  return at && isRefusedType(type) ? source.slice(at.span.start, at.span.end) : typeToString(type)
+}
+
+// The function a call at `offset` means, as the checker resolved its name:
+// its declaration (or import), also one a test declares
+export function calledDecl(module: AST.Module, checkResult: TypeCheckResult, offset: number): AST.FuncDecl | AST.ImportFunc | null {
+  const def = checkResult.symbolRefs.get(offset)
+  if (def === undefined) return null
+  const find = (items: readonly (AST.Declaration | AST.TestItem)[]): AST.FuncDecl | AST.ImportFunc | null => {
+    for (const item of items) {
+      const decl = item.kind === 'ExportDecl' ? item.item : item
+      if (decl.kind === 'TestDecl') {
+        const found = find(decl.children)
+        if (found) return found
+      } else if (decl.kind === 'FuncDecl' && decl.span.start === def) return decl
+      else if (decl.kind === 'ImportDecl') {
+        for (const { item: imported } of decl.items) if (imported.kind === 'ImportFunc' && imported.span.start === def) return imported
+      }
+    }
+    return null
+  }
+  return find(module.decls)
 }
 
 // The function a module declares under a name, exported or not
@@ -927,8 +962,9 @@ function typeCostAnnotation(type: ResolvedType): string {
 
 // A signature as it is written: (p: Nope) -> (r: Nope)
 function writtenSignature(source: string, { input, output }: AST.FuncSignature): string {
-  // On one line, as a hover shows it, however many it is written over
-  const text = (from: number, to: number) => source.slice(from, to).replace(/\s+/g, ' ').replace(/\( /g, '(').replace(/ \)/g, ')').replace(/,\)/g, ')')
+  // On one line, as a hover shows it, however many it is written over: a
+  // line comment in it, which would run on over the rest, is left out
+  const text = (from: number, to: number) => source.slice(from, to).replace(/(\/\*[\s\S]*?\*\/)|\/\/[^\n]*/g, (_, block) => block ?? '').replace(/\s+/g, ' ').replace(/\( /g, '(').replace(/ \)/g, ')').replace(/,\)/g, ')')
   const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '' : ` -> ${text(output.span.start, output.span.end)}`
   return `${text(input.span.start, input.span.end)}${returns}`
 }

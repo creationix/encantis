@@ -1435,6 +1435,20 @@ describe('a function with a type that did not resolve, as written', () => {
     expect(signatureHelp(code, result.module!, check, code.indexOf('u(1)'))).toEqual({ name: 'u', params: [{ name: 'p', type: 'Nope' }], returnType: 'r: Nope' })
     expect(signatureHelp(code, result.module!, check, code.indexOf('u(p'))).toEqual({ name: 'u', params: [{ name: 'p', type: 'Nope' }], returnType: 'r: Nope' })
   })
+  test('signature help at a call shows the function the call means as written', () => {
+    // A method call, one of several functions of a name, an instance of a
+    // generic, a test's own function of a module function's name, and the
+    // module function called beside it
+    const text = 'func v(a: u32, b: Nope) -> u32 => a\nfunc w(a: u32) -> u32 => a\nfunc w(a: u32, b: Nope2) -> u32 => a\nfunc gen(comptime T: type, x: T, y: Nope) -> T => x\nfunc u(p: Nope) -> u32 => 0\nexport func f(z: u32) -> u32 => z.v(3) + w(z, 1) + gen(z, 1) + u(1)\ntest "t" {\n  func u(q: Nope3, r: u32) -> u32 => r\n  assert u(1, 2) == 2\n}\n'
+    const parsed = parse(text)
+    const checked = typecheck(parsed.module!)
+    const at = (call: string) => signatureHelp(text, parsed.module!, checked, text.indexOf(call))
+    expect(at('v(3)')?.params).toEqual([{ name: 'a', type: 'u32' }, { name: 'b', type: 'Nope' }])
+    expect(at('w(z, 1)')?.params).toEqual([{ name: 'a', type: 'u32' }, { name: 'b', type: 'Nope2' }])
+    expect(at('gen(z, 1)')?.params).toEqual([{ name: 'x', type: 'u32' }, { name: 'y', type: 'Nope' }])
+    expect(at('u(1, 2)')?.params).toEqual([{ name: 'q', type: 'Nope3' }, { name: 'r', type: 'u32' }])
+    expect(at('u(1)')?.params).toEqual([{ name: 'p', type: 'Nope' }])
+  })
   test('the outline lists it on one line, however many it is written over', () => {
     const symbols = documentSymbols(code, result.module!, check)
     expect(symbols.find((s) => s.name === 'z')?.type).toBe('func(a: u32, b: Nope) -> u32')

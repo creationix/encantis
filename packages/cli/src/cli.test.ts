@@ -215,7 +215,7 @@ describe('symbols of a refused global and a function of a type that did not reso
     const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
     try {
       const file = join(dir, 'sym.ents')
-      await writeFile(file, 'global gg = -true\nfunc z(\n  a: u32,\n  b: Nope\n) -> u32 => a\n')
+      await writeFile(file, 'global gg = -true\nfunc z(\n  a: u32, // the a\n  b: Nope\n) -> u32 => a\n')
       for (const target of [file, dir]) {
         const run = Bun.spawnSync([process.execPath, CLI, 'symbols', target], { timeout: 60000 })
         expect(run.stdout.toString().split('\n').filter(Boolean).map((line) => line.replace(/^.*sym\.ents:/, ''))).toEqual(['1:1 global gg', '2:1 func z: func(a: u32, b: Nope) -> u32'])

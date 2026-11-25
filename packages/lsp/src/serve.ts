@@ -447,14 +447,16 @@ function withoutPlaces(message: string): string {
 }
 
 // A place in a text that edits made, in the text they were made to: one in
-// what an edit wrote is in what it replaced. The edits are in order.
-type TextEdit = { start: number; end: number; newText: string };
+// what an edit wrote is in what it replaced, or, for a shorthand written out
+// (`x: z`, `w: x`), where the shorthand starts (`from`). The edits are in
+// order.
+type TextEdit = { start: number; end: number; newText: string; from?: number };
 function offsetBeforeEdits(edits: TextEdit[], offset: number): number {
   let shift = 0;
   for (const edit of edits) {
     const start = edit.start + shift;
     if (offset < start) break;
-    if (offset < start + edit.newText.length) return edit.start + Math.min(offset - start, edit.end - edit.start);
+    if (offset < start + edit.newText.length) return edit.from ?? edit.start + Math.min(offset - start, edit.end - edit.start);
     shift += edit.newText.length - (edit.end - edit.start);
   }
   return offset - shift;

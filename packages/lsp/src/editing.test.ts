@@ -875,12 +875,38 @@ describe('refused values, clashes and left-out declarations in the editor', () =
     expect(edit.changes?.[file]?.length).toBe(2)
   })
 
+  test('a rename at a shorthand whose value has an error goes through, the error said where the shorthand is', async () => {
+    // `P(x:, y:)` written out as `P(x: z, y:)` or `P(w: x, y:)`: the error
+    // of the field's value, at the shorthand, is the program's own
+    const file = 'file:///ws/sh.ents'
+    const text = 'type P = (x: u32, y: u32)\nexport func f(x: bool, y: u32) -> u32 {\n  let p: P = P(x:, y:)\n  return p.y\n}\n'
+    const s = server()
+    await s.open(file, text)
+    const param = await s.at<Promise<WorkspaceEdit>>('onRenameRequest', file, text, text.indexOf('x: bool'), { newName: 'z' })
+    expect(param.changes?.[file]?.map((e) => e.newText)).toEqual(['z', ' z'])
+    const field = await s.at<Promise<WorkspaceEdit>>('onRenameRequest', file, text, text.indexOf('x: u32'), { newName: 'w' })
+    expect(field.changes?.[file]?.map((e) => e.newText)).toEqual(['w', 'w: x'])
+  })
+
   test('a function with a type that did not resolve hovers as written at a call too', async () => {
     const file = 'file:///ws/sc.ents'
     const text = 'func u(p: Nope) -> (r: Nope) { r = p }\nexport func f() -> u32 {\n  let r1 = u(1)\n  return 0\n}\n'
     const s = server()
     await s.open(file, text)
     expect(hoverAt(s, file, text, text.indexOf('u(1)'))).toBe('func u(p:Nope) -> (r:Nope)')
+  })
+
+  test('at a call it is the function the call means that hovers as written', async () => {
+    // A method call, one of several functions of a name, an instance of a
+    // generic, and a test's own function of a module function's name
+    const file = 'file:///ws/sm.ents'
+    const text = 'func v(a: u32, b: Nope) -> u32 => a\nfunc w(a: u32) -> u32 => a\nfunc w(a: u32, b: Nope2) -> u32 => a\nfunc gen(comptime T: type, x: T, y: Nope) -> T => x\nfunc u(p: Nope) -> u32 => 0\nexport func f(z: u32) -> u32 => z.v(3) + w(z, 1) + gen(z, 1) + u(1)\ntest "t" {\n  func u(q: Nope3, r: u32) -> u32 => r\n  assert u(1, 2) == 2\n}\n'
+    const s = server()
+    await s.open(file, text)
+    expect(hoverAt(s, file, text, text.indexOf('v(3)'))).toStartWith('func v(a:u32, b:Nope) -> u32\n')
+    expect(hoverAt(s, file, text, text.indexOf('w(z, 1)'))).toBe('func w(a:u32, b:Nope2) -> u32')
+    expect(hoverAt(s, file, text, text.indexOf('gen(z, 1)'))).toStartWith('func gen(x:u32, y:Nope) -> u32\n')
+    expect(hoverAt(s, file, text, text.indexOf('u(1, 2)'))).toBe('func u(q:Nope3, r:u32) -> u32')
   })
 
   test('a generic type declared second answers nothing at its name, and is listed with no type', async () => {
