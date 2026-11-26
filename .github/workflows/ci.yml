@@ -44,7 +44,7 @@ jobs:
       - name: Build (version from package.json, plus the commit)
         id: version
         run: |
-          version="$(bun -p 'require("./package.json").version')-dev.${GITHUB_SHA::7}"
+          version="$(bun -p 'require("./package.json").version')-dev.g${GITHUB_SHA::7}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           bun scripts/build-release.ts "$version"
       - uses: actions/upload-artifact@v4
