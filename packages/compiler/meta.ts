@@ -1181,6 +1181,16 @@ class MetaBuilder {
     }
   }
 
+  // The binding of an if let or elif let is a local, defined where its name stands
+  private generateHintsForIfLetBinding(arm: AST.IfExpr | AST.ElifBranch): void {
+    if (arm.pattern?.kind !== 'binding') return
+    const at = arm.pattern.span.start
+    const type = this.bindingType(at, 'Binding')
+    if (!type) return
+    const symbolIndex = this.symbolIndexByDef.get(at) ?? this.addSymbol(arm.pattern.name, 'local', type, at)
+    this.addHint(at, arm.pattern.name.length, this.typeRegistry.register(type), symbolIndex)
+  }
+
   private generateHintsForExpr(expr: AST.Expr): void {
     const type = this.exprType(expr)
 
@@ -1407,20 +1417,13 @@ class MetaBuilder {
         break
 
       case 'IfExpr':
-        // The binding of an if let is a local, defined where its name stands
-        if (expr.pattern?.kind === 'binding') {
-          const at = expr.pattern.span.start
-          const type = this.bindingType(at, 'Binding')
-          if (type) {
-            const symbolIndex = this.symbolIndexByDef.get(at) ?? this.addSymbol(expr.pattern.name, 'local', type, at)
-            this.addHint(at, expr.pattern.name.length, this.typeRegistry.register(type), symbolIndex)
-          }
-        }
+        this.generateHintsForIfLetBinding(expr)
         this.generateHintsForExpr(expr.condition)
         if (expr.thenBranch.kind === 'Block') {
           this.generateHintsForBlock(expr.thenBranch)
         }
         for (const elif of expr.elifs) {
+          this.generateHintsForIfLetBinding(elif)
           this.generateHintsForExpr(elif.condition)
           if (elif.thenBranch.kind === 'Block') {
             this.generateHintsForBlock(elif.thenBranch)

@@ -1377,6 +1377,42 @@ test "two" {
   })
 })
 
+// Issue #43: the name of an elif let was not bound, so the editor had no
+// variable to show at it or at its uses.
+describe('the binding of an elif let', () => {
+  const code = `data cells = [7:u32, 8]
+export func f(c: bool, o: ?*u32, i: u32) -> u32 {
+  if c {
+    return 1
+  } elif let q = o {
+    return q.*
+  } elif let q = cells[i] {
+    return q + 1
+  }
+  return 0
+}
+`
+  const { source, module, check } = setup(code)
+  const at = (text: string, name = text) => code.indexOf(text) + text.indexOf(name)
+
+  test('is a local defined at its name, seen in its branch', () => {
+    for (const [def, use, type] of [[at('q = o', 'q'), at('q.*'), '*u32'], [at('q = cells', 'q'), at('q + 1'), 'u32']] as const) {
+      for (const offset of [def, use]) {
+        expect(gotoDefinition(source, module, check, offset)).toEqual({ name: 'q', location: { offset: def, length: 1 } })
+        expect(findReferences(source, module, check, offset)?.references.map(r => r.offset)).toEqual([use])
+        expect(rename(source, module, check, offset)?.locations.map(l => l.offset)).toEqual([def, use])
+        expect(hover(source, module, check, offset)).toEqual({ name: 'q', type, kind: 'local' })
+      }
+    }
+  })
+
+  test('has a type hint where it is defined', () => {
+    const built = buildMeta(module, source)
+    const symbols = built.symbols.filter(s => s.name === 'q').map(s => built.types[s.type]?.type)
+    expect(symbols).toEqual(['*u32', 'u32'])
+  })
+})
+
 describe('a value too large to hold', () => {
   test('is one error, and the editor shows its name without laying it out', () => {
     // s would be 2^30 registers: its hover counted them to say how many slots it takes.

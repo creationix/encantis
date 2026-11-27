@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { argValue, ungroupedType } from './ast'
-import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, testsToRun, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -72,7 +72,7 @@ export interface CodegenContext {
   claimed?: Map<string, string>
   // The locals of the variable an `if let` binds, which is seen only in its
   // then-branch (see withBinding).
-  bindings?: Map<AST.IfExpr, string[]>
+  bindings?: Map<AST.IfExpr | AST.ElifBranch, string[]>
   // The variables a `let` or a `for` declares, with their locals: from there
   // on its names stand for them (see letToWat, forToWat).
   declared?: Map<AST.LetStmt | AST.ForStmt, [string, string[]][]>
@@ -932,7 +932,9 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
         const addr = addressOfIndexToWat(expr, expr.operand, ctx)
         if (addr) return addr
       }
-      // If operand is already a pointer, just return it
+      // A place in memory is its address (the operand is addressed, so its
+      // code is that address), and a string literal is its own: the checker
+      // refuses & before any other pointer.
       const innerType = lookupExprType(expr.operand, ctx)
       if (innerType && (innerType.kind === 'pointer' || innerType.kind === 'slice')) {
         return operand
@@ -1253,8 +1255,9 @@ function flatSuffixes(type: ResolvedType): string[] {
 
 // The wasm globals that hold a module global: one per wasm value, so a slice
 // or struct global is several, named like a local's parts (see claimGlobals).
-function globalNames(name: string, type: ResolvedType, ctx: CodegenContext): string[] {
-  const watName = ctx.nameMap.get(name) ?? name
+// `watName` is the global's name in the WAT, where the module's names do
+// not give it (a global a test imports).
+function globalNames(name: string, type: ResolvedType, ctx: CodegenContext, watName = ctx.nameMap.get(name) ?? name): string[] {
   return programGlobals.get(ctx.symbols)?.get(watName) ?? flatSuffixes(type).map((suffix) => `${watName}${suffix}`)
 }
 
@@ -1276,19 +1279,7 @@ function claimGlobals(module: AST.Module, symbols: Map<string, CheckSymbol>, nam
     if (sym?.kind !== 'global') return
     const watName = nameMap.get(name) ?? name
     const modulePrefix = watName.slice(0, watName.length - name.length)
-    const suffixes = flatSuffixes(sym.type)
-    for (let n = 0; ; n++) {
-      const names = suffixes.map((suffix) => `${n === 0 ? '' : `_${n}_`}${name}${suffix}`)
-      // Two parts of one global named alike take names apart, as a local's do.
-      apart(names, n, (i, k) => {
-        const w = `_${k}_${name}${suffixes[i]}`
-        return claimed.has(w) ? null : w
-      })
-      if (names.some((w) => claimed.has(w))) continue
-      for (const w of names) claimed.add(w)
-      into.set(watName, names.map((w) => `${modulePrefix}${w}`))
-      return
-    }
+    into.set(watName, claimGlobalNames(name, sym.type, claimed).map((w) => `${modulePrefix}${w}`))
   }
   for (const decl of module.decls) {
     const item = decl.kind === 'ExportDecl' ? decl.item : decl
@@ -1296,6 +1287,23 @@ function claimGlobals(module: AST.Module, symbols: Map<string, CheckSymbol>, nam
     if (item.kind === 'ImportDecl' && !isSourceImport(item.module)) {
       for (const imported of item.items) if (imported.item.kind === 'ImportGlobal') claim(imported.item.ident)
     }
+  }
+}
+
+// The names of the wasm globals of a global `name` of this type, none of
+// them one that `claimed` holds, which then holds them too.
+function claimGlobalNames(name: string, type: ResolvedType, claimed: Set<string>): string[] {
+  const suffixes = flatSuffixes(type)
+  for (let n = 0; ; n++) {
+    const names = suffixes.map((suffix) => `${n === 0 ? '' : `_${n}_`}${name}${suffix}`)
+    // Two parts of one global named alike take names apart, as a local's do.
+    apart(names, n, (i, k) => {
+      const w = `_${k}_${name}${suffixes[i]}`
+      return claimed.has(w) ? null : w
+    })
+    if (names.some((w) => claimed.has(w))) continue
+    for (const w of names) claimed.add(w)
+    return names
   }
 }
 
@@ -1972,25 +1980,25 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   return `${parts.join('\n')}\n(if ${resultStr} ${boundsCheck} (then ${loadVal}) (else ${fallbackVal}))`
 }
 
-function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
-  const pattern = expr.pattern
+// An `if let` or `elif let` branch: its value tested for having one, and
+// its branch run with the name bound to it, else what `otherwise` gives
+// (empty for nothing). `resultStr` is the result of the whole if, whose
+// value each branch leaves on the stack.
+function ifLetArmToWat(arm: AST.IfExpr | AST.ElifBranch, ctx: CodegenContext, resultStr: string, otherwise: () => string): string {
+  const pattern = arm.pattern
   if (!pattern || pattern.kind !== 'binding') {
     throw new Error('Invalid if-let expression')
   }
 
-  const elemType = ctx.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
+  const elemType = ctx.types.get(typeKey(arm.condition.span.start, 'IfLetBinding'))
   if (!elemType) throw new Error('Missing element type for if-let')
 
-  // As a value, each branch leaves its last expression on the stack.
-  const type = lookupExprType(expr, ctx)
-  const resultTypes = type ? typeToWasm(type) : []
-  const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
   // The binding is seen in the then-branch only.
-  const found = ctx.bindings?.get(expr)
+  const found = ctx.bindings?.get(arm)
   if (!found) throw new Error(`Missing local for if-let binding '${pattern.name}'`)
   const bindingNames = found
-  const thenBody = withBinding(ctx, pattern.name, bindingNames, () => bodyToWat(expr.thenBranch, ctx, resultTypes.length > 0))
-  const elseBody = elseToWat(expr, ctx, resultTypes.length > 0, resultStr)
+  const thenBody = withBinding(ctx, pattern.name, bindingNames, () => bodyToWat(arm.thenBranch, ctx, resultStr !== ''))
+  const elseBody = otherwise()
   function makeBind(loadVal: string): string {
     if (bindingNames.length === 1) {
       return `(local.set $${bindingNames[0]} ${loadVal})`
@@ -2000,9 +2008,9 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   }
 
   // Index expression: bounds check
-  if (expr.condition.kind === 'IndexExpr' && !holdsOptionals(expr.condition, ctx)) {
-    const indexExpr = expr.condition
-    const uid = scratchId(expr.span.start)
+  if (arm.condition.kind === 'IndexExpr' && !holdsOptionals(arm.condition, ctx)) {
+    const indexExpr = arm.condition
+    const uid = scratchId(arm.span.start)
     const idxLocal = `__iflet_idx_${uid}`
     const ptrLocal = `__iflet_ptr_${uid}`
     const lenLocal = `__iflet_len_${uid}`
@@ -2051,10 +2059,10 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   }
 
   // Generic optional expression: null check (ptr != 0)
-  const uid = scratchId(expr.span.start)
+  const uid = scratchId(arm.span.start)
   const ptrLocal = `__iflet_ptr_${uid}`
   const parts: string[] = []
-  const condWat = exprToWat(expr.condition, ctx)
+  const condWat = exprToWat(arm.condition, ctx)
 
   if (bindingNames.length >= 2) {
     // Slice optional: (ptr, len) — check ptr, bind both
@@ -2087,6 +2095,14 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then ${bindWat}\n${thenBody}))`
 }
 
+function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
+  // As a value, each branch leaves its last expression on the stack.
+  const type = lookupExprType(expr, ctx)
+  const resultTypes = type ? typeToWasm(type) : []
+  const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
+  return ifLetArmToWat(expr, ctx, resultStr, () => elseToWat(expr, ctx, resultTypes.length > 0, resultStr))
+}
+
 function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   if (expr.pattern) {
     return ifLetToWat(expr, ctx)
@@ -2110,11 +2126,17 @@ function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
 }
 
 // What an if or if-let does when its first test fails: the elif branches,
-// as nested ifs, then the else branch. Empty when it has neither.
+// as nested ifs, then the else branch. Empty when it has neither. An
+// `elif let` is tested as an `if let` is.
 function elseToWat(expr: AST.IfExpr, ctx: CodegenContext, hasResult: boolean, resultStr: string): string {
   let current = expr.else_ ? bodyToWat(expr.else_, ctx, hasResult) : ''
   for (let i = expr.elifs.length - 1; i >= 0; i--) {
     const elif = expr.elifs[i]
+    if (elif.pattern) {
+      const rest = current
+      current = ifLetArmToWat(elif, ctx, resultStr, () => rest)
+      continue
+    }
     const elifCond = exprToWat(elif.condition, ctx)
     const elifThen = bodyToWat(elif.thenBranch, ctx, hasResult)
     current = `(if ${resultStr} ${elifCond} (then ${elifThen}) (else ${current}))`
@@ -2899,18 +2921,21 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
     // The body sits in its own $continue block so that continue still reaches
     // the increment. The count is evaluated once, before the loop: a constant,
     // or a variable the body doesn't change, is read where it is compared.
-    // A signed count is compared signed, so a negative one runs the loop zero
-    // times; value counts up from 0 and stops at the count, so it never
-    // reaches the values where the two comparisons differ.
+    // value is a u32, compared unsigned with the count. A signed variable
+    // count is first tested once, before the first pass: a negative one runs
+    // no pass, and one that isn't is the same number as a u32. (A negative
+    // constant is compared signed, and 0 is past it before the first pass.)
     const constant = /^\(i32\.const (-?\d+)\)$/.exec(iterWat)
     const steady = constant !== null || steadyRead(stmt, iterWat)
     const count = steady ? iterWat : scratchLocal(ctx, 'i32')
-    const negative = iterType.kind === 'primitive' && RT.isSigned(iterType) && !(constant && Number(constant[1]) >= 0)
-    const compare = negative ? 'i32.ge_s' : 'i32.ge_u'
+    const read = steady ? count : `(local.get ${count})`
+    const signed = iterType.kind === 'primitive' && RT.isSigned(iterType)
+    const compare = signed && constant && Number(constant[1]) < 0 ? 'i32.ge_s' : 'i32.ge_u'
+    const negative = signed && !constant ? `\n    (br_if $break (i32.lt_s ${read} (i32.const 0)))` : ''
     return `${steady ? '' : `(local.set ${count} ${iterWat})\n`}(local.set $${valueName} (i32.const 0))
-(block $break
+(block $break${negative}
     (loop $next
-      (br_if $break (${compare} (local.get $${valueName}) ${steady ? count : `(local.get ${count})`}))
+      (br_if $break (${compare} (local.get $${valueName}) ${read}))
       (block $continue
         ${body}
       )
@@ -3201,12 +3226,14 @@ function hostExports(module: AST.Module): Set<AST.FuncDecl> {
 // host to give it a value that keeps the promise.
 type HostGlobalCheck = { module: string; name: string; check: string }
 
-function hostGlobalChecks(module: AST.Module, ctx: CodegenContext, includeTests: boolean): HostGlobalCheck[] {
+// With `testNames`, the WAT names of what the tests import, the globals the
+// tests import are checked too.
+function hostGlobalChecks(module: AST.Module, ctx: CodegenContext, testNames?: Map<AST.ImportItem, string>): HostGlobalCheck[] {
   const checks: HostGlobalCheck[] = []
   const imports = (decls: readonly AST.Declaration[] | readonly AST.TestItem[]): void => {
     for (const decl of decls) {
       if (decl.kind === 'TestDecl') {
-        if (includeTests) imports(decl.children)
+        if (testNames) imports(decl.children)
         continue
       }
       if (decl.kind !== 'ImportDecl' || isSourceImport(decl.module)) continue
@@ -3215,7 +3242,7 @@ function hostGlobalChecks(module: AST.Module, ctx: CodegenContext, includeTests:
         const sym = ctx.symbols.get(item.item.ident)
         if (sym?.kind !== 'global') continue
         const checked = nonNullSlots(sym.type)
-        const names = globalNames(item.item.ident, sym.type, ctx)
+        const names = globalNames(item.item.ident, sym.type, ctx, testNames?.get(item))
         const suffixes = flatSuffixes(sym.type)
         for (const [i, n] of names.entries()) {
           if (checked[i]) checks.push({ module: decl.module, name: `${item.name}${suffixes[i]}`, check: nullTrap(`(global.get $${n})`) })
@@ -3454,34 +3481,38 @@ function collectLocals(
     }
   }
 
+  // The locals of an `if let` or `elif let` branch: its binding's, and the
+  // scratch locals its test uses.
+  function ifLetLocals(arm: AST.IfExpr | AST.ElifBranch) {
+    if (arm.pattern?.kind !== 'binding') return
+    const elemType = checkResult.types.get(typeKey(arm.condition.span.start, 'IfLetBinding'))
+    if (!elemType) return
+    // The binding's locals, seen in the then-branch only (ifLetArmToWat):
+    // after it, its name can be another variable's.
+    ctx.bindings ??= new Map()
+    ctx.bindings.set(arm, claimLocals(ctx, arm.pattern.name, elemType, locals, true, 'if let '))
+    const uid = scratchId(arm.span.start)
+    if (arm.condition.kind === 'IndexExpr') {
+      // Temporary locals for bounds checking
+      locals.push({ name: `__iflet_idx_${uid}`, type: 'i32' })
+      ctx.locals.set(`__iflet_idx_${uid}`, [`__iflet_idx_${uid}`])
+    }
+    // An optional host reference is held while it is tested for null.
+    if (unwrap(elemType).kind === 'host') locals.push({ name: `__iflet_ref_${uid}`, type: 'externref' })
+    // Temporary locals for null check
+    locals.push({ name: `__iflet_ptr_${uid}`, type: 'i32' })
+    locals.push({ name: `__iflet_len_${uid}`, type: 'i32' })
+    ctx.locals.set(`__iflet_ptr_${uid}`, [`__iflet_ptr_${uid}`])
+    ctx.locals.set(`__iflet_len_${uid}`, [`__iflet_len_${uid}`])
+  }
+
   function visitExpr(expr: AST.Expr) {
     if (expr.kind === 'IfExpr') {
-      // Collect if-let binding locals
-      if (expr.pattern && expr.pattern.kind === 'binding') {
-        const elemType = checkResult.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
-        if (elemType) {
-          // The binding's locals, seen in the then-branch only (ifLetToWat):
-          // after it, its name can be another variable's.
-          ctx.bindings ??= new Map()
-          ctx.bindings.set(expr, claimLocals(ctx, expr.pattern.name, elemType, locals, true, 'if let '))
-          const uid = scratchId(expr.span.start)
-          if (expr.condition.kind === 'IndexExpr') {
-            // Temporary locals for bounds checking
-            locals.push({ name: `__iflet_idx_${uid}`, type: 'i32' })
-            ctx.locals.set(`__iflet_idx_${uid}`, [`__iflet_idx_${uid}`])
-          }
-          // An optional host reference is held while it is tested for null.
-          if (unwrap(elemType).kind === 'host') locals.push({ name: `__iflet_ref_${uid}`, type: 'externref' })
-          // Temporary locals for null check
-          locals.push({ name: `__iflet_ptr_${uid}`, type: 'i32' })
-          locals.push({ name: `__iflet_len_${uid}`, type: 'i32' })
-          ctx.locals.set(`__iflet_ptr_${uid}`, [`__iflet_ptr_${uid}`])
-          ctx.locals.set(`__iflet_len_${uid}`, [`__iflet_len_${uid}`])
-        }
-      }
+      ifLetLocals(expr)
       visitExpr(expr.condition)
       visitBody(expr.thenBranch)
       for (const elif of expr.elifs) {
+        ifLetLocals(elif)
         visitExpr(elif.condition)
         visitBody(elif.thenBranch)
       }
@@ -3707,7 +3738,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
     }
     parts.push(funcToWat(fn, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize, exported.has(fn)))
   }
-  parts.push(...hostGlobalsStart(hostGlobalChecks(module, ctx, false)))
+  parts.push(...hostGlobalsStart(hostGlobalChecks(module, ctx)))
 
   // Collect globals
   for (const decl of module.decls) {
@@ -3806,18 +3837,84 @@ function usesMemory(checkResult: TypeCheckResult): boolean {
   return false
 }
 
+// The names of the tests of a test build (testBuildNames).
+type TestBuildNames = {
+  // __test<n> for the nth test of the build, a group too
+  ids: Map<AST.TestDecl, string>
+  // the checker's (testsToRun), for each test that is run
+  exports: Map<AST.TestDecl, string>
+  // the WAT name of what each import a test declares imports: of a global,
+  // the name its wasm globals are known by (programGlobals)
+  imports: Map<AST.ImportItem, string>
+}
+
+// The tests of the build, numbered in the order of the files tested and of
+// each file's source, a group before the tests it holds: the function of
+// test n is $__test<n> in the WAT. What a test declares is named under it: a
+// function $__test<n>.<name>, a function it imports from the host
+// $__test<n>.<name> and a host global's wasm globals so too, named apart as
+// a module's are (claimGlobalNames). So no two tests' names meet, whatever
+// the tests are called and whatever they declare, and none meets a name of
+// the program's: the entry module's begin with a letter, another module's
+// with its tag and $, and the compiler's helpers are not __test and a digit.
+// A function or global a test imports from another module is that module's,
+// in the WAT once whatever names the tests give it.
+function testBuildNames(
+  tested: Iterable<string>,
+  modules: Map<string, LoadedModule>,
+  checkResults: Map<string, TypeCheckResult>,
+  sourceImportNames: (decl: AST.ImportDecl, path: string) => Map<AST.ImportItem, string>,
+  globals: Map<string, string[]>,
+): TestBuildNames {
+  const names: TestBuildNames = { ids: new Map(), exports: new Map(), imports: new Map() }
+  const visit = (path: string, test: AST.TestDecl): void => {
+    const id = `__test${names.ids.size + 1}`
+    names.ids.set(test, id)
+    const claimed = new Set<string>()
+    for (const item of test.children) {
+      if (item.kind === 'TestDecl') visit(path, item)
+      if (item.kind !== 'ImportDecl') continue
+      if (isSourceImport(item.module)) {
+        for (const [imported, wat] of sourceImportNames(item, path)) names.imports.set(imported, wat)
+        continue
+      }
+      for (const imported of item.items) {
+        if (imported.item.kind === 'ImportFunc') names.imports.set(imported, `${id}.${imported.item.ident ?? imported.name}`)
+        if (imported.item.kind === 'ImportGlobal') {
+          const ident = imported.item.ident
+          const sym = checkResults.get(path)?.symbols.get(ident)
+          const type = sym?.kind === 'global' ? sym.type : resolveAstType(imported.item.type)
+          globals.set(`${id}.${ident}`, claimGlobalNames(ident, type, claimed).map((w) => `${id}.${w}`))
+          names.imports.set(imported, `${id}.${ident}`)
+        }
+      }
+    }
+  }
+  for (const path of tested) {
+    const decls = modules.get(path)?.module.decls ?? []
+    for (const decl of decls) if (decl.kind === 'TestDecl') visit(path, decl)
+    for (const { decl, exportName } of testsToRun(decls)) names.exports.set(decl, exportName)
+  }
+  return names
+}
+
+// The name a test knows what an import imports by
+function importedAs(item: AST.ImportItem): string | undefined {
+  if (item.item.kind === 'ImportFunc') return item.item.ident ?? item.name
+  if (item.item.kind === 'ImportGlobal') return item.item.ident
+  return undefined
+}
+
+// A test's function and what it declares, named as testBuildNames says.
 function emitTestDecl(
   decl: AST.TestDecl,
-  prefix: string,
   ctx: CodegenContext,
   checkResult: TypeCheckResult,
   literalRefs: Map<number, { ptr: number; len: number }>,
-  nameMap: Map<string, string>,
+  names: TestBuildNames,
   parts: string[],
 ): void {
-  const myPrefix = decl.name
-    ? (prefix ? `${prefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_')
-    : prefix
+  const watId = names.ids.get(decl) as string
 
   // Process defs and data decls first so they're available to functions and statements
   for (const item of decl.children) {
@@ -3836,13 +3933,19 @@ function emitTestDecl(
     if (item.kind === 'TestDecl') {
       hasNestedTests = true
     } else if (item.kind === 'ImportDecl') {
-      // Handled at module level — skip here
-    } else if (item.kind === 'FuncDecl') {
-      // Emit shared helper function
-      const watName = item.ident ? `__test_${myPrefix}_${item.ident}` : `__test_${myPrefix}_anon`
-      if (item.ident) {
-        ctx.nameMap.set(item.ident, watName)
+      // Emitted with the module's imports; here the test's name for each
+      // is its name in the WAT
+      for (const imported of item.items) {
+        const local = importedAs(imported)
+        const wat = names.imports.get(imported)
+        if (local !== undefined && wat !== undefined) ctx.nameMap.set(local, wat)
       }
+    } else if (item.kind === 'FuncDecl') {
+      // A function without a name is left out, as at module level (Not
+      // implemented, reference 3.4): nothing can call it.
+      if (!item.ident) continue
+      const watName = `${watId}.${item.ident}`
+      ctx.nameMap.set(item.ident, watName)
       parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName, ctx.symbols, ctx.dataSectionSize))
     } else if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       // Already processed above
@@ -3857,13 +3960,12 @@ function emitTestDecl(
     // Group: recurse into nested tests
     for (const item of decl.children) {
       if (item.kind === 'TestDecl') {
-        emitTestDecl(item, myPrefix, ctx, checkResult, literalRefs, nameMap, parts)
+        emitTestDecl(item, ctx, checkResult, literalRefs, names, parts)
       }
     }
   } else if (stmts.length > 0 && decl.name) {
     // Leaf test: emit as a function
     ctx.testMode = true
-    const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
     // Its locals are its own, named as a function's are (claimLocals).
     ctx.locals = new Map()
     ctx.claimed = new Map()
@@ -3881,9 +3983,10 @@ function emitTestDecl(
       return true
     })
     const localStr = declareUsedLocals(locals, body, ' ')
-    const testLabel = decl.name ? ` ;; test "${decl.name}"` : ''
-    parts.push(`(func $test_${safeName} ${localStr}${testLabel}\n  ${body}\n)`)
-    parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
+    // The name as a string literal would be written: a comment ends at a line end.
+    const testLabel = ` ;; test ${JSON.stringify(decl.name)}`
+    parts.push(`(func $${watId} ${localStr}${testLabel}\n  ${body}\n)`)
+    parts.push(`  (export "${names.exports.get(decl)}" (func $${watId}))`)
   }
 }
 
@@ -3916,7 +4019,9 @@ function getMemoryDecl(module: AST.Module): { exportName: string | null; min: nu
   return null
 }
 
-function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenContext): string {
+// `watName`: the name in the WAT, where it is not the name the module knows
+// the import by (an import a test declares).
+function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenContext, watName?: string): string {
   const imp = item.item
 
   if (imp.kind === 'ImportFunc') {
@@ -3971,7 +4076,7 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const paramsStr = params.join(' ')
     const resultsStr = results.length > 0 ? `(result ${results.join(' ')})` : ''
 
-    return `  (import "${moduleName}" "${item.name}" (func $${name} ${paramsStr} ${resultsStr}))`
+    return `  (import "${moduleName}" "${item.name}" (func $${watName ?? name} ${paramsStr} ${resultsStr}))`
   }
 
   if (imp.kind === 'ImportGlobal') {
@@ -3979,7 +4084,7 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const sym = ctx.symbols.get(imp.ident)
     const type = sym?.kind === 'global' ? sym.type : resolveAstType(imp.type)
     const wasmTypes = typeToWasm(type)
-    const names = globalNames(imp.ident, type, ctx)
+    const names = globalNames(imp.ident, type, ctx, watName)
     return flatSuffixes(type)
       .map((suffix, i) => `  (import "${moduleName}" "${item.name}${suffix}" (global $${names[i]} ${wasmTypes[i]}))`)
       .join('\n')
@@ -4232,16 +4337,26 @@ export function programToWat(
   }
   for (const result of checkResults.values()) programGlobals.set(result.symbols, globals)
 
-  function collectAllImports(decls: readonly { kind: string }[]): AST.ImportDecl[] {
-    const imports: AST.ImportDecl[] = []
-    for (const d of decls) {
-      if (d.kind === 'ImportDecl') imports.push(d as AST.ImportDecl)
-      else if (d.kind === 'TestDecl') imports.push(...collectAllImports((d as AST.TestDecl).children))
+  // What each item of an import from another source module is in the WAT:
+  // the other module's function or global.
+  function sourceImportNames(decl: AST.ImportDecl, path: string): Map<AST.ImportItem, string> {
+    const found = new Map<AST.ImportItem, string>()
+    const depPath = resolveModulePath(decl.module, path)
+    const depNames = perModuleNameMap.get(depPath)
+    if (!depNames) return found
+    for (const item of decl.items) {
+      const mangled = item.item.kind === 'ImportFunc' ? perModuleExports.get(depPath)?.get(item.name) ?? depNames.get(item.name)
+        : item.item.kind === 'ImportGlobal' ? depNames.get(item.name) : undefined
+      if (mangled) found.set(item, mangled)
     }
-    return imports
+    return found
   }
 
-  // Build the full name map for each module: includes own mangled names + imported names resolved to their source's mangled names
+  const testNames = testBuildNames(tested, modules, checkResults, sourceImportNames, globals)
+
+  // Build the full name map for each module: its own mangled names, and the
+  // names its imports from other source modules give their mangled names.
+  // What a test imports is named in the test only (emitTestDecl).
   function buildFullNameMap(path: string): Map<string, string> {
     const full = new Map<string, string>()
     const own = perModuleNameMap.get(path)
@@ -4250,21 +4365,11 @@ export function programToWat(
     const loaded = modules.get(path)
     if (!loaded) return full
     const funcNames = checkResults.get(path)?.funcNames
-    for (const decl of collectAllImports(loaded.module.decls)) {
-      if (!isSourceImport(decl.module)) continue
-      const depPath = resolveModulePath(decl.module, path)
-      const depNames = perModuleNameMap.get(depPath)
-      if (!depNames) continue
-      for (const item of decl.items) {
-        if (item.item.kind === 'ImportFunc') {
-          const localName = funcNames?.get(item.item) ?? item.item.ident ?? item.name
-          const mangled = perModuleExports.get(depPath)?.get(item.name) ?? depNames.get(item.name)
-          if (mangled) full.set(localName, mangled)
-        }
-        if (item.item.kind === 'ImportGlobal') {
-          const mangled = depNames.get(item.name)
-          if (mangled) full.set(item.item.ident, mangled)
-        }
+    for (const decl of loaded.module.decls) {
+      if (decl.kind !== 'ImportDecl' || !isSourceImport(decl.module)) continue
+      for (const [item, mangled] of sourceImportNames(decl, path)) {
+        if (item.item.kind === 'ImportFunc') full.set(funcNames?.get(item.item) ?? item.item.ident ?? item.name, mangled)
+        if (item.item.kind === 'ImportGlobal') full.set(item.item.ident, mangled)
       }
     }
     // The functions of other modules the module calls by names of its own:
@@ -4280,7 +4385,7 @@ export function programToWat(
   const parts: string[] = ['(module']
 
   // Emit host imports — top-level always, test-scoped only for the modules
-  // whose tests are built
+  // whose tests are built, named as testBuildNames says
   for (const [path, loaded] of modules) {
     const result = checkResults.get(path)
     if (!result) continue
@@ -4293,19 +4398,15 @@ export function programToWat(
         }
       }
     }
-    if (tested.has(path)) {
-      for (const decl of loaded.module.decls) {
-        if (decl.kind === 'TestDecl') {
-          for (const imp of collectAllImports(decl.children)) {
-            if (!isSourceImport(imp.module)) {
-              for (const item of imp.items) {
-                parts.push(importItemToWat(imp.module, item, ctx))
-              }
-            }
-          }
-        }
+    if (!tested.has(path)) continue
+    const testImports = (items: readonly AST.TestItem[]): void => {
+      for (const item of items) {
+        if (item.kind === 'TestDecl') testImports(item.children)
+        if (item.kind !== 'ImportDecl' || isSourceImport(item.module)) continue
+        for (const imported of item.items) parts.push(importItemToWat(item.module, imported, ctx, testNames.imports.get(imported)))
       }
     }
+    for (const decl of loaded.module.decls) if (decl.kind === 'TestDecl') testImports(decl.children)
   }
 
   if (options?.includeTests) {
@@ -4360,7 +4461,7 @@ export function programToWat(
       }
       parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize, entryExports.has(fn)))
     }
-    globalChecks.push(...hostGlobalChecks(loaded.module, createContext(result, refsOf(path), modNameMap, dataSection.totalSize), tested.has(path)))
+    globalChecks.push(...hostGlobalChecks(loaded.module, createContext(result, refsOf(path), modNameMap, dataSection.totalSize), tested.has(path) ? testNames.imports : undefined))
   }
   parts.push(...hostGlobalsStart(globalChecks))
   options?.standIns?.push(...globalChecks.map(({ module, name }) => ({ module, name })))
@@ -4396,16 +4497,14 @@ export function programToWat(
 
   // Test functions (only in test mode)
   if (options?.includeTests) {
-    const filesToTest = options.testFiles ?? [entryPath]
-    for (const testFilePath of filesToTest) {
+    for (const testFilePath of tested) {
       const testModule = modules.get(testFilePath)
       const testResult = checkResults.get(testFilePath)
       if (!testModule || !testResult) continue
-      const testNameMap = buildFullNameMap(testFilePath)
-      const ctx = createContext(testResult, refsOf(testFilePath), testNameMap, dataSection.totalSize)
+      const ctx = createContext(testResult, refsOf(testFilePath), buildFullNameMap(testFilePath), dataSection.totalSize)
       for (const decl of testModule.module.decls) {
         if (decl.kind !== 'TestDecl') continue
-        emitTestDecl(decl, '', ctx, testResult, refsOf(testFilePath), testNameMap, parts)
+        emitTestDecl(decl, ctx, testResult, refsOf(testFilePath), testNames, parts)
       }
     }
   }
@@ -4426,7 +4525,7 @@ export function programToWat(
   parts.push(')')
   const wat = tidyRawWat(parts.join('\n'))
   if (options?.includeTests) {
-    return wat // caller uses testNames from the return
+    return wat // caller uses testExports from the return
   }
   return wat
 }
@@ -4436,39 +4535,22 @@ export function programToWatWithTests(
   checkResults: Map<string, TypeCheckResult>,
   entryPath: string,
   testFiles?: string[],
-): { wat: string; testNames: string[]; testTitles: string[]; standIns: { module: string; name: string }[] } {
-  // testNames are the exported function suffixes (test_<name>); testTitles are
-  // the names as written, nested ones joined with ' > ', for display.
-  const testNames: string[] = []
+): { wat: string; testExports: string[]; testTitles: string[]; standIns: { module: string; name: string }[] } {
+  // testExports are the names the tests are exported under (test:<name>), in
+  // the order to run them; testTitles are the names as written, nested ones
+  // joined with ' > ', for display.
+  const testExports: string[] = []
   const testTitles: string[] = []
-
-  function collectTestNames(decl: AST.TestDecl, prefix: string, titlePrefix: string) {
-    const myPrefix = decl.name
-      ? (prefix ? `${prefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_')
-      : prefix
-    const myTitle = decl.name ? (titlePrefix ? `${titlePrefix} > ${decl.name}` : decl.name) : titlePrefix
-    const hasNested = decl.children.some(c => c.kind === 'TestDecl')
-    if (hasNested) {
-      for (const child of decl.children) {
-        if (child.kind === 'TestDecl') collectTestNames(child, myPrefix, myTitle)
-      }
-    } else if (decl.name) {
-      testNames.push(myPrefix)
-      testTitles.push(myTitle)
-    }
-  }
-
   const filesToTest = testFiles ?? [entryPath]
   for (const filePath of filesToTest) {
-    const mod = modules.get(filePath)
-    if (!mod) continue
-    for (const decl of mod.module.decls) {
-      if (decl.kind === 'TestDecl') collectTestNames(decl, '', '')
+    for (const { exportName, title } of testsToRun(modules.get(filePath)?.module.decls ?? [])) {
+      testExports.push(exportName)
+      testTitles.push(title)
     }
   }
   // The imported globals of a plain host type: a test host gives each one a
   // value that is not null (createTestHost), as the host promises to.
   const standIns: { module: string; name: string }[] = []
   const wat = programToWat(modules, checkResults, entryPath, { includeTests: true, testFiles: filesToTest, standIns })
-  return { wat, testNames, testTitles, standIns }
+  return { wat, testExports, testTitles, standIns }
 }
