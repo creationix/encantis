@@ -2,8 +2,8 @@
 // Used by both the LSP server and the CLI.
 
 import type * as AST from './ast'
-import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName } from './checker'
+import type { NestedFunc, TypeCheckResult, Symbol as CheckSymbol } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName, spellString, shownTypeText, INSTANCE_STRIDE } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap, isValueArray } from './types'
 import { typeToWasm } from './codegen'
@@ -49,6 +49,20 @@ export interface HoverResult {
   // are listed together, and `more` counts those past the ones listed.
   instances?: PerInstance[]
   more?: number
+  // A nested function: the function whose body declares it, and what it
+  // captures, with what of that it writes (reference 3.4)
+  nestedIn?: string
+  captures?: string
+  // A nested function in a generic's body, which is nested in each of its
+  // instances, is nested in the generic, its type written in the generic's
+  // terms, and has in each instance that one's signature and captures what
+  // that one's functions capture: listed per instance, those alike together
+  // (the instance labels, what they capture, and their signature where it
+  // is not the one the generic writes)
+  capturesIn?: (PerInstance & { signature?: string })[]
+  // A variable a nested function uses, where it is used there: the function
+  // that declares it
+  capturedFrom?: string
 }
 
 // A hover as one line of text, as the CLI prints it:
@@ -56,6 +70,10 @@ export interface HoverResult {
 export function hoverText(r: HoverResult): string {
   const head = `${r.kind} ${r.name}: ${r.type}${r.value !== undefined ? ` = ${r.value}` : ''}`
   const parts = [
+    ...(r.nestedIn !== undefined ? [`nested in ${r.nestedIn}`] : []),
+    ...(r.captures !== undefined ? [`captures ${r.captures}`] : []),
+    ...(r.capturesIn ?? []).map((i) => `in ${i.in.join(', ')}: ${i.signature ? `${i.signature}, ` : ''}captures ${i.type}`),
+    ...(r.capturedFrom !== undefined ? [`captured from ${r.capturedFrom}`] : []),
     ...(r.as !== undefined ? [r.as] : []),
     ...(r.calls !== undefined ? [`calls ${r.calls}`] : []),
     ...(r.instances ?? []).map((i) => `in ${i.in.join(', ')}: ${i.type}`),
@@ -104,8 +122,16 @@ function identAtOffset(source: string, offset: number): string | null {
   const start = wordStart(source, offset)
   let end = offset
   while (end < source.length && /[a-zA-Z0-9_\-]/.test(source[end])) end++
-  return start < end ? source.slice(start, end) : null
+  if (start >= end) return null
+  const word = source.slice(start, end)
+  // A keyword is no name. A declaration's first one is where the checker
+  // records the declaration (func, inline, export): by its place it would be
+  // taken for the name declared after it.
+  return DECLARATION_KEYWORDS.has(word) ? null : word
 }
+
+// The keywords a declaration starts with (grammar `keyword`)
+const DECLARATION_KEYWORDS: ReadonlySet<string> = new Set(['func', 'inline', 'export', 'data', 'def', 'global', 'memory', 'import', 'type', 'enum'])
 
 // The offset at which the identifier around `offset` begins. A name starts
 // with a letter: a minus before it negates it (-k).
@@ -121,6 +147,12 @@ function wordStart(source: string, offset: number): number {
 // Functions that share a name are each known by a name of their own, and by
 // the shared name alone every one of them would be the first.
 function declaredAt(module: AST.Module, checkResult: TypeCheckResult, offset: number, name: string): string | undefined {
+  const decl = funcDeclaredAt(module, checkResult, offset, name)
+  return decl && (checkResult.funcNames.get(decl) ?? name)
+}
+
+// The function or imported function whose name is written at `offset`
+function funcDeclaredAt(module: AST.Module, checkResult: TypeCheckResult, offset: number, name: string): AST.FuncDecl | AST.ImportFunc | undefined {
   const find = (items: readonly (AST.Declaration | AST.TestItem)[]): AST.FuncDecl | AST.ImportFunc | undefined => {
     for (const item of items) {
       const decl = item.kind === 'ExportDecl' ? item.item : item
@@ -128,6 +160,9 @@ function declaredAt(module: AST.Module, checkResult: TypeCheckResult, offset: nu
         const found = find(decl.children)
         if (found) return found
       } else if (decl.kind === 'FuncDecl') {
+        // One at the top of a test that uses the test's variables is a
+        // nested function, found where its name is recorded
+        if (checkResult.nested.has(decl)) continue
         if (decl.ident === name && offset >= decl.span.start && offset < decl.signature.span.start) return decl
       } else if (decl.kind === 'ImportDecl') {
         for (const { item: imported } of decl.items) {
@@ -137,8 +172,7 @@ function declaredAt(module: AST.Module, checkResult: TypeCheckResult, offset: nu
     }
     return undefined
   }
-  const decl = find(module.decls)
-  return decl && (checkResult.funcNames.get(decl) ?? name)
+  return find(module.decls)
 }
 
 // Where the def or data whose name is written at `offset` is recorded: where
@@ -201,10 +235,27 @@ function definitionOf(
   name: string,
 ): number | undefined {
   const start = wordStart(source, offset)
-  const declared = declaredAt(module, checkResult, start, name)
-  if (declared !== undefined) return checkResult.symbolDefOffsets.get(declared)
+  // A name that is none where it is used (a function only a test declares,
+  // given outside the test) is defined nowhere
+  if (checkResult.unseen?.has(start)) return undefined
+  const decl = funcDeclaredAt(module, checkResult, start, name)
+  if (decl) {
+    // The same function imported again: its local name is one more place of
+    // the first import's (the checker recorded it there)
+    const again = checkResult.symbolRefs.get(start)
+    if (again !== undefined) return again
+    // A function a test declared under a module function's name (#74), or
+    // under another test's, holds the name in the module's table: the
+    // declaration written here is still its own, with its own uses.
+    const def = checkResult.symbolDefOffsets.get(checkResult.funcNames.get(decl) ?? name)
+    return def !== decl.span.start && checkResult.references.has(decl.span.start) ? decl.span.start : def
+  }
   const value = valueDeclaredAt(module, start, name)
   if (value !== undefined && checkResult.references.has(value)) return value
+  const exact = checkResult.symbolRefs.get(offset) ?? checkResult.symbolRefs.get(start)
+  // A nested function of a generic's body is the body's own, whatever the
+  // module or a test declares of the name, as hover has it
+  if (exact !== undefined && nestedDefinedAt(checkResult, exact)) return exact
   // A call in a generic's body means, of functions that share a name, one
   // function per instance, and is recorded as a use of each: it goes to the
   // one the first instance calls, which is the one hover shows there.
@@ -212,7 +263,6 @@ function definitionOf(
   const shift = generic && firstInstanceShift(checkResult, generic)
   const called = shift ? calledAt(checkResult, start + shift, name) : undefined
   if (called !== undefined) return checkResult.symbolDefOffsets.get(called)
-  const exact = checkResult.symbolRefs.get(offset) ?? checkResult.symbolRefs.get(start)
   if (exact !== undefined) return exact
   if (genericDeclaring(module, start, name)) {
     return checkResult.references.has(start) ? start : undefined
@@ -286,6 +336,115 @@ function calledType(module: AST.Module, checkResult: TypeCheckResult, offset: nu
   return type?.kind === 'func' ? type : undefined
 }
 
+// The nested function defined where its name is written at `defined`. In a
+// generic's body, the first instance's stands for the generic's, as its
+// names do in the editor.
+function nestedDefinedAt(checkResult: TypeCheckResult, defined: number): NestedFunc | undefined {
+  for (const nested of checkResult.nested.values()) {
+    if (nested.nameAt % INSTANCE_STRIDE === defined) return nested
+  }
+  return undefined
+}
+
+// What hover says of a nested function where it is declared, called or given:
+// its type, the function it is nested in, and what it captures. One in a
+// generic's body is one in each instance: its type as the generic writes it,
+// nested in the generic (its path with the generic's name for the
+// instance's label), and its signature and what it captures in each, those
+// alike listed together.
+function nestedHover(module: AST.Module, checkResult: TypeCheckResult, defined: number, nested: NestedFunc): Pick<HoverResult, 'type' | 'nestedIn' | 'captures' | 'capturesIn'> {
+  const copies = [...checkResult.nested.values()].filter((n) => n.nameAt >= INSTANCE_STRIDE && n.nameAt % INSTANCE_STRIDE === defined)
+  const generic = genericAround(module, defined)
+  if (copies.length < 2 || !generic?.ident) {
+    const captures = capturesText(nested)
+    return { type: typeToString(nested.type), nestedIn: nestedParent(nested), ...(captures ? { captures } : {}) }
+  }
+  const labelOf = (n: NestedFunc) => checkResult.instances[Math.floor(n.nameAt / INSTANCE_STRIDE) - 1]?.label ?? ''
+  const label = labelOf(nested)
+  const parent = nestedParent(nested)
+  const nestedIn = label && parent.startsWith(label) ? `${generic.ident}${parent.slice(label.length)}` : parent
+  // Where the instances' signatures differ (one written in terms of T), the
+  // signature the generic writes, as a type is shown, from its own
+  // declaration (an instance's copy has T replaced), and each instance's;
+  // otherwise the one they all have
+  const { input, output, span } = (declStartingAt(generic.body, nested.decl.span.start % INSTANCE_STRIDE) ?? nested.decl).signature
+  const signed = new Set(copies.map((n) => typeToString(n.type))).size > 1
+  const type = signed ? shownTypeText({ kind: 'FuncType', input, output, span }) : typeToString(nested.type)
+  const groups = new Map<string, { in: string[]; type: string; signature?: string }>()
+  for (const n of copies) {
+    const captures = capturesText(n) ?? 'nothing'
+    const signature = signed ? typeToString(n.type) : undefined
+    const key = `${signature ?? ''}\n${captures}`
+    const group = groups.get(key) ?? { in: [], type: captures, ...(signature ? { signature } : {}) }
+    group.in.push(labelOf(n))
+    groups.set(key, group)
+  }
+  return { type, nestedIn, capturesIn: [...groups.values()] }
+}
+
+// The function declared in `node` (a generic's body) that starts at `start`
+function declStartingAt(node: unknown, start: number): AST.FuncDecl | undefined {
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      const found = declStartingAt(n, start)
+      if (found) return found
+    }
+    return undefined
+  }
+  if (node === null || typeof node !== 'object' || node instanceof Uint8Array) return undefined
+  const { kind, span } = node as { kind?: string; span?: AST.Span }
+  if (kind === 'FuncDecl' && span?.start === start) return node as AST.FuncDecl
+  if (span && (start < span.start || start >= span.end)) return undefined
+  for (const value of Object.values(node)) {
+    const found = declStartingAt(value, start)
+    if (found) return found
+  }
+  return undefined
+}
+
+// The innermost nested function whose declaration holds `offset`, of those
+// outside a generic's body
+function nestedAround(checkResult: TypeCheckResult, offset: number): NestedFunc | undefined {
+  let found: NestedFunc | undefined
+  for (const nested of checkResult.nested.values()) {
+    const { start, end } = nested.decl.span
+    if (offset < start || offset >= end || start >= INSTANCE_STRIDE) continue
+    if (!found || start >= found.decl.span.start) found = nested
+  }
+  return found
+}
+
+// The function a nested function is declared in, as its path names it, or
+// the test, as messages name it (test "t")
+function nestedParent(nested: NestedFunc): string {
+  return nested.shown.slice(0, nested.shown.length - nested.name.length - 1)
+}
+
+// What a nested function captures, as hover shows it: `center, compared
+// (writes compared)`
+function capturesText(nested: NestedFunc): string | undefined {
+  if (nested.captures.length === 0) return undefined
+  const names = nested.captures.map((v) => v.name).join(', ')
+  return nested.writes.length > 0 ? `${names} (writes ${nested.writes.map((v) => v.name).join(', ')})` : names
+}
+
+// The function or test whose code holds `offset`, where the checker has not
+// said which declares a variable there (varFrames)
+function functionAround(module: AST.Module, checkResult: TypeCheckResult, offset: number): string | undefined {
+  const nested = nestedAround(checkResult, offset)
+  if (nested) return nested.shown
+  const find = (items: readonly (AST.Declaration | AST.TestItem)[]): string | undefined => {
+    for (const item of items) {
+      const decl = item.kind === 'ExportDecl' ? item.item : item
+      if (offset < decl.span.start || offset >= decl.span.end) continue
+      if (decl.kind === 'FuncDecl') return decl.ident ?? undefined
+      if (decl.kind === 'TestDecl') return find(decl.children) ?? (decl.name !== null ? `test ${spellString(decl.name)}` : 'test')
+    }
+    return undefined
+  }
+  return find(module.decls)
+}
+
 export function hover(
   source: string,
   module: AST.Module,
@@ -300,6 +459,8 @@ export function hover(
   // in terms of the type parameters, and with what it is in each instance (in
   // each application, for a generic type's).
   const start = wordStart(source, offset)
+  // A name that is none where it is used is nothing (see definitionOf)
+  if (checkResult.unseen?.has(start)) return null
   // A field after a point in a generic's body is a member in each instance.
   const member = memberIn(module, checkResult, start, shown)
   if (member?.type && member.kind) {
@@ -319,9 +480,26 @@ export function hover(
   // and never a name of the module spelled the same (a global the parameter
   // is named like).
   const defined = checkResult.symbolRefs.get(start) ?? (checkResult.references.has(start) ? start : undefined)
-  if (defined !== undefined && localDefinedAt(checkResult, defined)) {
+  // A nested function, where it is declared, called or given
+  const nested = defined === undefined ? undefined : nestedDefinedAt(checkResult, defined)
+  if (nested && defined !== undefined) {
+    const { type, ...shown } = nestedHover(module, checkResult, defined, nested)
+    return { name, type, kind: 'func', ...shown }
+  }
+  // A function whose name a test took over (#74), where it is the one
+  // meant: a comptime argument outside the test
+  const replaced = defined === undefined ? undefined : checkResult.takenOver.get(defined)
+  if (replaced) return { name, type: symbolTypeString(replaced, source, name), kind: replaced.kind }
+  // A def or a data block a test declares, where it is declared or used: the
+  // test's own, which the checker keeps under its name and place (name$offset)
+  const declaredHere = defined ?? valueDeclaredAt(module, start, name)
+  const testOwn = declaredHere === undefined ? undefined : checkResult.symbols.get(`${name}$${declaredHere}`)
+  if (!testOwn && defined !== undefined && localDefinedAt(checkResult, defined)) {
     const type = localType(checkResult, start) ?? localType(checkResult, defined)
-    return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
+    // Used in a nested function that does not declare it: captured
+    const user = nestedAround(checkResult, start)
+    const from = user && (defined < user.decl.span.start || defined >= user.decl.span.end) ? checkResult.varFrames.get(defined) ?? functionAround(module, checkResult, defined) : undefined
+    return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local', ...(from ? { capturedFrom: from } : {}) } : null
   }
 
   // A field is not the module's name spelled like it: it is shown after a
@@ -332,8 +510,12 @@ export function hover(
   }
 
   // Check module-scope symbols first. A function that shares its name is, at
-  // its own declaration, the one declared there.
-  const sym = checkResult.symbols.get(declaredAt(module, checkResult, start, name) ?? name)
+  // its own declaration, the one declared there, and so is one whose name a
+  // test took over, and a test's function refused its name, which has a
+  // type of its own all the same (refusedOwn).
+  const declaration = funcDeclaredAt(module, checkResult, start, name)
+  const sym = testOwn ?? (declaration && (checkResult.takenOver.get(declaration.span.start) ?? checkResult.funcSyms?.get(declaration) ?? checkResult.refusedOwn?.get(declaration)))
+    ?? checkResult.symbols.get(declaredAt(module, checkResult, start, name) ?? name)
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded
     // the one that call uses, as the type of the callee. It did the same for
@@ -527,6 +709,40 @@ function nameFrom(source: string, name: string, from: number): number {
   return pattern.exec(source)?.index ?? from
 }
 
+// The nested functions a function's body declares, each followed by its own
+// (pre-order), named by their path. Found by syntax, so that a generic's
+// are listed too, with the type of its first instance's where it has one.
+function nestedSymbols(source: string, checkResult: TypeCheckResult, decl: AST.FuncDecl, path: string): SymbolInfo[] {
+  const found: SymbolInfo[] = []
+  const typed = new Map<number, NestedFunc>()
+  for (const nested of checkResult.nested.values()) {
+    const at = nested.decl.span.start % INSTANCE_STRIDE
+    if (!typed.has(at)) typed.set(at, nested)
+  }
+  const walk = (node: unknown, within: string): void => {
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n, within)
+      return
+    }
+    if (!node || typeof node !== 'object' || ArrayBuffer.isView(node)) return
+    const n = node as { kind?: string }
+    if (n.kind === 'FuncDecl') {
+      const inner = node as AST.FuncDecl
+      if (!inner.ident) return
+      const nested = typed.get(inner.span.start)
+      const keyword = inner.identSpan ? null : /^(?:inline\s+)?func\s+/.exec(source.slice(inner.span.start, inner.span.start + 200))
+      const at = inner.identSpan?.start ?? (keyword ? inner.span.start + keyword[0].length : inner.span.start)
+      const name = `${within}.${inner.ident}`
+      found.push({ name, kind: 'func', type: nested ? typeToString(nested.type) : '', offset: at, length: inner.ident.length, exported: false })
+      walk(inner.body, name)
+      return
+    }
+    for (const [k, v] of Object.entries(node)) if (k !== 'span' && k !== 'type' && k !== 'signature') walk(v, within)
+  }
+  walk(decl.body, path)
+  return found
+}
+
 export function documentSymbols(
   source: string,
   module: AST.Module,
@@ -547,6 +763,7 @@ export function documentSymbols(
             length: decl.ident.length,
             exported: false,
           })
+          symbols.push(...nestedSymbols(source, checkResult, decl, decl.ident))
         }
         break
       case 'TypeDecl':
@@ -609,6 +826,7 @@ export function documentSymbols(
             length: item.ident.length,
             exported: true,
           })
+          symbols.push(...nestedSymbols(source, checkResult, item, item.ident))
         } else if (item.kind === 'TypeFuncDecl') {
           const sym = checkResult.symbols.get(item.ident)
           symbols.push({
@@ -629,6 +847,15 @@ export function documentSymbols(
             length: item.pattern.name.length,
             exported: true,
           })
+        }
+        break
+      }
+      case 'TestDecl': {
+        // The nested functions of a test, of its nested tests and of the
+        // functions it declares, named as messages name them (test "t".plus)
+        const inTest = [...checkResult.nested.values()].filter((n) => n.decl.span.start >= decl.span.start && n.decl.span.end <= decl.span.end)
+        for (const nested of inTest.sort((a, b) => a.nameAt - b.nameAt)) {
+          symbols.push({ name: nested.shown, kind: 'func', type: typeToString(nested.type), offset: nested.nameAt, length: nested.name.length, exported: false })
         }
         break
       }

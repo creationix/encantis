@@ -90,6 +90,9 @@ function simplifyExpr(expr: AST.Expr, source: string): string {
 
 // === Meta Output Types ===
 
+// What a test holds besides its statements
+const DECLARATION_ITEMS: ReadonlySet<string> = new Set<AST.TestItem['kind']>(['TestDecl', 'ImportDecl', 'DataDecl', 'DefDecl', 'FuncDecl', 'TypeFuncDecl'])
+
 export interface MetaOutput {
   $schema?: string
   src: string
@@ -194,6 +197,12 @@ class MetaBuilder {
   // that name, in another function or in another block of this one, and a
   // global would be taken for a parameter spelled like it.
   private symbolIndexByDef = new Map<number, number>()
+  // The symbol listed for a test's function or import with a type of its
+  // own (funcSyms, refusedOwn), by its declaration. One refused its name is
+  // recorded nowhere, and by name it would be another declaration of the
+  // name in its test, listed after it (a function and an import of a name
+  // several functions of the module share).
+  private testSymbols = new Map<AST.FuncDecl | AST.ImportFunc, number>()
   private hints: Record<string, MetaHint> = {}
   private literalMap: Map<number, DataRef> = new Map()
   // While the body of a generic is gone through: the copies of its nodes in
@@ -338,6 +347,9 @@ class MetaBuilder {
         case 'DefDecl':
           this.collectDef(item)
           break
+        case 'ImportDecl':
+          this.collectImport(item)
+          break
         case 'LetStmt':
           this.collectLocal(item.pattern)
           break
@@ -350,16 +362,34 @@ class MetaBuilder {
       if (item.item.kind === 'ImportFunc') {
         const name = item.item.ident ?? item.name
         const known = this.checkResult.funcNames.get(item.item) ?? name
-        const sym = this.checkResult.symbols.get(known)
+        // One whose name a test took over has its own type and uses, as a
+        // function does (see collectFunc), and so does a test's import. One
+        // refused its name is listed as the name it was refused is (a
+        // function of the module), with the type of its own (refusedOwn).
+        // One whose name the last item of its import of the name took, a
+        // global (the test's second name, refused), is not the name: by its
+        // name it would be found where the global is. It is listed as what
+        // the name is, or not at all.
+        const last = [...decl.items].reverse().find((later) => later.item.kind !== 'ImportTypeFunc' && (later.item.ident ?? later.name) === name)
+        const replaced = last !== item && last?.item.kind === 'ImportGlobal'
+        const own = this.checkResult.takenOver.get(item.item.span.start) ?? (replaced ? undefined : this.checkResult.funcSyms?.get(item.item))
+        const sym = own ?? this.checkResult.symbols.get(known)
+        const refused = this.checkResult.refusedOwn?.get(item.item)
+        // The same function imported again is the first import's, found at
+        // its local name as one more place of it (generateHintsForImport)
+        if (this.checkResult.symbolRefs.has(this.findImportFuncOffset(item, name))) continue
         if (sym && sym.kind === 'func') {
           // Find the position of the function name in the import
           const offset = this.findImportFuncOffset(item, name)
-          this.addSymbol(name, 'func', sym.type, offset, undefined, undefined, known)
+          const recorded = this.checkResult.references.has(item.item.span.start) ? item.item.span.start : undefined
+          const index = this.addSymbol(name, 'func', refused?.kind === 'func' ? refused.type : sym.type, offset, undefined, undefined, known, recorded)
+          if (this.inTest && (own || refused)) this.testSymbols.set(item.item, index)
         } else if (sym?.kind === 'generic') {
           // Another module's generic is listed as one of this module's is,
           // with the signature written here: the editor then finds its name
           // at the import and at its calls.
-          this.addSymbol(name, 'func', this.writtenSignature(item.item.signature), this.findImportFuncOffset(item, name))
+          const index = this.addSymbol(name, 'func', this.writtenSignature(item.item.signature), this.findImportFuncOffset(item, name))
+          if (this.inTest) this.testSymbols.set(item.item, index)
         }
       } else if (item.item.kind === 'ImportTypeFunc') {
         const name = item.item.ident
@@ -428,6 +458,12 @@ class MetaBuilder {
   }
 
   private collectFunc(decl: AST.FuncDecl): void {
+    // A function at the top of a test that uses its variables is a nested
+    // function of the test's function (reference 3.4)
+    if (this.checkResult.nested.has(this.checked(decl))) {
+      this.collectNested(decl)
+      return
+    }
     if (decl.ident) {
       const known = this.checkResult.funcNames.get(decl) ?? decl.ident
       const sym = this.checkResult.symbols.get(known)
@@ -438,6 +474,7 @@ class MetaBuilder {
         // signature of the instance.
         const symbolIndex = this.addSymbol(decl.ident, 'func', this.writtenSignature(decl.signature), this.findFuncIdentOffset(decl))
         if (sym.decl === decl) this.genericSymbols.set(symbolIndex, decl)
+        else if (this.inTest) this.testSymbols.set(this.checked(decl), symbolIndex)
         // What its parameters and the names in its body are depends on the
         // instance: their hints are made from the first one, and then say
         // what they are in each (see annotateInstances). A generic nothing
@@ -460,7 +497,17 @@ class MetaBuilder {
 
       // Find the function name offset (after "func" keyword)
       const offset = this.findFuncIdentOffset(decl)
-      const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset, undefined, decl.inline, known)
+      // A function a test declared under a module function's name (#74), or
+      // under another test's, holds the name: each declaration has its own
+      // uses, recorded where it is (see recordedAt)
+      // with its own type, which the name no longer has
+      const checked = this.checked(decl)
+      const recorded = this.checkResult.references.has(checked.span.start) ? checked.span.start : undefined
+      // (or one refused its name, which has a type of its own all the same)
+      const own = this.checkResult.takenOver.get(checked.span.start) ?? this.checkResult.funcSyms?.get(checked) ?? this.checkResult.refusedOwn?.get(checked)
+      const type = own?.kind === 'func' ? own.type : sym.type
+      const symbolIndex = this.addSymbol(decl.ident, 'func', type, offset, undefined, decl.inline, known, recorded)
+      if (this.inTest && (this.checkResult.funcSyms?.has(checked) || this.checkResult.refusedOwn?.has(checked))) this.testSymbols.set(checked, symbolIndex)
 
       // Collect params and locals (also adds hints for params/returns)
       this.collectFuncBody(decl, symbolIndex)
@@ -559,27 +606,70 @@ class MetaBuilder {
       }
     }
 
-    // Collect locals from body
+    // Collect locals from body, an arrow body's blocks too
     if (decl.body.kind === 'Block') {
       this.collectLocalsFromBlock(decl.body)
+    } else {
+      this.collectLocalsIn(decl.body.expr)
     }
+  }
+
+  // A nested function: a symbol of its own, defined at its name, with its
+  // parameters, results and locals (reference 3.4). Its body's hints come
+  // with the body around it (generateHintsForNested).
+  private collectNested(decl: AST.FuncDecl): void {
+    const nested = this.checkResult.nested.get(this.checked(decl))
+    if (!nested || !decl.ident) return
+    const offset = this.findFuncIdentOffset(decl)
+    const index = this.addSymbol(decl.ident, 'func', nested.type, offset, undefined, decl.inline, nested.path, offset)
+    this.collectFuncBody(decl, index)
+  }
+
+  private generateHintsForNested(decl: AST.FuncDecl): void {
+    if (!decl.ident || !this.checkResult.nested.has(this.checked(decl))) return
+    const offset = this.findFuncIdentOffset(decl)
+    const index = this.symbolIndexByDef.get(offset)
+    if (index !== undefined) this.addHint(offset, decl.ident.length, this.symbols[index].type, index)
+    this.generateHintsForTypeExpr(decl.signature.input)
+    this.generateHintsForTypeExpr(decl.signature.output)
+    if (decl.body.kind === 'Block') this.generateHintsForBlock(decl.body)
+    else this.generateHintsForExpr(decl.body.expr)
   }
 
   private collectLocalsFromBlock(block: AST.Block): void {
     for (const stmt of block.stmts) {
-      if (stmt.kind === 'LetStmt') {
-        this.collectLocal(stmt.pattern)
+      if (stmt.kind === 'FuncDecl') {
+        this.collectNested(stmt)
+        continue
       }
-      // Collect for loop binding variables
-      if (stmt.kind === 'ForStmt') this.collectForBinding(stmt.binding)
-      // Recurse into nested blocks (while, loop, for)
-      if ('body' in stmt && stmt.body.kind === 'Block') {
-        this.collectLocalsFromBlock(stmt.body)
-      }
-      // Recurse into if/match expressions (they're expressions, not statements)
-      if (stmt.kind === 'ExpressionStmt') {
-        this.collectLocalsFromExpr(stmt.expr)
-      }
+      this.collectLocalsOfStmt(stmt)
+    }
+  }
+
+  // The variables and nested functions a statement declares, in it and in
+  // every block it holds: a loop's body, and the blocks of an if or a match
+  // wherever the statement has one, as its value (an ExpressionStmt), a
+  // let's or a set's value, a returned value, an assert's operand or an
+  // argument (reference, Nested Functions: a nested function is declared in
+  // any block)
+  private collectLocalsOfStmt(stmt: AST.Statement): void {
+    if (stmt.kind === 'LetStmt') this.collectLocal(stmt.pattern)
+    if (stmt.kind === 'ForStmt') this.collectForBinding(stmt.binding)
+    this.collectLocalsIn(stmt)
+  }
+
+  // collectLocalsFromBlock for each block a node of the syntax holds, at any
+  // depth outside other blocks (which hold their own)
+  private collectLocalsIn(node: unknown): void {
+    if (Array.isArray(node)) {
+      for (const n of node) this.collectLocalsIn(n)
+      return
+    }
+    if (!node || typeof node !== 'object') return
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'span' || !value || typeof value !== 'object') continue
+      if (!Array.isArray(value) && (value as { kind?: unknown }).kind === 'Block') this.collectLocalsFromBlock(value as AST.Block)
+      else this.collectLocalsIn(value)
     }
   }
 
@@ -588,28 +678,6 @@ class MetaBuilder {
     for (const { name, offset } of forNames(binding)) {
       const type = this.bindingType(offset, 'Binding')
       if (type) this.addSymbol(name, 'local', type, offset)
-    }
-  }
-
-  private collectLocalsFromExpr(expr: AST.Expr): void {
-    if (expr.kind === 'IfExpr') {
-      if (expr.thenBranch.kind === 'Block') {
-        this.collectLocalsFromBlock(expr.thenBranch)
-      }
-      for (const elif of expr.elifs) {
-        if (elif.thenBranch.kind === 'Block') {
-          this.collectLocalsFromBlock(elif.thenBranch)
-        }
-      }
-      if (expr.else_?.kind === 'Block') {
-        this.collectLocalsFromBlock(expr.else_)
-      }
-    } else if (expr.kind === 'MatchExpr') {
-      for (const arm of expr.arms) {
-        if (arm.body.kind === 'Block') {
-          this.collectLocalsFromBlock(arm.body)
-        }
-      }
     }
   }
 
@@ -656,8 +724,10 @@ class MetaBuilder {
   }
 
   private collectDef(decl: AST.DefDecl): void {
+    // A test's own is under its name and place: the module's of the name,
+    // where there is one, is another
     const mangledKey = `${decl.ident}$${decl.span.start}`
-    const sym = this.checkResult.symbols.get(decl.ident) ?? this.checkResult.symbols.get(mangledKey)
+    const sym = this.checkResult.symbols.get(mangledKey) ?? this.checkResult.symbols.get(decl.ident)
     if (!sym || sym.kind !== 'def') return
 
     // Find the def name offset (after "def" keyword)
@@ -687,8 +757,9 @@ class MetaBuilder {
   }
 
   private collectData(decl: AST.DataDecl): void {
+    // A test's own first, as for a def (see collectDef)
     const mangledKey = `${decl.ident}$${decl.span.start}`
-    const sym = this.checkResult.symbols.get(decl.ident) ?? this.checkResult.symbols.get(mangledKey)
+    const sym = this.checkResult.symbols.get(mangledKey) ?? this.checkResult.symbols.get(decl.ident)
     if (!sym || sym.kind !== 'def') return
 
     const offset = this.findDataIdentOffset(decl)
@@ -804,7 +875,12 @@ class MetaBuilder {
     // comptime parameters are its own names too, and are found by where
     // they are defined, never by name.
     const local = kind === 'local' || kind === 'param' || kind === 'return' || kind === 'typeparam' || kind === 'comptime'
-    const checkerDefOffset = recorded ?? (this.copies || local ? offset : this.checkResult.symbolDefOffsets.get(known))
+    const byName = recorded === undefined && !this.copies && !local
+    const named = recorded ?? (this.copies || local ? offset : this.checkResult.symbolDefOffsets.get(known))
+    // A declaration the checker recorded nowhere (one it refused, in a test,
+    // or the same function imported again) is not the one listed at the
+    // place the name has: that place, and its uses, are another's.
+    const checkerDefOffset = byName && named !== undefined && this.symbolIndexByDef.has(named) ? undefined : named
     const refs = checkerDefOffset !== undefined
       ? this.checkResult.references.get(checkerDefOffset) ?? []
       : []
@@ -1000,14 +1076,9 @@ class MetaBuilder {
 
   private generateHintsForTestItems(decl: AST.TestDecl): void {
     // Collect locals from test body statements
+    // The blocks of a loop, an if or a match, as in a function's body
     for (const item of decl.children) {
-      if (item.kind === 'LetStmt') {
-        this.collectLocal(item.pattern)
-      }
-      if (item.kind === 'ForStmt') this.collectForBinding(item.binding)
-      if ('body' in item && item.body.kind === 'Block') {
-        this.collectLocalsFromBlock(item.body)
-      }
+      if (!DECLARATION_ITEMS.has(item.kind)) this.collectLocalsOfStmt(item as AST.Statement)
     }
     for (const item of decl.children) {
       switch (item.kind) {
@@ -1015,7 +1086,8 @@ class MetaBuilder {
           this.generateHintsForTestDecl(item)
           break
         case 'FuncDecl':
-          this.generateHintsForFunc(item)
+          if (this.checkResult.nested.has(item)) this.generateHintsForNested(item)
+          else this.generateHintsForFunc(item)
           break
         case 'DataDecl':
           this.generateHintsForData(item)
@@ -1024,6 +1096,8 @@ class MetaBuilder {
           this.generateHintsForDef(item)
           break
         case 'ImportDecl':
+          this.generateHintsForImport(item)
+          break
         case 'TypeFuncDecl':
           break
         default:
@@ -1033,13 +1107,26 @@ class MetaBuilder {
     }
   }
 
+  // The symbol listed for the declaration the checker recorded at an offset,
+  // of a kind: the one a declaration's own name is, where another one of the
+  // name is listed after it (a test's function and its import of the name,
+  // the second refused)
+  // `at`: where the declaration's name is, which the symbol's own is
+  private ownSymbolAt(offset: number, kind: MetaSymbol['kind'], at: number): number | undefined {
+    const index = this.checkResult.references.has(offset) ? this.symbolIndexByDef.get(offset) : undefined
+    const symbol = index === undefined ? undefined : this.symbols[index]
+    return index !== undefined && symbol?.kind === kind && symbol.def === this.lineMap.positionKey(at) ? index : undefined
+  }
+
   private generateHintsForImport(decl: AST.ImportDecl): void {
     for (const item of decl.items) {
       if (item.item.kind === 'ImportFunc') {
         const name = item.item.ident ?? item.name
-        const symbolIndex = this.symbolIndexByName.get(this.checkResult.funcNames.get(item.item) ?? name)
+        const offset = this.findImportFuncOffset(item, name)
+        const again = this.checkResult.symbolRefs.get(offset)
+        // (another module's generic is recorded where the item starts)
+        const symbolIndex = again !== undefined ? this.symbolIndexByDef.get(again) : this.ownSymbolAt(item.item.span.start, 'func', offset) ?? this.ownSymbolAt(item.span.start, 'func', offset) ?? this.testSymbols.get(item.item) ?? this.symbolIndexByName.get(this.checkResult.funcNames.get(item.item) ?? name)
         if (symbolIndex !== undefined) {
-          const offset = this.findImportFuncOffset(item, name)
           this.addHint(offset, name.length, this.symbols[symbolIndex].type, symbolIndex)
         }
       } else if (item.item.kind === 'ImportTypeFunc') {
@@ -1053,12 +1140,14 @@ class MetaBuilder {
   }
 
   private generateHintsForFunc(decl: AST.FuncDecl): void {
-    // Handle named functions
+    // Handle named functions: by its declaration, where the checker recorded
+    // it there, and by its name otherwise (another declaration of the name
+    // in its test, refused, is listed after it, see ownSymbolAt)
     if (decl.ident) {
-      const symbolIndex = this.symbolIndexByName.get(this.checkResult.funcNames.get(decl) ?? decl.ident)
+      const offset = this.findFuncIdentOffset(decl)
+      const symbolIndex = this.ownSymbolAt(this.checked(decl).span.start, 'func', offset) ?? this.testSymbols.get(this.checked(decl)) ?? this.symbolIndexByName.get(this.checkResult.funcNames.get(decl) ?? decl.ident)
       if (symbolIndex !== undefined) {
         // Hint for function name
-        const offset = this.findFuncIdentOffset(decl)
         this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
       }
       // Note: Hints for params/returns are added during collectFunc
@@ -1083,6 +1172,9 @@ class MetaBuilder {
 
   private generateHintsForStmt(stmt: AST.Statement): void {
     switch (stmt.kind) {
+      case 'FuncDecl':
+        this.generateHintsForNested(stmt)
+        break
       case 'LetStmt':
         this.generateHintsForLetPattern(stmt.pattern, stmt.value ?? null)
         if (stmt.type) this.generateHintsForTypeExpr(stmt.type)
@@ -1205,6 +1297,9 @@ class MetaBuilder {
 
     switch (expr.kind) {
       case 'IdentExpr': {
+        // A name that is none where it is used (a function only a test
+        // declares, given outside the test) has nothing to show
+        if (this.checkResult.unseen?.has(expr.span.start)) break
         const symbolIndex = this.usedSymbol(expr)
         // Check for builtin functions when no symbol is found
         const effectiveType = type ?? BUILTIN_SIGNATURES[expr.name]
@@ -1482,7 +1577,14 @@ class MetaBuilder {
     let last = meant
     for (let next = this.checkResult.calls.get(last); next?.kind === 'CallExpr'; next = this.checkResult.calls.get(last)) last = next
     const called = last.callee.kind === 'IdentExpr' ? last.callee.name : name
-    const symbolIndex = this.symbolIndexByName.get(called) ?? this.symbolIndexByName.get(name)
+    // Where the checker recorded which declaration the name is (a generic's
+    // call, also where a second generic of the name was refused, a generic's
+    // nested function), that one: for x.f(a), at the call f(x, a) it built,
+    // which starts at the method's name. In a generic's body it is recorded
+    // at the generic's own offset, for the first instance (these hints').
+    const at = method === null ? this.checked(callee).span.start : meant.callee.span.start
+    const recorded = this.checkResult.symbolRefs.get(at - this.shift)
+    const symbolIndex = (recorded !== undefined ? this.symbolIndexByDef.get(recorded) : undefined) ?? this.symbolIndexByName.get(called) ?? this.symbolIndexByName.get(name)
     if (method !== null) this.generateHintsForExpr((callee as AST.MemberExpr).object)
     // The checker typed the callee it resolved: f of f(x, a), or the name as written.
     const type = this.checkResult.exprTypes.get(method !== null ? meant.callee : this.checked(callee)) ?? BUILTIN_SIGNATURES[name]
@@ -1608,7 +1710,19 @@ class MetaBuilder {
 
   private usedSymbol(expr: AST.IdentExpr): number | undefined {
     const def = this.checkResult.symbolRefs.get(expr.span.start)
-    return def !== undefined ? this.symbolIndexByDef.get(def) : this.symbolIndexByName.get(expr.name)
+    if (def !== undefined) return this.symbolIndexByDef.get(def)
+    // A name the checker found nothing for is, by its name, no test's own
+    // outside that test: module code that names a test's data or def is
+    // told the name is unknown, and the editor finds nothing there either
+    const index = this.symbolIndexByName.get(expr.name)
+    const test = index === undefined ? undefined : this.testOfSymbol(index)
+    return test && (expr.span.start < test.span.start || expr.span.start >= test.span.end) ? undefined : index
+  }
+
+  // The test that declares a symbol, where one does (testNames)
+  private testOfSymbol(index: number): AST.TestDecl | undefined {
+    for (const [test, own] of this.testNames) for (const i of own.values()) if (i === index) return test
+    return undefined
   }
 
   private findRootIdent(expr: AST.Expr): AST.IdentExpr | null {

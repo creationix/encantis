@@ -281,7 +281,7 @@ func negate i32 -> i32 => 0                       // the plain form: an unnamed 
 inline func square(x: f32) -> f32 => x * x        // inline is accepted and has no effect
 ```
 
-There is no lambda: a function is declared at module level (or in a test). The result after `->` is a type; `-> (q: i32, r: i32)` lists two named results.
+There is no lambda: a function is declared at module level, in a test, or as a statement in a body (a nested function, reference 3.4). The result after `->` is a type; `-> (q: i32, r: i32)` lists two named results.
 
 **Compile-time parameters** (generic functions):
 
@@ -586,10 +586,14 @@ These are the types of constants that have no type of their own, as the compiler
 ## Statements
 
 ```ebnf
-Statement = LetStmt | SetStmt | WhileStmt | ForStmt | LoopStmt
+Statement = FuncDecl | LetStmt | SetStmt | WhileStmt | ForStmt | LoopStmt
           | ReturnStmt | BreakStmt | ContinueStmt | DeferStmt | AssertStmt
           | AssignmentStmt | ExpressionStmt
 ```
+
+A `func` in a body declares a nested function (reference 3.4); it has the module rule's forms, and the checker refuses the generic ones there. `func` and `inline` are keywords, so no other statement starts with them.
+
+Function syntax Encantis does not have gets a syntax error that says what to write instead, in place of the list of what was expected: a lambda (`|x| x > n`, `|| true`, `(x) => x + 1`, `x => x + 1`, `(x: u32) -> u32 => ...`), `fn` where a declaration or an argument starts (`fn twice(x: u32) ...`, `fn(x) { ... }`), `func` where an expression is wanted, and `export` inside a body or a test. Reference 3.4 lists the rules; every other syntax error keeps the list.
 
 ### Let and Set
 

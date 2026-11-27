@@ -60,7 +60,7 @@ import { BUILTIN_DOCS, BUILTIN_SIGNATURES, TYPE_DOCS } from './words';
 import { complete, signatureHelp } from './complete';
 import { inlayHints } from './hints';
 import { applyRename, planRename, type RenamePlan, refusedName } from './rename';
-import { rename } from '@encantis/compiler/queries';
+import { hover as queryHover, rename } from '@encantis/compiler/queries';
 import { literalAt, nameAfter, pieces } from './scan';
 
 
@@ -130,21 +130,57 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
   }
 }
 
+// A type as hover shows it, formatted, but for the name a function of another
+// module given for a comptime parameter starts with, which names its file as
+// it is (g (x/lib.ents)(x: u32) -> u32): formatted, it would read as a call
+function formatShown(text: string): string {
+  const named = /^([^\s()]+ \([^()]*\.ents\))(\(.*)$/s.exec(text);
+  return named ? `${named[1]}${formatLine(named[2])}` : formatLine(text);
+}
+
 // What a hint says beyond its type, below it: for x.f(a) the call it is, the
 // function a call calls (an instance of a generic), and what the name is in
 // each instance (each application, for a generic type).
+// The labels and types it names hold test names, which may hold backticks:
+// each is a code span of its own (codeSpan).
 function hintDetails(hint: MetaHint, meta: MetaOutput): string {
   const parts: string[] = [];
-  const call = hint.as !== undefined ? `the call \`${hint.as}\`` : '';
-  if (hint.calls !== undefined) parts.push(call ? `${call}, which calls \`${hint.calls}\`` : `calls \`${hint.calls}\``);
+  const call = hint.as !== undefined ? `the call ${codeSpan(hint.as)}` : '';
+  if (hint.calls !== undefined) parts.push(call ? `${call}, which calls ${codeSpan(hint.calls)}` : `calls ${codeSpan(hint.calls)}`);
   else if (call) parts.push(call);
   const listed = (hint.instances ?? []).map(i => {
-    const type = formatLine(meta.types[i.type]?.type ?? 'unknown');
-    return `- in ${i.in.map(n => `\`${n}\``).join(', ')}: \`${type}\``;
+    const type = formatShown(meta.types[i.type]?.type ?? 'unknown');
+    return `- in ${i.in.map(n => codeSpan(n)).join(', ')}: ${codeSpan(type)}`;
   });
   if (hint.more !== undefined) listed.push(`- and ${hint.more} more instance${hint.more === 1 ? '' : 's'}`);
   if (listed.length > 0) parts.push(listed.join('\n'));
   return parts.map(p => `\n\n${p}`).join('');
+}
+
+// What hover says of a nested function, where it is declared, called or
+// given, and of a variable one captures, as `encantis hover` does (reference
+// 3.4): nested in `by_distance`; captures center, compared (writes compared)
+function nestedDetails(analysis: Analysis, offset: number): string {
+  const found = queryHover(analysis.text, analysis.module, analysis.check, offset);
+  const parts = [
+    ...(found?.nestedIn !== undefined ? [`nested in ${codeSpan(found.nestedIn)}`] : []),
+    ...(found?.captures !== undefined ? [`captures ${found.captures}`] : []),
+    ...(found?.capturedFrom !== undefined ? [`captured from ${codeSpan(found.capturedFrom)}`] : []),
+  ];
+  // One in a generic's body: its signature, as code, and what it captures
+  // in each instance
+  const listed = (found?.capturesIn ?? []).map((i) => `- in ${i.in.map((n) => codeSpan(n)).join(', ')}: ${i.signature ? `${codeSpan(i.signature)}, ` : ''}captures ${i.type}`);
+  return (parts.length > 0 ? `\n\n${parts.join('; ')}` : '') + (listed.length > 0 ? `\n\n${listed.join('\n')}` : '');
+}
+
+// Markdown code of `text`, which may hold backticks (a test's name is any
+// string): delimited by a run of backticks longer than any in it, and set
+// apart by a space where it starts or ends with one (CommonMark)
+function codeSpan(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(longest + 1);
+  const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${text}${pad}${fence}`;
 }
 
 // An analysis of a document's text, for the queries
@@ -751,6 +787,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     // Look up hint from meta FIRST (handles type punning and other resolved
     // types), in an analysis of the text as it is now that sees this name
     const cached = analysisOf(params.textDocument.uri, text);
+    // A name that is none where it is used (a function only a test declares,
+    // given outside the test) is nothing there, whatever has the name
+    if (cached?.check.unseen?.has(wordInfo.start)) return null;
     const known = cached !== null && answersAt(cached, wordInfo.start);
     if (cached && known) {
       const { meta } = cached;
@@ -769,6 +808,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
           const display = formatLine(formatSymbolDisplay(shownValue(cached, symbol), typeStr));
           let value = `\`\`\`encantis\n${display}\n\`\`\``;
           value += hintDetails(hint, meta);
+          value += nestedDetails(cached, wordInfo.start);
           if (symbol.doc) {
             value += `\n\n${symbol.doc}`;
           }
@@ -808,7 +848,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         return {
           contents: {
             kind: MarkupKind.Markdown,
-            value: `\`\`\`encantis\n${formatLine(raw)}\n\`\`\`${hintDetails(hint, meta)}`,
+            value: `\`\`\`encantis\n${formatLine(raw)}\n\`\`\`${hintDetails(hint, meta)}${nestedDetails(cached, wordInfo.start)}`,
           },
           range,
         };
@@ -830,12 +870,15 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       // position says, and where there is none (in the body of a generic
       // function) a name alone would find some other function's. So is a
       // generic's type parameter or comptime parameter.
+      // A name given for a comptime function parameter is a use of the
+      // function it names, which lists it (apply(g, 1), g nested in a body).
       const own: MetaSymbol['kind'][] = ['param', 'local', 'return', 'typeparam', 'comptime'];
-      const symbol = meta.symbols.find(s => s.name === word && !own.includes(s.kind));
+      const symbol = meta.symbols.find(s => s.name === word && s.refs.includes(key)) ?? meta.symbols.find(s => s.name === word && !own.includes(s.kind));
       if (symbol && answersFor(cached, document, symbol)) {
         const typeStr = meta.types[symbol.type]?.type ?? 'unknown';
         const display = formatLine(formatSymbolDisplay(shownValue(cached, symbol), typeStr));
         let value = `\`\`\`encantis\n${display}\n\`\`\``;
+        value += nestedDetails(cached, wordInfo.start);
         if (symbol.doc) {
           value += `\n\n${symbol.doc}`;
         }
@@ -889,8 +932,11 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     const word = getWordAtOffset(text, document.offsetAt(params.position));
     if (!word || !answersAt(cached, word.start)) return null;
     const at = offsetToPosition(text, word.start);
-    const hint = cached.meta.hints[`${at.line}:${at.character}`];
-    const symbol = hint?.symbol !== undefined ? cached.meta.symbols[hint.symbol] : undefined;
+    const key = `${at.line}:${at.character}`;
+    const hint = cached.meta.hints[key];
+    // A name given for a comptime function parameter has no hint of its
+    // own: it is a use of the function it names (apply(g, 1)).
+    const symbol = hint?.symbol !== undefined ? cached.meta.symbols[hint.symbol] : hint ? undefined : cached.meta.symbols.find((s) => s.name === word.word && s.refs.includes(key));
     return symbol && answersFor(cached, document, symbol) ? { symbol, uri: params.textDocument.uri, analysis: cached } : null;
   }
 

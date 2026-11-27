@@ -238,7 +238,12 @@ Encantis {
   // Statements
   // ============================================================================
 
-  Statement = LetStmt
+  // A function declared in a body is a nested function (reference 3.4).
+  // `func` and `inline` are keywords, so no other statement starts with
+  // them. It has both forms of the module rule; the checker refuses the
+  // generic ones there.
+  Statement = FuncDecl
+            | LetStmt
             | SetStmt
             | WhileStmt
             | ForStmt

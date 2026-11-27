@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { argValue, ungroupedType } from './ast'
-import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, testsToRun, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, testIds, testsToRun, modulesWithoutTests, isCallableName, type CapturedVar, type ComptimeValue, type InstanceInfo, type NestedCall, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -84,6 +84,22 @@ export interface CodegenContext {
   addressed: Set<AST.Expr>
   // Range assignments that fill (see TypeCheckResult.fills)
   fills: Set<AST.SliceExpr>
+  // The calls that pass captured variables (see TypeCheckResult.nestedCalls)
+  nestedCalls: TypeCheckResult['nestedCalls']
+  // The registers of the variables the function being emitted takes as
+  // captures, by variable (CapturedVar.id): a nested function's, and an
+  // instance's hidden ones (N21, N30)
+  captureRegs?: Map<number, string[]>
+  // What each exit of the function being emitted gives back after its own
+  // results: the registers of the variables it writes (N25)
+  writesBack?: string
+  // What each function declaration or import is (TypeCheckResult.funcSyms),
+  // and the function a call outside an instance calls, by where the checker
+  // recorded the callee's definition: by name, the last function a test
+  // declares or imports under a name has it (#74)
+  funcSyms?: TypeCheckResult['funcSyms']
+  funcAt?: Map<number, CheckSymbol>
+  symbolRefs?: TypeCheckResult['symbolRefs']
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -106,7 +122,23 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     unproven: checkResult.unproven,
     addressed: checkResult.addressed,
     fills: checkResult.fills,
+    nestedCalls: checkResult.nestedCalls,
+    funcSyms: checkResult.funcSyms,
+    funcAt: funcsByPlace(checkResult),
+    symbolRefs: checkResult.symbolRefs,
   }
+}
+
+// Each function the module or a test declares or imports, by where the
+// checker recorded its definition (see CodegenContext.funcAt)
+const funcsByPlaceCache = new WeakMap<TypeCheckResult, Map<number, CheckSymbol>>()
+function funcsByPlace(checkResult: TypeCheckResult): Map<number, CheckSymbol> {
+  let found = funcsByPlaceCache.get(checkResult)
+  if (!found) {
+    found = new Map([...(checkResult.funcSyms ?? [])].map(([decl, sym]) => [decl.span.start, sym]))
+    funcsByPlaceCache.set(checkResult, found)
+  }
+  return found
 }
 
 // A scratch local or label is named after the place in the source that needs
@@ -591,6 +623,16 @@ function setsLocalOf(wat: string, address: string): boolean {
     if (wat.includes(`(local.set ${name} `) || wat.includes(`(local.set ${name})`) || wat.includes(`(local.tee ${name} `)) return true
   }
   return false
+}
+
+// Whether `second` can be evaluated before `first` for the same values:
+// `first` has no effects and cannot trap, `second` sets none of the locals
+// it reads, and where `first` reads a global, `second` makes no call and sets
+// no global. The object of a checked index or a range is evaluated before
+// the index (N16, reference 4), and where this holds either way the order
+// does not matter.
+function commutes(first: string, second: string): boolean {
+  return isDroppable(first) && !setsLocalOf(second, first) && (!readsGlobal(first) || !/\((?:call|call_indirect|global\.set)\b/.test(second))
 }
 
 // The load and store instructions for one scalar. Integers narrower than a
@@ -1123,6 +1165,9 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   // called, Vec(u32)(p, 0, cap), compiles as the struct of its arguments.
   const lowered = ctx.calls.get(expr)
   if (lowered) return lowered.kind === 'CallExpr' ? callToWat(lowered, ctx) : tupleToWat(lowered, ctx)
+  // A call of a nested function, or of an instance that takes captures
+  const nested = ctx.nestedCalls.get(expr)
+  if (nested) return nestedCallToWat(expr, nested, ctx, false)
 
   // Get function name
   let funcName: string
@@ -1177,7 +1222,10 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   const watName = ctx.nameMap.get(funcName) ?? funcName
   const call = `(call $${watName}${args ? ' ' + args : ''})`
   // A plain host reference the host gives back is checked as it comes in.
-  const sym = ctx.symbols.get(funcName)
+  // The function called is the one the checker found for the call, which
+  // by name could be a test's of the name (#74).
+  const def = expr.callee.span.start < INSTANCE_STRIDE ? ctx.symbolRefs?.get(expr.callee.span.start) : undefined
+  const sym = (def !== undefined ? ctx.funcAt?.get(def) : undefined) ?? ctx.symbols.get(funcName)
   if (sym?.kind !== 'func' || !sym.host) return call
   const checked = sym.type.returns.flatMap((r) => nonNullSlots(r.type))
   if (!checked.includes(true)) return call
@@ -1187,6 +1235,48 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   const traps = held.filter((_, i) => checked[i]).map((l) => nullTrap(`(local.get ${l})`)).join(' ')
   const gets = held.map((l) => `(local.get ${l})`).join(' ')
   return `(block (result ${types.join(' ')}) ${call} ${sets} ${traps} ${gets})`
+}
+
+// The registers a captured variable has in the function being emitted: the
+// capture parameters it takes for it, or its own locals there (N21).
+function captureRegsOf(v: CapturedVar, ctx: CodegenContext): string[] {
+  const regs = ctx.captureRegs?.get(v.id) ?? ctx.locals.get(v.name) ?? ctx.params.get(v.name)
+  if (!regs) throw new Error(`no registers for the captured variable '${v.name}'`)
+  return regs
+}
+
+// A call of a function that takes captured variables (N23): its arguments,
+// then the registers of what it captures, the call, and the registers of
+// what it writes assigned back from its last results, last first. In the
+// middle of an expression that is a block whose value is the call's own
+// results; as a statement (`statement`) it is the instructions as they are.
+function nestedCallToWat(expr: AST.CallExpr, info: NestedCall, ctx: CodegenContext, statement: boolean): string {
+  const args = expr.args.map((arg) => {
+    if (arg.value) return exprToWat(arg.value, ctx)
+    if (arg.name) return identToWat({ kind: 'IdentExpr', name: arg.name, span: arg.span }, ctx)
+    return ''
+  }).filter(Boolean)
+  const gets = info.captures.flatMap((v) => captureRegsOf(v, ctx).map((n) => `(local.get $${n})`))
+  const watName = ctx.nameMap.get(info.callee) ?? info.callee
+  const operands = [...args, ...gets]
+  const call = `(call $${watName}${operands.length ? ` ${operands.join(' ')}` : ''})`
+  if (info.writes.length === 0) return call
+  const sets = info.writes.flatMap((v) => captureRegsOf(v, ctx)).reverse().map((n) => `(local.set $${n})`).join(' ')
+  if (statement) return `${call} ${sets}`
+  const own = info.returns.flatMap((t) => typeToWasm(t))
+  return `(block${own.length ? ` (result ${own.join(' ')})` : ''} ${call} ${sets})`
+}
+
+// The call an expression is, where that is a call that passes captured
+// variables, through what the checker compiles it as
+function nestedCallOf(expr: AST.Expr, ctx: CodegenContext): { call: AST.CallExpr; info: NestedCall } | null {
+  let e: AST.Expr | AST.TupleExpr | undefined = ungroup(expr)
+  while (e?.kind === 'CallExpr') {
+    const info = ctx.nestedCalls.get(e)
+    if (info) return { call: e, info }
+    e = ctx.calls.get(e)
+  }
+  return null
 }
 
 // === Places ===
@@ -1715,34 +1805,39 @@ function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
   const uid = scratchId(expr.span.start)
   const setup: string[] = []
   const simple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/.test(wat)
-  // A part as a plain expression, through the named scratch local if needed.
-  const keep = (wat: string, name: string): string => {
-    if (simple(wat)) return wat
+  // The object, then the bounds, in order (N16): a part is read where it
+  // stands, or through the named scratch local where it is more than a plain
+  // read, or where a part after it sets a local it reads.
+  const obj = exprToWat(expr.object, ctx)
+  const startWat = expr.start ? exprToWat(expr.start, ctx) : null
+  const endGiven = expr.end ? exprToWat(expr.end, ctx) : null
+  const later = (...wats: (string | null)[]) => wats.filter((w): w is string => w !== null)
+  const keep = (wat: string, name: string, after: string[] = []): string => {
+    if (simple(wat) && !after.some((w) => setsLocalOf(w, wat))) return wat
     setup.push(`(local.set $__sl_${name}_${uid} ${wat})`)
     return `(local.get $__sl_${name}_${uid})`
   }
 
-  const obj = exprToWat(expr.object, ctx)
   let ptr: string
   let len: string | null
   if (u.kind === 'slice') {
     const parts = trySplitMultiValue(obj, 2)
     if (parts) {
-      ptr = keep(parts[0], 'p')
-      len = keep(parts[1], 'n')
+      ptr = keep(parts[0], 'p', later(parts[1], startWat, endGiven))
+      len = keep(parts[1], 'n', later(startWat, endGiven))
     } else {
       setup.push(obj, `(local.set $__sl_n_${uid})`, `(local.set $__sl_p_${uid})`)
       ptr = `(local.get $__sl_p_${uid})`
       len = `(local.get $__sl_n_${uid})`
     }
   } else {
-    ptr = keep(obj, 'p')
+    ptr = keep(obj, 'p', later(startWat, endGiven))
     const pointee = u.kind === 'pointer' ? unwrap(u.pointee) : null
     const size = pointee?.kind === 'array' && typeof pointee.sizes?.[0] === 'number' ? pointee.sizes[0] : null
     len = size !== null ? `(i32.const ${size})` : null
   }
-  const start = expr.start ? keep(exprToWat(expr.start, ctx), 'a') : '(i32.const 0)'
-  const endWat = expr.end ? exprToWat(expr.end, ctx) : len
+  const start = startWat ? keep(startWat, 'a', later(endGiven)) : '(i32.const 0)'
+  const endWat = endGiven ?? len
   if (!endWat) throw new Error('a range on a many-pointer needs an end')
   const end = keep(endWat, 'b')
 
@@ -1851,9 +1946,23 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
     if (u.kind === 'slice' && !isDroppable(len)) base = `(block (result i32) ${base} ${len} (drop))`
     return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
   }
-  const idx = `$__addr_idx_${scratchId(expr.span.start)}`
+  const uid = scratchId(expr.span.start)
+  const idx = `$__addr_idx_${uid}`
+  // The object, then the index (N16), where the two orders can differ
+  const indexWat = exprToWat(target.index, ctx)
+  const obj = u.kind === 'slice' ? `${base} ${len}` : base
+  let setup = ''
+  if (!commutes(obj, indexWat) && !commutes(indexWat, obj)) {
+    setup = `(local.set $__addr_ptr_${uid} ${base}) `
+    base = `(local.get $__addr_ptr_${uid})`
+    if (u.kind === 'slice') {
+      setup += `(local.set $__addr_len_${uid} ${len}) `
+      len = `(local.get $__addr_len_${uid})`
+    }
+  }
   const { offset } = indexOffset(target.object, base, `(local.get ${idx})`, ctx)
-  return `(if (result i32) (i32.lt_u (local.tee ${idx} ${exprToWat(target.index, ctx)}) ${len}) (then ${offset}) (else (i32.const 0)))`
+  const check = `(if (result i32) (i32.lt_u (local.tee ${idx} ${indexWat}) ${len}) (then ${offset}) (else (i32.const 0)))`
+  return setup ? `(block (result i32) ${setup}${check})` : check
 }
 
 // The length of a null-terminated *[!]T (or [!]T): how many elements come
@@ -1949,13 +2058,17 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   const objType = lookupExprType(indexExpr.object, ctx)
 
   const parts: string[] = []
-  parts.push(`(local.set $${idxLocal} ${exprToWat(indexExpr.index, ctx)})`)
+  // The object, then the index (N16), where the two orders can differ
+  const indexWat = exprToWat(indexExpr.index, ctx)
+  const obj = exprToWat(indexExpr.object, ctx)
+  const indexFirst = commutes(obj, indexWat) || commutes(indexWat, obj)
+  const setIndex = `(local.set $${idxLocal} ${indexWat})`
+  if (indexFirst) parts.push(setIndex)
 
   if (objType?.kind === 'slice') {
-    const obj = exprToWat(indexExpr.object, ctx)
     parts.push(`${obj}\n(local.set $${lenLocal})\n(local.set $${ptrLocal})`)
   } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
-    parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+    parts.push(`(local.set $${ptrLocal} ${obj})`)
     const arrayType = objType.pointee
     // N, also of a packed *[NxM]T, whose rows are counted the same way
     if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
@@ -1964,9 +2077,10 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
       parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
     }
   } else if (objType && RT.framedArray(objType)) {
-    parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+    parts.push(`(local.set $${ptrLocal} ${obj})`)
     parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
   }
+  if (!indexFirst) parts.push(setIndex)
 
   const elemSize = byteSize(elemType) ?? 1
   const boundsCheck = `(i32.lt_u (local.get $${idxLocal}) (local.get $${lenLocal}))`
@@ -2018,13 +2132,17 @@ function ifLetArmToWat(arm: AST.IfExpr | AST.ElifBranch, ctx: CodegenContext, re
     const objType = lookupExprType(indexExpr.object, ctx)
 
     const parts: string[] = []
-    parts.push(`(local.set $${idxLocal} ${exprToWat(indexExpr.index, ctx)})`)
+    // The object, then the index (N16), where the two orders can differ
+    const indexWat = exprToWat(indexExpr.index, ctx)
+    const obj = exprToWat(indexExpr.object, ctx)
+    const indexFirst = commutes(obj, indexWat) || commutes(indexWat, obj)
+    const setIndex = `(local.set $${idxLocal} ${indexWat})`
+    if (indexFirst) parts.push(setIndex)
 
     if (objType?.kind === 'slice') {
-      const obj = exprToWat(indexExpr.object, ctx)
       parts.push(`${obj}\n(local.set $${lenLocal})\n(local.set $${ptrLocal})`)
     } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
-      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      parts.push(`(local.set $${ptrLocal} ${obj})`)
       const arrayType = objType.pointee
       // N, also of a packed *[NxM]T, whose rows are counted the same way
       if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
@@ -2035,12 +2153,13 @@ function ifLetArmToWat(arm: AST.IfExpr | AST.ElifBranch, ctx: CodegenContext, re
         parts.push(`(local.set $${lenLocal} (i32.const 0))`)
       }
     } else if (objType && RT.framedArray(objType)) {
-      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      parts.push(`(local.set $${ptrLocal} ${obj})`)
       parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
     } else {
-      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      parts.push(`(local.set $${ptrLocal} ${obj})`)
       parts.push(`(local.set $${lenLocal} (i32.const 0))`)
     }
+    if (!indexFirst) parts.push(setIndex)
 
     const elemSize = byteSize(elemType) ?? 1
     const boundsCheck = `(i32.lt_u (local.get $${idxLocal}) (local.get $${lenLocal}))`
@@ -2530,6 +2649,11 @@ function sizeofToWat(expr: AST.SizeofExpr, ctx: CodegenContext): string {
 
 export function stmtToWat(stmt: AST.Statement, ctx: CodegenContext): string {
   switch (stmt.kind) {
+    // A nested function is a function of the module, emitted after the one
+    // that declares it (N20).
+    case 'FuncDecl':
+    case 'TypeFuncDecl':
+      return ''
     case 'LetStmt':
       return letToWat(stmt, ctx)
     case 'SetStmt':
@@ -2572,6 +2696,13 @@ function exprHasValue(expr: AST.Expr, ctx: CodegenContext): boolean {
 
 // An expression evaluated for its effect, dropping any result.
 function discardedExprToWat(expr: AST.Expr, ctx: CodegenContext): string {
+  // A call that assigns captured variables back, as a statement: no block
+  const nested = nestedCallOf(expr, ctx)
+  if (nested && nested.info.writes.length > 0) {
+    const wat = nestedCallToWat(nested.call, nested.info, ctx, true)
+    const slots = nested.info.returns.flatMap((t) => typeToWasm(t)).length
+    return slots > 0 ? `${wat}\n${Array(slots).fill('(drop)').join('\n')}` : wat
+  }
   const exprWat = exprToWat(expr, ctx)
   const exprType = lookupExprType(expr, ctx)
   if (exprType && exprType.kind !== 'void') {
@@ -2808,7 +2939,9 @@ function returnToWat(stmt: AST.ReturnStmt, ctx: CodegenContext): string {
   // The value is computed first and stays on the stack while every open block's
   // deferred expressions run (they leave the stack as they found it).
   const deferred = deferredToWat(ctx, ctx.deferFrames?.length ?? 0)
-  const run = deferred ? `${deferred} ` : ''
+  // The variables a nested function writes go back last, read after its
+  // deferred expressions have run (N25, N27).
+  const run = `${deferred ? `${deferred} ` : ''}${ctx.writesBack ? `${ctx.writesBack} ` : ''}`
 
   if (stmt.when) {
     const cond = exprToWat(stmt.when, ctx)
@@ -2879,15 +3012,24 @@ function assignedRoot(target: AST.LValue): string | null {
 // the count where the loop compares with it: nothing in the body may change
 // the variable it is read from (a slice's length is part of the slice), and
 // for a global, the body calls nothing that could.
-function steadyRead(stmt: AST.ForStmt, wat: string): boolean {
+function steadyRead(stmt: AST.ForStmt, wat: string, ctx: CodegenContext): boolean {
   const body = stmt.body
   let root = ungroup(stmt.iterable)
   while (root.kind === 'MemberExpr' && root.member.kind === 'field') root = ungroup(root.object)
-  if (root.kind !== 'IdentExpr' || mayChange(body, root.name)) return false
+  if (root.kind !== 'IdentExpr' || mayChange(body, root.name) || callWrites(body, root.name, ctx)) return false
   // for n in n: the loop variable takes the local the count is read from.
   if (stmt.binding.value === root.name || stmt.binding.index === root.name) return false
   if (/^\(local\.get \$[\w-]+\)$/.test(wat)) return true
   return /^\(global\.get \$[\w-]+\)$/.test(wat) && !makesCall(body)
+}
+
+// Whether a call in some code assigns the variable `name` back: a call of a
+// nested function, or of an instance, that writes it (N19)
+function callWrites(node: unknown, name: string, ctx: CodegenContext): boolean {
+  if (Array.isArray(node)) return node.some((n) => callWrites(n, name, ctx))
+  if (!node || typeof node !== 'object') return false
+  if ((node as { kind?: string }).kind === 'CallExpr' && nestedCallOf(node as AST.CallExpr, ctx)?.info.writes.some((v) => v.name === name)) return true
+  return Object.entries(node).some(([k, v]) => k !== 'span' && k !== 'type' && typeof v === 'object' && callWrites(v, name, ctx))
 }
 
 function makesCall(node: unknown): boolean {
@@ -2926,7 +3068,7 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
     // no pass, and one that isn't is the same number as a u32. (A negative
     // constant is compared signed, and 0 is past it before the first pass.)
     const constant = /^\(i32\.const (-?\d+)\)$/.exec(iterWat)
-    const steady = constant !== null || steadyRead(stmt, iterWat)
+    const steady = constant !== null || steadyRead(stmt, iterWat, ctx)
     const count = steady ? iterWat : scratchLocal(ctx, 'i32')
     const read = steady ? count : `(local.get ${count})`
     const signed = iterType.kind === 'primitive' && RT.isSigned(iterType)
@@ -3076,11 +3218,16 @@ export function funcToWat(
   }
   const name = checkResult.funcNames.get(decl) ?? decl.ident ?? 'anonymous'
 
-  // Get function type from checker
-  const funcType = checkResult.symbols.get(name)
+  // Get function type from checker. A nested function's is its own, and it
+  // and an instance given functions that capture take captured variables
+  // after their parameters and give back those they write (N21, N22, N30).
+  const nestedInfo = checkResult.nested.get(decl)
+  // A function is the one it declares, not the last of its name (funcSyms)
+  const funcType = nestedInfo ? nestedInfo.sym : checkResult.funcSyms?.get(decl) ?? checkResult.symbols.get(name)
   if (!funcType || funcType.kind !== 'func') {
     throw new Error(`Function ${name} not found in symbols`)
   }
+  const captured = nestedInfo ?? checkResult.instanceHidden.get(name)
 
   // Flatten parameters
   const params: string[] = []
@@ -3094,10 +3241,29 @@ export function funcToWat(
     for (const [i, n] of names.entries()) params.push(`(param $${n} ${wasmTypes[i]})`)
     ctx.params.set(paramName, names)
   }
+  // A parameter for each register of each captured variable, named as the
+  // variable's locals are. The body names it as the variable it is; one that
+  // reaches it through an instance's comptime parameter has no name there.
+  // Each is its own owner (the variable's identity, N30): a variable of the
+  // same name in the body (a generic's parameter, named result, let or loop
+  // variable, or another function's capture) never shares its register, and
+  // the later claim takes a prefixed name (`$_1_n`).
+  ctx.captureRegs = new Map()
+  for (const v of captured?.captures ?? []) {
+    const wasmTypes = typeToWasm(v.type)
+    const names = claimLocals(ctx, v.name, v.type, null, false, `capture${v.id} `)
+    for (const [i, n] of names.entries()) params.push(`(param $${n} ${wasmTypes[i]})`)
+    ctx.captureRegs.set(v.id, names)
+    if (nestedInfo && !nestedInfo.hidden.has(v.id)) ctx.params.set(v.name, names)
+  }
 
-  // Flatten returns and add named returns as locals
-  const returnTypes = funcType.type.returns.flatMap((r) => typeToWasm(r.type))
+  // Flatten returns and add named returns as locals. The variables written
+  // are results after its own.
+  const ownReturnTypes = funcType.type.returns.flatMap((r) => typeToWasm(r.type))
+  const writes = captured?.writes ?? []
+  const returnTypes = [...ownReturnTypes, ...writes.flatMap((v) => typeToWasm(v.type))]
   const resultStr = returnTypes.length > 0 ? `(result ${returnTypes.join(' ')})` : ''
+  ctx.writesBack = writes.flatMap((v) => ctx.captureRegs?.get(v.id) ?? []).map((n) => `(local.get $${n})`).join(' ')
 
   // Collect locals from body
   const locals = collectLocals(decl.body, ctx, checkResult)
@@ -3149,8 +3315,11 @@ export function funcToWat(
   // A block body with unnamed results returns on every path (the checker
   // ensures it), so its end is unreachable; say so for the wasm validator,
   // which can't tell that a loop with no break never falls through.
-  if (decl.body.kind === 'Block' && namedReturns.length === 0 && returnTypes.length > 0) {
+  if (decl.body.kind === 'Block' && namedReturns.length === 0 && ownReturnTypes.length > 0) {
     epilogue = '(unreachable)'
+  } else if (ctx.writesBack) {
+    // The variables written, after its own results (N25)
+    epilogue = epilogue ? `${epilogue}\n  ${ctx.writesBack}` : ctx.writesBack
   }
 
   const localStr = declareUsedLocals([...dedupedLocals, ...(ctx.scratch ?? [])], `${body}\n${epilogue}`, '\n  ')
@@ -3166,6 +3335,28 @@ export function funcToWat(
   ${entry.map((check) => `${check}\n  `).join('')}${body}
   ${epilogue}
 )`
+}
+
+// The nested functions a function or a test declares, in the order they are
+// declared, each followed by its own (N20): after the function that
+// declares them.
+function nestedToWat(
+  owner: AST.FuncDecl | AST.TestDecl,
+  checkResult: TypeCheckResult,
+  literalRefs: Map<number, { ptr: number; len: number }>,
+  nameMap: Map<string, string> | undefined,
+  dataSectionSize: number | undefined,
+  extraSymbols?: Map<string, CheckSymbol>,
+): string[] {
+  const out: string[] = []
+  for (const decl of checkResult.nestedOf.get(owner) ?? []) {
+    const info = checkResult.nested.get(decl)
+    if (!info) continue
+    const watName = nameMap?.get(info.path) ?? info.path
+    out.push(funcToWat(decl, checkResult, literalRefs, nameMap, watName, extraSymbols, dataSectionSize))
+    out.push(...nestedToWat(decl, checkResult, literalRefs, nameMap, dataSectionSize, extraSymbols))
+  }
+  return out
 }
 
 // An exported function whose parameters hold a plain host reference checks
@@ -3621,6 +3812,7 @@ function collectLocals(
         const t = checkResult.exprTypes.get(expr)
         if (t?.kind === 'pointer' && t.optional) {
           locals.push({ name: `__addr_idx_${scratchId(expr.span.start)}`, type: 'i32' })
+          locals.push({ name: `__addr_ptr_${scratchId(expr.span.start)}`, type: 'i32' }, { name: `__addr_len_${scratchId(expr.span.start)}`, type: 'i32' })
         }
       }
       visitExpr(expr.operand)
@@ -3708,7 +3900,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   for (const decl of module.decls) {
     if (decl.kind === 'ImportDecl') {
       for (const item of decl.items) {
-        parts.push(importItemToWat(decl.module, item, ctx))
+        parts.push(importItemToWat(decl.module, item, ctx, unnamedImportName(item, checkResult.funcNames, '')))
       }
     }
   }
@@ -3721,7 +3913,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
     const max = memDecl?.max ?? null
     const maxStr = max !== null ? ` ${max}` : ''
     if (memDecl?.exportName) {
-      parts.push(`  (memory (export "${memDecl.exportName}") ${min}${maxStr})`)
+      parts.push(`  (memory (export ${watString(memDecl.exportName)}) ${min}${maxStr})`)
     } else {
       parts.push(`  (memory ${min}${maxStr})`)
     }
@@ -3730,13 +3922,14 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   // Collect function declarations
   const exported = hostExports(module)
   const hostEntries: HostEntry[] = []
-  for (const fn of funcsInOrder(module.decls, checkResult)) {
+  for (const fn of funcsInOrder(module.decls, checkResult, untestedInstances(new Map([['', checkResult]]), new Set()).get(''))) {
     if (exported.has(fn)) {
       const watName = checkResult.funcNames.get(fn) ?? fn.ident ?? 'anonymous'
       const entry = hostEntry(fn, checkResult, watName, parts.length, () => funcToWat(fn, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize))
       if (entry) hostEntries.push(entry)
     }
     parts.push(funcToWat(fn, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize, exported.has(fn)))
+    parts.push(...nestedToWat(fn, checkResult, literalRefs, undefined, dataSection.totalSize))
   }
   parts.push(...hostGlobalsStart(hostGlobalChecks(module, ctx)))
 
@@ -3782,9 +3975,11 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
 // order is what lets a generic program and the same program written out by
 // hand be the same file. A generic nobody called has no instances, and
 // nothing is emitted for it.
-function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult): AST.FuncDecl[] {
+// `left`: the instances left out of the build (see untestedInstances).
+function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult, left: ReadonlySet<string> = new Set()): AST.FuncDecl[] {
   const instancesOf = new Map<AST.FuncDecl, AST.FuncDecl[]>()
   for (const inst of checkResult.instances) {
+    if (left.has(inst.name)) continue
     instancesOf.set(inst.of, [...(instancesOf.get(inst.of) ?? []), inst.decl])
   }
   const funcs: AST.FuncDecl[] = []
@@ -3799,6 +3994,76 @@ function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult): A
     funcs.push(...instances.sort((a, b) => ((a.ident as string) < (b.ident as string) ? -1 : 1)))
   }
   return funcs
+}
+
+// The instances of each module (by path) that are left out of the build:
+// those that only tests outside it asked for (`tested`: the modules whose
+// tests are in it), and the instances only those ask for, however deep. An
+// instance given a function a test declares, or imports, or a nested
+// function of one, is asked for by that test alone, and one given a nested
+// function of an instance by that instance; an imported module's tests are
+// checked with the program's and not built (12.4, 12.5). `withoutTests`: the
+// build without tests, which has no module only tests import, and so none
+// of the instances only those modules' code asks for (askedBy.program).
+function untestedInstances(checkResults: ReadonlyMap<string, TypeCheckResult>, tested: ReadonlySet<string>, withoutTests = false): Map<string, Set<string>> {
+  const kept = new Set<InstanceInfo>()
+  const queue: InstanceInfo[] = []
+  const keep = (inst: InstanceInfo) => {
+    if (kept.has(inst)) return
+    kept.add(inst)
+    queue.push(inst)
+  }
+  for (const result of checkResults.values()) {
+    for (const inst of result.instances) {
+      if ((withoutTests ? inst.askedBy.program : inst.askedBy.module) || [...inst.askedBy.tests].some((path) => tested.has(path))) keep(inst)
+    }
+  }
+  for (let inst = queue.pop(); inst; inst = queue.pop()) for (const next of inst.requests) keep(next)
+  return new Map([...checkResults].map(([path, result]) => [path, new Set(result.instances.filter((inst) => !kept.has(inst)).map((inst) => inst.name))]))
+}
+
+// What becomes of each literal of a module in a build, by its id: laid out
+// with the program's data; laid out after all of it, in a test build, for
+// what only the tests built use (a test's own, and an instance's that only
+// they ask for), so that the program's data keeps the addresses it has in
+// the build without tests (9.0); or not laid out at all, for what the build
+// leaves out (the tests of a module whose tests are not built, and the
+// instances only those ask for, 12.4, 12.5).
+function literalFates(
+  module: AST.Module | undefined,
+  result: TypeCheckResult,
+  left: ReadonlySet<string> | undefined,
+  tested: boolean,
+  testBuild: boolean,
+  checkResults: ReadonlyMap<string, TypeCheckResult>,
+): (id: number) => 'program' | 'late' | 'none' {
+  if (!testBuild) return () => 'program'
+  // The instances a build without tests has
+  const withoutTests = untestedInstanceSet(checkResults, result)
+  const tests = (module?.decls ?? []).flatMap((decl) => (decl.kind === 'TestDecl' ? [decl.span] : []))
+  return (id) => {
+    if (id >= INSTANCE_STRIDE) {
+      const inst = result.instances[Math.floor(id / INSTANCE_STRIDE) - 1]
+      if (!inst) return 'program'
+      if (left?.has(inst.name)) return 'none'
+      return withoutTests.has(inst.name) ? 'late' : 'program'
+    }
+    if (!tests.some((span) => id >= span.start && id < span.end)) return 'program'
+    return tested ? 'late' : 'none'
+  }
+}
+
+// The instances of a module that a build without tests leaves out: those
+// only tests, and modules only tests import, ask for
+const withoutTestsCache = new WeakMap<ReadonlyMap<string, TypeCheckResult>, Map<TypeCheckResult, Set<string>>>()
+function untestedInstanceSet(checkResults: ReadonlyMap<string, TypeCheckResult>, result: TypeCheckResult): Set<string> {
+  let found = withoutTestsCache.get(checkResults)
+  if (!found) {
+    const left = untestedInstances(checkResults, new Set(), true)
+    found = new Map([...checkResults].map(([path, r]) => [r, left.get(path) ?? new Set<string>()]))
+    withoutTestsCache.set(checkResults, found)
+  }
+  return found.get(result) ?? new Set()
 }
 
 // A generic is never exported to the host: there is no one function to
@@ -3848,38 +4113,43 @@ type TestBuildNames = {
   imports: Map<AST.ImportItem, string>
 }
 
-// The tests of the build, numbered in the order of the files tested and of
-// each file's source, a group before the tests it holds: the function of
-// test n is $__test<n> in the WAT. What a test declares is named under it: a
-// function $__test<n>.<name>, a function it imports from the host
-// $__test<n>.<name> and a host global's wasm globals so too, named apart as
-// a module's are (claimGlobalNames). So no two tests' names meet, whatever
-// the tests are called and whatever they declare, and none meets a name of
-// the program's: the entry module's begin with a letter, another module's
-// with its tag and $, and the compiler's helpers are not __test and a digit.
-// A function or global a test imports from another module is that module's,
-// in the WAT once whatever names the tests give it.
+// The tests of the build, numbered in the order of each file's source, a
+// group before the tests it holds, as the checker numbers them (testIds):
+// the function of test n is $__test<n> in the WAT, and in a module other
+// than the entry the module's prefix comes first, as on its other names
+// (`prefix`). What a test declares is named under it: a function
+// $__test<n>.<name>, a nested function of the test $__test<n>.<name> too,
+// a function it imports from the host $__test<n>.<name> and a host global's
+// wasm globals so too, named apart as a module's are (claimGlobalNames). So
+// no two tests' names meet, whatever the tests are called and whatever they
+// declare, and none meets a name of the program's: the entry module's begin
+// with a letter, another module's with its tag and $, and the compiler's
+// helpers are not __test and a digit. A function or global a test imports
+// from another module is that module's, in the WAT once whatever names the
+// tests give it.
 function testBuildNames(
   tested: Iterable<string>,
   modules: Map<string, LoadedModule>,
   checkResults: Map<string, TypeCheckResult>,
   sourceImportNames: (decl: AST.ImportDecl, path: string) => Map<AST.ImportItem, string>,
   globals: Map<string, string[]>,
+  prefix: (path: string) => string,
 ): TestBuildNames {
   const names: TestBuildNames = { ids: new Map(), exports: new Map(), imports: new Map() }
-  const visit = (path: string, test: AST.TestDecl): void => {
-    const id = `__test${names.ids.size + 1}`
+  const visit = (path: string, test: AST.TestDecl, ids: Map<AST.TestDecl, string>): void => {
+    const own = ids.get(test) as string
+    const id = prefix(path) ? `${prefix(path)}$${own}` : own
     names.ids.set(test, id)
     const claimed = new Set<string>()
     for (const item of test.children) {
-      if (item.kind === 'TestDecl') visit(path, item)
+      if (item.kind === 'TestDecl') visit(path, item, ids)
       if (item.kind !== 'ImportDecl') continue
       if (isSourceImport(item.module)) {
         for (const [imported, wat] of sourceImportNames(item, path)) names.imports.set(imported, wat)
         continue
       }
       for (const imported of item.items) {
-        if (imported.item.kind === 'ImportFunc') names.imports.set(imported, `${id}.${imported.item.ident ?? imported.name}`)
+        if (imported.item.kind === 'ImportFunc') names.imports.set(imported, `${id}.${imported.item.ident ?? unnamedImportWat(imported.name)}`)
         if (imported.item.kind === 'ImportGlobal') {
           const ident = imported.item.ident
           const sym = checkResults.get(path)?.symbols.get(ident)
@@ -3892,7 +4162,8 @@ function testBuildNames(
   }
   for (const path of tested) {
     const decls = modules.get(path)?.module.decls ?? []
-    for (const decl of decls) if (decl.kind === 'TestDecl') visit(path, decl)
+    const ids = testIds(decls)
+    for (const decl of decls) if (decl.kind === 'TestDecl') visit(path, decl, ids)
     for (const { decl, exportName } of testsToRun(decls)) names.exports.set(decl, exportName)
   }
   return names
@@ -3916,11 +4187,16 @@ function emitTestDecl(
 ): void {
   const watId = names.ids.get(decl) as string
 
-  // Process defs and data decls first so they're available to functions and statements
+  // Process defs and data decls first so they're available to functions and
+  // statements: in this test and the tests it holds alone, so what the name
+  // was is put back after it (another test's function of the name is found
+  // by it, funcToWat)
+  const shadowed = new Map<string, CheckSymbol | undefined>()
   for (const item of decl.children) {
     if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       const defKey = `${item.ident}$${item.span.start}`
       const sym = checkResult.symbols.get(defKey) ?? checkResult.symbols.get(item.ident)
+      if (!shadowed.has(item.ident)) shadowed.set(item.ident, ctx.symbols.get(item.ident))
       if (sym) ctx.symbols.set(item.ident, sym)
     }
   }
@@ -3938,15 +4214,22 @@ function emitTestDecl(
       for (const imported of item.items) {
         const local = importedAs(imported)
         const wat = names.imports.get(imported)
+        // One that cannot be called is left out: its name can be a key of
+        // another declaration, a nested function's path (unnamedImportWat).
+        if (imported.item.kind === 'ImportFunc' && !imported.item.ident && unnamedImportWat(imported.name) !== imported.name) continue
         if (local !== undefined && wat !== undefined) ctx.nameMap.set(local, wat)
       }
     } else if (item.kind === 'FuncDecl') {
+      // One that uses the test's variables is a nested function of the
+      // test's function, emitted after it (N36)
+      if (checkResult.nested.has(item)) continue
       // A function without a name is left out, as at module level (Not
       // implemented, reference 3.4): nothing can call it.
       if (!item.ident) continue
       const watName = `${watId}.${item.ident}`
       ctx.nameMap.set(item.ident, watName)
       parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName, ctx.symbols, ctx.dataSectionSize))
+      parts.push(...nestedToWat(item, checkResult, literalRefs, ctx.nameMap, ctx.dataSectionSize, ctx.symbols))
     } else if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       // Already processed above
     } else if (item.kind === 'TypeFuncDecl') {
@@ -3963,8 +4246,9 @@ function emitTestDecl(
         emitTestDecl(item, ctx, checkResult, literalRefs, names, parts)
       }
     }
-  } else if (stmts.length > 0 && decl.name) {
-    // Leaf test: emit as a function
+  } else if (decl.name) {
+    // Leaf test: emit as a function, which the test runner calls, also one
+    // that holds only declarations (testsToRun lists every named leaf test)
     ctx.testMode = true
     // Its locals are its own, named as a function's are (claimLocals).
     ctx.locals = new Map()
@@ -3987,6 +4271,14 @@ function emitTestDecl(
     const testLabel = ` ;; test ${JSON.stringify(decl.name)}`
     parts.push(`(func $${watId} ${localStr}${testLabel}\n  ${body}\n)`)
     parts.push(`  (export "${names.exports.get(decl)}" (func $${watId}))`)
+  }
+  // The nested functions of the test's statements, after its function. A
+  // group's and an anonymous test's are emitted too, though their statements
+  // never run: an instance may have been given one (N36, N37).
+  parts.push(...nestedToWat(decl, checkResult, literalRefs, ctx.nameMap, ctx.dataSectionSize, ctx.symbols))
+  for (const [name, sym] of shadowed) {
+    if (sym) ctx.symbols.set(name, sym)
+    else ctx.symbols.delete(name)
   }
 }
 
@@ -4031,8 +4323,9 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const results: string[] = []
     // The types are the checker's, part by part: a type that is a name (a
     // `type`, an applied generic type) is known only there, and read off the
-    // syntax it would be no value at all.
-    const sym = ctx.symbols.get(name)
+    // syntax it would be no value at all. The import's own: by name, it can
+    // be a test's function or import of the name (#74).
+    const sym = ctx.funcSyms?.get(imp) ?? ctx.symbols.get(name)
     const checked = (from: 'params' | 'returns', index: number, count: number, ast: AST.Type): ResolvedType => {
       const fields = sym?.kind === 'func' ? sym.type[from] : []
       return fields.length === count ? fields[index].type : resolveAstType(ast)
@@ -4076,7 +4369,7 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const paramsStr = params.join(' ')
     const resultsStr = results.length > 0 ? `(result ${results.join(' ')})` : ''
 
-    return `  (import "${moduleName}" "${item.name}" (func $${watName ?? name} ${paramsStr} ${resultsStr}))`
+    return `  (import ${watString(moduleName)} ${watString(item.name)} (func $${watName ?? ctx.nameMap.get(name) ?? name} ${paramsStr} ${resultsStr}))`
   }
 
   if (imp.kind === 'ImportGlobal') {
@@ -4086,7 +4379,7 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const wasmTypes = typeToWasm(type)
     const names = globalNames(imp.ident, type, ctx, watName)
     return flatSuffixes(type)
-      .map((suffix, i) => `  (import "${moduleName}" "${item.name}${suffix}" (global $${names[i]} ${wasmTypes[i]}))`)
+      .map((suffix, i) => `  (import ${watString(moduleName)} ${watString(`${item.name}${suffix}`)} (global $${names[i]} ${wasmTypes[i]}))`)
       .join('\n')
   }
 
@@ -4143,7 +4436,7 @@ function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {
   if (item.kind === 'FuncDecl') {
     const funcName = ctx.funcNames.get(item) ?? item.ident ?? 'anonymous'
     const watName = ctx.nameMap.get(funcName) ?? funcName
-    return `  (export "${name}" (func $${watName}))`
+    return `  (export ${watString(name)} (func $${watName}))`
   }
 
   if (item.kind === 'GlobalDecl') {
@@ -4154,11 +4447,11 @@ function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {
     const suffixes = type ? flatSuffixes(type) : ['']
     const watName = ctx.nameMap.get(globalName) ?? globalName
     const names = type ? globalNames(globalName, type, ctx) : [watName]
-    return suffixes.map((suffix, i) => `  (export "${name}${suffix}" (global $${names[i]}))`).join('\n')
+    return suffixes.map((suffix, i) => `  (export ${watString(`${name}${suffix}`)} (global $${names[i]}))`).join('\n')
   }
 
   if (item.kind === 'MemoryDecl') {
-    return `  (export "${name}" (memory 0))`
+    return `  (export ${watString(name)} (memory 0))`
   }
 
   return ''
@@ -4246,6 +4539,47 @@ function modulePrefix(filePath: string): string {
   return basename(filePath, '.ents').replace(/[^a-zA-Z0-9_]/g, '_')
 }
 
+// A name an import or an export gives, as a WAT string: printable ASCII as it
+// is, and a quote, a backslash and each byte of anything else as \hh, so
+// that any text the source spells is the name in the module (7.1, 7.2)
+function watString(text: string): string {
+  let out = ''
+  for (const byte of new TextEncoder().encode(text)) {
+    out += byte >= 0x20 && byte < 0x7f && byte !== 0x22 && byte !== 0x5c ? String.fromCharCode(byte) : `\\${byte.toString(16).padStart(2, '0')}`
+  }
+  return `"${out}"`
+}
+
+// The WAT name of a function import without a local name, given the name the
+// checker knows it by. Where that is an identifier the import is called by
+// it, and it is the import's WAT name too. Any other name cannot be called
+// (7.1) and can be any text: a nested function's path (console.log), the
+// name of a test's function (__test1), a space (two words). Such an import
+// is named with a % first, which no other WAT name has, and with each
+// character a WAT name does not hold, and each %, written as %XX.
+function unnamedImportWat(known: string): string {
+  if (isCallableName(known)) return known
+  const bytes = (c: string) => [...new TextEncoder().encode(c)].map((b) => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join('')
+  return `%${known.replace(/[^A-Za-z0-9!#&'*+\-./:<=>?@^_`|~]/gu, bytes)}`
+}
+
+// The WAT name of a module's host import of a function, where it has no
+// local name that is an identifier (see unnamedImportWat), with the module's
+// prefix. It is given to importItemToWat as it is: the name the checker knows
+// the import by can be another declaration's key in the module's name map (a
+// nested function's path, console.log).
+function unnamedImportName(item: AST.ImportItem, funcNames: ReadonlyMap<AST.FuncDecl | AST.ImportFunc, string> | undefined, prefix: string): string | undefined {
+  // One whose name can be called is called by the name the checker knows it
+  // by (now, or now:i32 where functions share the name), as its calls are
+  if (item.item.kind !== 'ImportFunc' || item.item.ident || isCallableName(item.name)) return undefined
+  // The checker knows one that cannot be called with a % first (callableName)
+  const name = funcNames?.get(item.item) ?? item.name
+  const known = name.startsWith('%') ? name.slice(1) : name
+  const wat = unnamedImportWat(known)
+  if (wat === known) return undefined
+  return prefix ? `${prefix}$${wat}` : wat
+}
+
 export function programToWat(
   modules: Map<string, LoadedModule>,
   checkResults: Map<string, TypeCheckResult>,
@@ -4274,10 +4608,31 @@ export function programToWat(
     for (const [expr, value] of result.constants) allConstants.set(expr, value)
     for (const [tuple, order] of result.fieldOrder) allFieldOrders.set(tuple, order)
   }
-  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), {
+  // The modules are laid out in the order the build without tests checks
+  // them, which only the imports outside tests decide: a test's import of a
+  // module checks that module earlier, and one that only tests import is not
+  // in that build at all, and is laid out after the program's data (9.0).
+  const programOrder = options?.includeTests ? modulesWithoutTests(modules, entryPath) : null
+  const rankOf = new Map(programOrder?.map((path, i) => [path, i]))
+  if (programOrder) {
+    const at = (path: string) => rankOf.get(path) ?? programOrder.length
+    sources.sort((a, b) => at(a.path) - at(b.path))
+  }
+  // The instances each module leaves out of the build (see untestedInstances)
+  const left = untestedInstances(checkResults, tested)
+  const fates = sources.map(({ path, result }) => {
+    const fate = literalFates(modules.get(path)?.module, result, left.get(path), tested.has(path), !!options?.includeTests, checkResults)
+    if (!programOrder || rankOf.has(path)) return fate
+    return (id: number) => (fate(id) === 'none' ? 'none' : 'late')
+  })
+  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }, i) => ({
+    literals: result.literals.filter((lit) => fates[i](lit.id) !== 'none'),
+    types: result.types,
+  })), {
     calls: allCalls,
     constants: allConstants,
     fieldOrder: allFieldOrders,
+    late: (source, id) => fates[source](id) === 'late',
   })
   const literalRefsOf = new Map(sources.map(({ path }, i) => [path, refsOfSource[i]]))
   const refsOf = (path: string) => literalRefsOf.get(path) ?? new Map<number, DataRef>()
@@ -4294,10 +4649,13 @@ export function programToWat(
   // which is what an importer names: not always the name of the function,
   // and for functions that share a name never the same for two of them.
   const perModuleExports = new Map<string, Map<string, string>>()
+  // Each module's prefix, empty for the entry's
+  const prefixes = new Map<string, string>()
   for (const [path, loaded] of modules) {
     // Two modules with one file name have two prefixes: the checker
     // numbers the second (lib~2), and names it so in its own names.
     const prefix = path === entryPath ? '' : (checkResults.get(path)?.tag || modulePrefix(path))
+    prefixes.set(path, prefix)
     const modNameMap = new Map<string, string>()
     const modExports = new Map<string, string>()
     const funcNames = checkResults.get(path)?.funcNames
@@ -4320,10 +4678,32 @@ export function programToWat(
         const mangled = prefix ? `${prefix}$${decl.item.pattern.name}` : decl.item.pattern.name
         modNameMap.set(decl.item.pattern.name, mangled)
       }
+      // A host function or global is imported by each module that imports
+      // it, under the module's name for it: another module may import
+      // another one, or the same one, under that name (7.1).
+      if (decl.kind === 'ImportDecl' && !isSourceImport(decl.module) && prefix) {
+        for (const item of decl.items) {
+          const known = item.item.kind === 'ImportFunc' ? funcNames?.get(item.item) ?? item.item.ident ?? item.name
+            : item.item.kind === 'ImportGlobal' ? item.item.ident : undefined
+          if (known !== undefined) modNameMap.set(known, `${prefix}$${known}`)
+        }
+      }
     }
     for (const inst of checkResults.get(path)?.instances ?? []) {
       const name = inst.decl.ident as string
       modNameMap.set(name, prefix ? `${prefix}$${name}` : name)
+    }
+    for (const nested of checkResults.get(path)?.nested.values() ?? []) {
+      modNameMap.set(nested.path, prefix ? `${prefix}$${nested.path}` : nested.path)
+    }
+    // A function a test declares, by the name the checker gives it, which
+    // an instance given it calls (testIds)
+    for (const [test, id] of testIds(loaded.module.decls)) {
+      for (const item of test.children) {
+        if (item.kind !== 'FuncDecl' || !item.ident || checkResults.get(path)?.nested.has(item)) continue
+        const known = `${id}.${item.ident}`
+        modNameMap.set(known, prefix ? `${prefix}$${known}` : known)
+      }
     }
     perModuleNameMap.set(path, modNameMap)
     perModuleExports.set(path, modExports)
@@ -4352,7 +4732,26 @@ export function programToWat(
     return found
   }
 
-  const testNames = testBuildNames(tested, modules, checkResults, sourceImportNames, globals)
+  const testNames = testBuildNames(tested, modules, checkResults, sourceImportNames, globals, (path) => prefixes.get(path) ?? '')
+  // A function a test imports from the host, by the name the checker gives
+  // it as it does a function the test declares (testIds), which an instance
+  // given it calls: the import's name in the WAT. One from another module is
+  // given by that module's name for it (externs).
+  for (const [path, loaded] of modules) {
+    const own = perModuleNameMap.get(path)
+    if (!own) continue
+    for (const [test, id] of testIds(loaded.module.decls)) {
+      for (const item of test.children) {
+        if (item.kind !== 'ImportDecl' || isSourceImport(item.module)) continue
+        for (const imported of item.items) {
+          const wat = testNames.imports.get(imported)
+          // One that cannot be called cannot be given either (unnamedImportWat)
+          if (imported.item.kind !== 'ImportFunc' || (!imported.item.ident && unnamedImportWat(imported.name) !== imported.name)) continue
+          if (wat !== undefined) own.set(`${id}.${importedAs(imported)}`, wat)
+        }
+      }
+    }
+  }
 
   // Build the full name map for each module: its own mangled names, and the
   // names its imports from other source modules give their mangled names.
@@ -4394,7 +4793,7 @@ export function programToWat(
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'ImportDecl' && !isSourceImport(decl.module)) {
         for (const item of decl.items) {
-          parts.push(importItemToWat(decl.module, item, ctx))
+          parts.push(importItemToWat(decl.module, item, ctx, unnamedImportName(item, result.funcNames, prefixes.get(path) ?? '')))
         }
       }
     }
@@ -4436,7 +4835,7 @@ export function programToWat(
     const max = memDecl?.max ?? null
     const maxStr = max !== null ? ` ${max}` : ''
     if (memDecl?.exportName) {
-      parts.push(`  (memory (export "${memDecl.exportName}") ${min}${maxStr})`)
+      parts.push(`  (memory (export ${watString(memDecl.exportName)}) ${min}${maxStr})`)
     } else {
       parts.push(`  (memory ${min}${maxStr})`)
     }
@@ -4451,7 +4850,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    for (const fn of funcsInOrder(loaded.module.decls, result)) {
+    for (const fn of funcsInOrder(loaded.module.decls, result, left.get(path))) {
       if (!fn.ident) continue
       const known = result.funcNames.get(fn) ?? fn.ident
       const watName = modNameMap.get(known) ?? known
@@ -4460,6 +4859,7 @@ export function programToWat(
         if (entry) hostEntries.push(entry)
       }
       parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize, entryExports.has(fn)))
+      parts.push(...nestedToWat(fn, result, refsOf(path), modNameMap, dataSection.totalSize))
     }
     globalChecks.push(...hostGlobalChecks(loaded.module, createContext(result, refsOf(path), modNameMap, dataSection.totalSize), tested.has(path) ? testNames.imports : undefined))
   }

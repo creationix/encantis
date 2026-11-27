@@ -36,7 +36,7 @@ Source code is shown in `ents` code blocks. The examples that the compiler can p
 - A code block marked `errors` after an example says that the example is refused. Each of its lines is the gist of one error the compiler reports, in the order reported; the full message can say more. The checker reports in passes, each in source order:
   1. generic types: what is wrong with their parameters, then any that applies itself to a growing argument ([8.5](#85-generic-types));
   2. `type` declarations;
-  3. every other declaration, whatever its kind: imports, `def`s, globals (`global initializer must be a compile-time constant`), `data` (`data value must be a literal ...`), functions' parameter and result types and a generic's comptime parameters (a named result with a comptime parameter's name among them), with the limits on these, such as an array's size or the registers a signature takes ([2.12](#212-limits)); a second function with the same parameter types, and a generic that shares its name with a function, are reported at the one declared second;
+  3. every other declaration, whatever its kind: imports, `def`s, globals (`global initializer must be a compile-time constant`), `data` (`data value must be a literal ...`), functions' parameter and result types (of module functions; a nested function's are checked with the body that declares it, pass 6) and a generic's comptime parameters (a named result with a comptime parameter's name among them), with the limits on these, such as an array's size or the registers a signature takes ([2.12](#212-limits)); a second function with the same parameter types, and a generic that shares its name with a function, are reported at the one declared second;
   4. export names: one used twice, or one that begins with `test:` ([7.2](#72-exports));
   5. the names of tests: a test whose name is empty, and two tests exported under one name ([12.6](#126-the-test-host));
   6. the bodies of functions and tests. With a function's body come the checks that tie its signature to it, such as `result 'n' is the parameter 'n', so it has its type: u32, not u64`, and the errors at its calls of generics, such as a comptime function argument of the wrong type ([8.6](#86-comptime-function-parameters));
@@ -63,11 +63,11 @@ The compiler's command-line tool is `encantis`:
 
 `wasm --size` prints the module's size before and after optimizing, compressed too, `-O --strict-opt` fails rather than write an unoptimized module, and `encantis --version` prints the compiler's version. Known bugs: `run` does nothing for a module without `_start` and prints a stack trace for one that does not export `memory`; `fmt` prints `[]?[]T` as `[] ? []T` and drops the indentation of an arrow body continued on the next line; `fmt f.ents -o out` formats `f.ents` in place and then fails on `-o`.
 
-`<file>` is the program's entry module: the files it imports are found from it ([7.1](#71-imports)). The commands `hover`, `definition`, `references`, `symbols`, `signature` and `rename` answer an editor's questions, `meta` prints what the editor is told about a file (its symbols, types, hints and warnings) as JSON, and the VS Code extension in `packages/extension` uses the same compiler for its diagnostics and hovers.
+`<file>` is the program's entry module: the files it imports are found from it ([7.1](#71-imports)). The commands `hover`, `definition`, `references`, `symbols`, `signature` and `rename` answer an editor's questions (`hover` on a nested function says where it is declared and what it captures, `func closer: func(a: i32, b: i32) -> bool — nested in by_distance; captures center, compared (writes compared)`, and `--json` gives those as `nestedIn` and `captures`; on a variable a nested function captures, used in it, `captured from by_distance`), `meta` prints what the editor is told about a file (its symbols, types, hints and warnings) as JSON, and the VS Code extension in `packages/extension` uses the same compiler for its diagnostics and hovers.
 
-A syntax error stops the program at its file. The commands report the first one only, as `file: Line L, col C:` followed by the source line, a caret under the place, and what could have stood there (`Expected "}"`). Nothing of the program is then checked, the modules that import the file included. An `errors` block shows a syntax error by that position, `Line 2, col 44`, or by the start of what it expected, `Expected "}"`.
+A syntax error stops the program at its file. The commands report the first one only, as `file: Line L, col C:` followed by the source line, a caret under the place, and what could have stood there (`Expected "}"`). Function syntax Encantis does not have (a lambda, `fn`, `func` where an expression is wanted, `export` in a body) gets a sentence that says what to write instead ([Nested Functions](#nested-functions)). Nothing of the program is then checked, the modules that import the file included. An `errors` block shows a syntax error by that position, `Line 2, col 44`, or by the start of what it expected, `Expected "}"`.
 
-Besides errors, the checker gives warnings, which never stop a build: `'f' is never used` ([3](#3-declarations)), `'max' replaces the builtin max in this module` ([10](#10-builtin-functions)), `memset length is not a compile-time constant — cannot verify bounds (buffer is 8 bytes)` ([10.3](#103-memory-builtins)), `exported function parameter 'p' uses [*] many-pointer — consider []u8 slice for a safe API` ([7.2](#what-the-host-sees)) and `imported generic types are resolved only when the program is checked` ([7.1](#source-modules)). The editor and `meta` show them; `check`, `compile`, `wasm` and `test` do not print them (a known bug).
+Besides errors, the checker gives warnings, which never stop a build: `'f' is never used` ([3](#3-declarations), also for a nested function nothing calls or gives), `'max' replaces the builtin max in the body of 'f'` (a nested function named like a builtin, [Nested Functions](#nested-functions)), `'max' replaces the builtin max in this module` ([10](#10-builtin-functions)), `memset length is not a compile-time constant — cannot verify bounds (buffer is 8 bytes)` ([10.3](#103-memory-builtins)), `exported function parameter 'p' uses [*] many-pointer — consider []u8 slice for a safe API` ([7.2](#what-the-host-sees)) and `imported generic types are resolved only when the program is checked` ([7.1](#source-modules)). The editor and `meta` show them; `check`, `compile`, `wasm` and `test` do not print them (a known bug).
 
 ### A First Program
 
@@ -121,7 +121,7 @@ The compiler implements everything this reference describes except what this tab
 | Compile-time `if`, `for` and `assert`; comptime parameters other than types, integers and functions (`comptime ok: bool`); generic functions that share a name; writing some comptime arguments and inferring the others; generic types whose body is several statements | Each is refused with an error | [8.9](#89-not-implemented), [8.10](#810-how-this-is-compile-time-evaluation) |
 | `memory-size()` and `memory-grow(n)` | Not built in: `unknown identifier 'memory-size'` | [10.3](#103-memory-builtins) |
 | A host reference in memory | Refused wherever one would be in memory (`cannot point to Canvas: a host reference has no bytes, ...`) | [2.13](#213-host-references) |
-| SIMD (`v128`), compile-time execution (`comptime func`), a module system (`module`, `use`), operator overloading, closures | Not parsed: a syntax error | [15](#15-future-additions) |
+| SIMD (`v128`), compile-time execution (`comptime func`), a module system (`module`, `use`), operator overloading, closures that escape their function | Not parsed: a syntax error. A lambda (`\|x\| x > n`, `(x) => x + 1`) is a syntax error that says to declare a nested function, which captures the variables of its function without escaping it ([Nested Functions](#nested-functions)) | [15](#15-future-additions) |
 
 ---
 
@@ -1334,7 +1334,7 @@ Compare with the array's own `.len`, or with the `def` that sizes it, rather tha
 
 Nothing else narrows: a signed variable, a field (`c.at < 12`), a comparison with a variable, a `while` condition, a `match` arm (in `match x { 3 => buf[x], _ => 0 }`, `x` is a plain `u32`), and an `assert` (`assert x < 12` traps when it is false, but the code after it still sees a plain `u32`: write `return ... when x >= 12`). A `let` that copies a field is a variable of the field's type, its range included, and narrows like any variable: with `len: u32#(n + 1)`, `let i = b.len` and then `return false when i >= n` leaves `i` a `u32#n` ([Generic types with value parameters](#generic-types-with-value-parameters)).
 
-Nor does a comparison narrow a variable that is assigned anywhere in the region it covers (the branch it guards, or the rest of the block after a `... when` or an exiting `if`), even where the assignment comes after the index it would prove. So the loop that tests, indexes and then steps, `loop { break when i >= buf.len  buf[i] = 1  i += 1 }`, is refused (`writing to an element needs an index known to be in range`), and a copy taken after the test does not help (`let j = i`, `i += 1`, `buf[j] = 1`), since `i` was never narrowed. An assignment before the comparison does not count, even one earlier in the same loop body, since the comparison runs again on each pass: in `loop { m += k  break when m >= 12  buf[m] = 1 }`, `m` is narrowed at `buf[m]`. So a loop that counts by one is a `for`, whose variable has the count's range ([5.2](#52-loops)); a fixed step is a count times the step; and a step known only at run time compares a copy that nothing assigns, `let at = m`, `break when at >= buf.len`, `buf[at] = 1`, then `m += k`. Where the program's own logic keeps an index in range, say so this way, or by a cast after an `assert` (**A cast is a promise**, below), rather than with an `if let` that has no `else`, which skips the write silently.
+Nor does a comparison narrow a variable that is assigned anywhere in the region it covers, even where the assignment comes after the index it would prove. The region is the code it narrows together with every condition the bounds come from, since code later in a condition runs after the comparison: for `if c { ... }` and the first branch of an `if` with `elif` or `else`, `c` and the branch; for an `elif`, its condition, its branch and the conditions before it in the chain; for the `else`, every condition of the chain and the `else`; for a guard (`... when c`, or an `if c { ... }` whose branch always exits), `c` and the rest of the block. A variable is assigned there where it is the root of an assignment's target that assigns it (`x = v`, `x += v`, also inside a function declared there), a name in a `set` pattern (`set (i, j) = ...` assigns `i` and `j`), or where the code names, as a callee, a method or a comptime argument, a nested function that writes it ([Nested Functions](#nested-functions)). A comparison around a nested function's declaration narrows the variable in its body too. So the loop that tests, indexes and then steps, `loop { break when i >= buf.len  buf[i] = 1  i += 1 }`, is refused (`writing to an element needs an index known to be in range`), and a copy taken after the test does not help (`let j = i`, `i += 1`, `buf[j] = 1`), since `i` was never narrowed. An assignment before the comparison does not count, even one earlier in the same loop body, since the comparison runs again on each pass: in `loop { m += k  break when m >= 12  buf[m] = 1 }`, `m` is narrowed at `buf[m]`. So a loop that counts by one is a `for`, whose variable has the count's range ([5.2](#52-loops)); a fixed step is a count times the step; and a step known only at run time compares a copy that nothing assigns, `let at = m`, `break when at >= buf.len`, `buf[at] = 1`, then `m += k`. Where the program's own logic keeps an index in range, say so this way, or by a cast after an `assert` (**A cast is a promise**, below), rather than with an `if let` that has no `else`, which skips the write silently.
 
 ```ents
 data buf = mut [0:u8; 12]
@@ -1377,6 +1377,48 @@ runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
 runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
 runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
 runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
+```
+
+An assignment in a later operand of the condition, in an earlier condition of the chain, or in a `set` pattern counts as well:
+
+```ents
+data buf = [1:u32, 2, 3, 4]
+
+func c1(i: u32) -> u32 {
+  if i < 4 && (if true { i = 100000
+    true } else { false }) {
+    return buf[i]                // i was assigned after the comparison ran
+  }
+  return 0
+}
+func c2(i: u32) -> u32 {
+  if i >= 4 || (if true { i = 100000
+    false } else { true }) { return 0 }
+  return buf[i]                  // the guard's condition is part of the region
+}
+func c3(i: u32) -> u32 {
+  if i >= 4 || (if true { i = 100000
+    false } else { true }) {
+    return 0
+  } else {
+    return buf[i]                // so is every condition before an else
+  }
+}
+func s(i: u32) -> u32 {
+  let j: u32 = 0
+  if i < 4 {
+    set (i, j) = (100000, 0)
+    return buf[i]
+  }
+  return j
+}
+```
+
+```errors
+runtime index on *[4]u32 requires 'if let' or '??'
+runtime index on *[4]u32 requires 'if let' or '??'
+runtime index on *[4]u32 requires 'if let' or '??'
+runtime index on *[4]u32 requires 'if let' or '??'
 ```
 
 A loop proves its indexes when nothing assigns what it compares:
@@ -3143,6 +3185,7 @@ type '[65536]u8' is too large: written out in full it has more than 65536 parts
 A function is one wasm function, and every engine takes a wasm function of at most 1000 parameters, 1000 results and 50000 locals, its parameters among them, with a body of at most 7654321 bytes (the limits the WebAssembly JS API sets). What a function holds is counted in registers, the wasm values a value is laid out in: a number, a bool, a pointer or a host reference ([2.13](#213-host-references)) is one, a slice two, a `u128` two `i64`s, and an array held by value or a struct one for each of its elements and fields, `[N]T` N times what `T` is. So:
 
 - The parameters of a function are at most 1000 registers, and so are its results; so are those of an imported function and of a function type wherever it is written. It is said at the parameter or the result that goes over.
+- A nested function's parameters count, after its own, the registers of each variable it captures, and its results, after its own, the registers of each variable it writes ([Nested Functions](#nested-functions)). Going over is said at its name: `the parameters are 1001 registers with the variables 'g' captures, more than the 1000 a wasm function takes — pass a large value by pointer`, and `the results are 1001 registers with the variables 'h' writes, more than the 1000 a wasm function gives back — give a large value back through a pointer`. An instance of a generic given functions that capture counts the same way the variables it takes for them, after its own parameters and results ([8.6](#86-comptime-function-parameters)), and going over is said at the call that asks for the instance: `the parameters are 1001 registers with the variables the functions given capture, more than the 1000 a wasm function takes — pass a large value by pointer, in apply(k = ask.plus)`, and `the results are N registers with the variables the functions given write, more than the 1000 a wasm function gives back — give a large value back through a pointer, in <the instance>`.
 - The value an `if`, an `if let`, a `match` or a `??` gives is at most 1000 registers: it is the results of a wasm block.
 - A function needs at most 50000 registers in all: those of its parameters and of its variables (a named result, and what a `let`, a `for`, an `if let` or a match arm binds), and those of each value its code computes. Each expression counts its registers, one at least, as often as its code is written out: a fill `[x; N]` writes `x` out N times, a deferred expression is written at the end of its block and at each `return`, `break` and `continue` after it, and a `return` without a value gives the named results back, their registers read again each time. A literal is its elements, of which the constant ones are data where the literal is laid out in memory; and a place read only in part, or written, is not computed: `p.*` in `p.*[3]` and `p.* = v`, `rect` and `rect.origin` in `rect.origin.x`. Nor are the name of a function that is called, a type argument and the count of a fill. A value computes about as much code as it has registers, so this keeps the body within its limit as well. Going over is one error, at the value, the variable or the `return` that goes over, and none is said of a function with an error of its own. A test is a function of its own here, and so is each instance of a generic.
 
@@ -3176,6 +3219,38 @@ the results are 1001 registers, more than the 1000 a wasm function gives back �
 function 'copy' needs more than 50000 registers, the most a wasm function has (here [65536]u8 is 65536)
 function 'fill' needs more than 50000 registers, the most a wasm function has (here u8, written out 60000 times, is 60000)
 an if that gives [1001]u8 gives 1001 registers, more than the 1000 a wasm block gives back
+```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func f(n: u32) -> u32 {
+  let big: [1000]u32 = [0; 1000]
+  func g() -> u32 => big[0] + n                  // 1001 parameters
+  func h() {                                     // 1001 parameters, 1001 results
+    big[1] = n
+    n = 1
+  }
+  h()
+  return g()
+}
+
+func apply(comptime k: () -> u32, x: [1000]u32) -> u32 => k() + x[0]
+
+func ask(n: u32) -> u32 {
+  let xs: [1000]u32 = [0; 1000]
+  func plus() -> u32 => n
+  return apply(plus, xs)                         // the instance takes xs and n
+}
+```
+
+```errors
+the parameters are 1001 registers with the variables 'g' captures, more than the 1000 a wasm function takes — pass a large value by pointer
+the parameters are 1001 registers with the variables 'h' captures, more than the 1000 a wasm function takes — pass a large value by pointer
+the results are 1001 registers with the variables 'h' writes, more than the 1000 a wasm function gives back — give a large value back through a pointer
+the parameters are 1001 registers with the variables the functions given capture, more than the 1000 a wasm function takes — pass a large value by pointer, in apply(k = ask.plus)
 ```
 
 <!-- spec:end -->
@@ -3652,9 +3727,9 @@ Where each declaration can stand:
 |---|---|
 | The module | every declaration: `func`, `def`, `data`, `global`, `type`, `enum`, `import`, `export`, `memory`, `test` |
 | A `test` block | `def`, `data`, `func`, `import`, nested `test` blocks, and statements |
-| A function body | statements only: `let`, `set`, assignments, loops, `return` and the rest of [5. Statements & Control Flow](#5-statements--control-flow), and expressions |
+| A function body | statements only: `let`, `set`, assignments, loops, `return` and the rest of [5. Statements & Control Flow](#5-statements--control-flow), and expressions, and functions (a nested function, [Nested Functions](#nested-functions)) |
 
-Anything else is a syntax error at its keyword: a `def`, `data`, `global`, `type` or `func` in a function body, a `global`, `type`, `enum`, `memory` or `export` in a test.
+Anything else is a syntax error at its keyword: a `def`, `data`, `global` or `type` in a function body, a `global`, `type`, `enum`, `memory` or `export` in a test. `export` before a `func` in a body is a syntax error too (`export is written at module level: a function declared in a body cannot be exported`).
 
 **Order.** The declarations of a module can stand in any order. A function body sees every name of the module, declared above it or below it, and a type sees every type and `def` of the module wherever they are declared (`type Row = [n]u8` can come before `def n = 4`). A value worked out when the program is compiled sees only what is declared above it: the value of a `def`, the values of a `data` block and the initializer of a `global` can name the defs and the data declared before them, and a name declared further down is `unknown identifier`, followed by the declaration's own error: `def value must be a compile-time constant`, `global initializer must be a compile-time constant`, or `data 'xs' is laid out at compile time: its values must be constants`.
 
@@ -3685,7 +3760,7 @@ global initializer must be a compile-time constant
 
 <!-- spec:end -->
 
-**Names.** A name declared at the level of the module belongs to one declaration: a second one of the same name is an error (`'size' is already declared`). Functions are the exception: several can share a name when their parameters differ ([Functions That Share a Name](#functions-that-share-a-name)). A `let` cannot take the name of anything the module declares ([3.3](#33-variables)). The variable of a loop or an `if let` can take a function's name, which it hides in its body ([Loop Variables](#loop-variables)). A parameter or a named result can take the name of a global, a function, an import or a `data` block, which it hides in the body, but not a `def`'s ([3.4](#34-functions)).
+**Names.** A name declared at the level of the module belongs to one declaration: a second one of the same name is an error (`'size' is already declared`). Functions are the exception: several can share a name when their parameters differ ([Functions That Share a Name](#functions-that-share-a-name)). A `let` cannot take the name of anything the module declares ([3.3](#33-variables)). The variable of a loop or an `if let` can take a function's name, which it hides in its body ([Loop Variables](#loop-variables)). A parameter or a named result can take the name of a global, a function, an import or a `data` block, which it hides in the body, but not a `def`'s ([3.4](#34-functions)). A nested function's name is its own where it is seen: it takes no name of the module, of a variable or of another nested function seen there, and no other name of the function that declares it is the same ([Nested Functions](#nested-functions)).
 
 **Unused declarations.** The compiler warns `'x' is never used` for a function, `def`, `data` block, `global` or import of the module that nothing uses and that is not exported. An unused type, parameter or local variable gets no warning. A warning never stops a build, and the command line does not print it ([Tools](#tools)).
 
@@ -4011,7 +4086,7 @@ test "a let without a value starts at zero and is never reset" {
 
 `counts` shows the rule; it is no way to write a loop. A value carried from one pass to the next is declared before the loop (`let seen: u32 = 0` above the `for`), where a reader sees that it lives across passes.
 
-A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The branch of an `if let` or an `elif let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in another branch of the same `if`, a plain `elif` or the `else`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The error ends with where the first declaration of the name is, as the line and column of the name there (the name a `let`, a parameter or a binding declares; the name after the keywords of a declaration of the module, the `k` of `def k`; an import's local name): `'t' is already declared in this scope (first declared at 3:9)`, also where that declaration is in a block that has ended, as in `pick` below. So do the errors of a loop variable, an `if let` or `elif let` binding and a match binding that take a name already seen ([5.2](#52-loops)), and of a parameter or a named result with a def's name ([3.4](#34-functions)). A third declaration of the name, and every later one, is told the place of the first, not of the one refused before it. In an instance of a generic the place is in the generic's source; told in another module, as the error of an instance of an imported generic is told at the call that asked for it ([8.8](#88-generics-across-modules)), it names its file, `(first declared at lib.ents:3:7)`, or, where another module of the program has a file of that name, its path from the directory of the file the program is built from, `(first declared at x/lib.ents:3:7)`. The variables of a loop, an `if let` or `elif let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
+A `let` declares a variable of its function, seen from the `let` to the function's end, also after the block it is in has ended. The branch of an `if let` or an `elif let` is the one exception ([`if let` Bindings](#if-let-bindings)): a `let` anywhere in it, also in an `if`, a loop or a `match` nested there, is seen up to the end of that branch only, and within the branch the function's rule holds (in `if let v = xs[i] { if c { let w = v }  return w }`, `w` is read after the inner `if`). A `let` in another branch of the same `if`, a plain `elif` or the `else`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So no two blocks of a function can each declare a variable of one name, whether two branches, two match arms or the bodies of two loops one after the other: the second `let t` is `'t' is already declared in this scope`. A `let` in a loop's body is seen after the loop too. Declare the variable once before the blocks, give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`, or give the two variables different names. A `let` in a branch that did not run has set nothing: after the branch the variable holds what it held, zero if nothing has set it yet, and in a loop what an earlier pass left (with `if i == 0 { let seen: u32 = 7 }` in a loop body, `seen` is 7 on every later pass). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`), nor of a nested function of its function, declared before or after it (`'count' is already declared in 'f': a nested function's name is its own in the whole function that declares it`, [Nested Functions](#nested-functions)). The error ends with where the first declaration of the name is, as the line and column of the name there (the name a `let`, a parameter or a binding declares; the name after the keywords of a declaration of the module, the `k` of `def k`; an import's local name): `'t' is already declared in this scope (first declared at 3:9)`, also where that declaration is in a block that has ended, as in `pick` below. So do the errors of a loop variable, an `if let` or `elif let` binding and a match binding that take a name already seen ([5.2](#52-loops)), of a parameter or a named result with a def's name ([3.4](#34-functions)), and of a nested function, or a parameter, named result or variable of one, that takes a name already declared ([Nested Functions](#nested-functions)). A third declaration of the name, and every later one, is told the place of the first, not of the one refused before it. In an instance of a generic the place is in the generic's source; told in another module, as the error of an instance of an imported generic is told at the call that asked for it ([8.8](#88-generics-across-modules)), it names its file, `(first declared at lib.ents:3:7)`, or, where another module of the program has a file of that name, its path from the directory of the file the program is built from, `(first declared at x/lib.ents:3:7)`. A nested function reads and assigns the variables of the function around it that are seen where it is declared ([Nested Functions](#nested-functions)). The variables of a loop, an `if let` or `elif let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
 
 <!-- spec:begin compile -->
 
@@ -4269,7 +4344,7 @@ test "a value is copied, a pointer is shared" {
 
 <!-- spec:end -->
 
-A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. Neither a parameter nor a named result may have a def's name: the name of a `def` of the module, or, for a function declared in a test, of a `def` the test declares before it. Each is an error at the name (`'k' is already declared: a parameter cannot reuse the name of a def`, `'limit' is already declared: a named result cannot reuse the name of a def`), in a generic function too, where it is reported once, with the declarations, whether or not anything calls it. So is a comptime function parameter ([8.6](#86-comptime-function-parameters)), which the body calls by its name: `comptime less: (u32, u32) -> bool` beside a `def less` is that error. (A comptime value parameter's is `comptime parameter 'n' has the name of a def declared in this module`, [8.7](#87-comptime-value-parameters).) The parameter names an import writes are no variables, and are not checked.
+A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. Neither a parameter nor a named result may have a def's name: the name of a `def` of the module, or, for a function declared in a test, of a `def` the test declares before it. The same holds for a nested function's ([Nested Functions](#nested-functions)). Each is an error at the name (`'k' is already declared: a parameter cannot reuse the name of a def`, `'limit' is already declared: a named result cannot reuse the name of a def`), in a generic function too, where it is reported once, with the declarations, whether or not anything calls it. So is a comptime function parameter ([8.6](#86-comptime-function-parameters)), which the body calls by its name: `comptime less: (u32, u32) -> bool` beside a `def less` is that error. (A comptime value parameter's is `comptime parameter 'n' has the name of a def declared in this module`, [8.7](#87-comptime-value-parameters).) The parameter names an import writes are no variables, and are not checked.
 
 <!-- spec:begin compile -->
 
@@ -4453,7 +4528,7 @@ cannot assign (u32, u32) to (y: u32, x: u32)
 
 <!-- spec:end -->
 
-**A function has a name.** A `func(x: i32) -> i32 => x + 1` without one, at module level or in a test, is accepted and left out of the module, and `export "inc" func(...)` gives a module that does not assemble: both are known bugs, so name every function. An import item can leave the name out ([7.1](#71-imports)). A function's name starts with a lower-case letter. `func Area(w: u32) -> u32 => w * w` is read as a function without a name whose parameter is the type `Area(w: u32)`, and is reported as `unknown identifier 'w'` (a known bug: the message should say that a function's name is lower-case).
+**A function has a name.** A `func(x: i32) -> i32 => x + 1` without one, at module level or in a test, is accepted and left out of the module, and `export "inc" func(...)` gives a module that does not assemble: both are known bugs, so name every function. A nested function without one is an error (`a function declared in a function body needs a name: func name(x: T) -> R => ...`, [Nested Functions](#nested-functions)). An import item can leave the name out ([7.1](#71-imports)). A function's name starts with a lower-case letter. `func Area(w: u32) -> u32 => w * w` is read as a function without a name whose parameter is the type `Area(w: u32)`, and is reported as `unknown identifier 'w'` (a known bug: the message should say that a function's name is lower-case).
 
 A function that takes a type as a parameter, `func larger(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
 
@@ -4722,6 +4797,748 @@ no field 'n' on type u32
 
 Any function can also be called as a method of its first argument: `xs.total()` is `total(xs)` ([4.9](#49-method-call-syntax)).
 
+#### Nested Functions
+
+A function can be declared inside a function body, as a statement: a *nested function*. It is written as any function is, with a block or an arrow body, and it reads and assigns the variables of the function around it. It is called only where its name is seen, and it is never a value: nothing stores it, returns it or passes it at run time. It can be given for a comptime function parameter ([8.6](#86-comptime-function-parameters)). In WebAssembly it is a function of the module that takes the variables it uses as extra parameters and gives back the ones it assigns as extra results; every call of it is a direct `call`.
+
+<!-- spec:begin compile -->
+
+```ents
+// How many elements of xs are over limit
+export func count_over(xs: []u32, limit: u32) -> u32 {
+  let n: u32 = 0
+  func note(x: u32) {
+    if x > limit { n += 1 }      // reads limit, assigns n
+  }
+  for x in xs {
+    note(x)
+  }
+  return n
+}
+
+test "a nested function reads and writes its function's variables" {
+  assert count_over([1, 5, 2, 7], 2) == 2
+  assert count_over([9], 10) == 0
+}
+```
+
+The module is the one with `note` written at module level, taking `limit` and `n` and giving `n` back:
+
+```ents same-wasm
+export func count_over(xs: []u32, limit: u32) -> u32 {
+  let n: u32 = 0
+  for x in xs {
+    n = note(x, limit, n)
+  }
+  return n
+}
+
+func note(x: u32, limit: u32, n: u32) -> (n: u32) {
+  if x > limit { n += 1 }
+}
+
+test "a nested function reads and writes its function's variables" {
+  assert count_over([1, 5, 2, 7], 2) == 2
+  assert count_over([9], 10) == 0
+}
+```
+
+<!-- spec:end -->
+
+**Where one stands.** `func` is a statement in any block of a body: the function's body, a branch of an `if` or an `if let`, a loop body, a match arm written as a block, the blocks of a deferred `if`, and the body of another nested function, to any depth (as deep as brackets nest, [1.6](#16-statements-and-line-breaks)). A function declared in a loop body is one function, as a `let` there is one variable: it is not made again on each pass. An arrow body holds no statement, so no function. A `func` statement has no value: as the last statement of a block it gives `()`, and a body that must return a value cannot end with one. A nested function has every form a function has (a block or an arrow body, named results, `inline`, which changes nothing, [3.5](#35-inline-functions)), and needs a name; it cannot be generic, and it cannot be exported. After any of these errors the function is still declared, so that its calls say nothing more:
+
+<!-- spec:begin compile -->
+
+```ents
+func f(n: u32) -> u32 {
+  func(x: u32) -> u32 => x + 1
+  func pick(comptime T: type, a: T) -> T => a
+  func Box(comptime T: type) -> type => (v: T)
+  for i in n {
+    func stop() { break }
+  }
+  return 0
+}
+```
+
+```errors
+a function declared in a function body needs a name
+a generic function is declared at module level, not inside a function
+a generic type is declared at module level, not inside a function
+cannot break out of a nested function
+```
+
+<!-- spec:end -->
+
+In a test the two generic messages say `not inside a test`, wherever in the test the function is.
+
+**Where it is seen.** From its declaration, itself included, to the end of the block it is declared in, with the blocks inside that block. So it calls itself, and the nested functions declared before it, but not one declared after it: two nested functions do not call each other (declare those at module level, with what they share passed to them). After its block its name is not seen. A `let` is different: it is seen to the end of its function ([3.3](#33-variables)), since it is a variable, which holds a value after its block. But a nested function's name is its own in the whole function that declares it, as a `let`'s is: no variable of that function and no other nested function of it, declared before or after it, in its block or another, has that name.
+
+<!-- spec:begin compile -->
+
+```ents
+func f(n: u32) -> u32 {
+  let a = twice(n)                       // not seen yet
+  func twice(x: u32) -> u32 => x * 2
+  if n > 3 {
+    func half(x: u32) -> u32 => x / 2
+  }
+  return half(a)                         // its block has ended
+}
+```
+
+```errors
+'twice' is used before its declaration: a nested function is seen from its declaration to the end of its block
+'half' is seen only in the block it is declared in
+```
+
+<!-- spec:end -->
+
+These two messages are given in place of `unknown identifier` where the function (or test) being checked, or one around it, declares a nested function of the name: the first where the use is before a declaration of the name whose block holds the use, the second otherwise.
+
+**Its name** is new where it is declared: not the name of a function, generic function, global, `def`, `data` block or import of the module, nor of a variable or nested function seen there (in a test, the functions, `def`s, `data` and imports the test declares count as the module's); and, in its own function, nothing else takes it, a loop variable included. Where the earlier of the two is a variable seen at the nested function, the message names what that is, as below; otherwise it is `a nested function's name is its own in the whole function that declares it`, said at the later of the two declarations. A builtin's name replaces the builtin where the function is seen, with the warning `'max' replaces the builtin max in the body of 'f'` ([10](#10-builtin-functions)).
+
+<!-- spec:begin compile -->
+
+```ents
+global total: u32 = 0
+func size() -> u32 => 4
+
+func f(n: u32) -> u32 {
+  func total() -> u32 => 1
+  func size() -> u32 => 2
+  func n() -> u32 => 3
+  for i in 3 {
+    func keep() { }
+  }
+  for i in 3 {
+    func keep() { }
+  }
+  return 0
+}
+```
+
+```errors
+a nested function cannot reuse the name of a global
+a nested function cannot reuse the name of a function of the module
+a nested function cannot reuse the name of a parameter
+a nested function's name is its own in the whole function that declares it
+```
+
+```ents
+func g() -> u32 {
+  for i in 3 {
+    func step() { }
+  }
+  for step in 3 { }
+  if true {
+    func tick() { }
+  }
+  let tick: u32 = 4
+  return tick
+}
+```
+
+```errors
+'step' is already declared in 'g': a nested function's name is its own in the whole function that declares it
+'tick' is already declared in 'g': a nested function's name is its own in the whole function that declares it
+```
+
+<!-- spec:end -->
+
+A nested function refused its name leaves the name with what had it, as if it were not there: a later declaration of the name in its function is told what it is told without it, with the place of the name's first declaration.
+
+<!-- spec:begin compile -->
+
+```ents
+global total: u32 = 0
+
+func h() -> u32 {
+  if true { func total() -> u32 => 1 }
+  for total in 2 { }
+  let total: u32 = 1
+  return total
+}
+```
+
+```errors
+'total' is already declared: a nested function cannot reuse the name of a global (first declared at 1:8)
+'total' is already declared: a loop variable cannot reuse the name of a global (first declared at 1:8)
+'total' is already declared in this scope (first declared at 1:8)
+```
+
+<!-- spec:end -->
+
+Its own parameters, named results and variables take no name of a variable it could use (below), nor of a nested function seen where it is declared, so in its body every name means one thing. They can have the name of a global, a function, an import or a `data` block of the module, which they hide there, as a module function's parameters can. As with a module function's, no parameter or named result of it has a def's name ([3.4](#34-functions)): a `def` of the module, or one its test declares before it, also for a function at the top of a test that uses the test's variables. A name the function around it declares after the nested function is not seen at the nested function, so its own variables may have that name.
+
+<!-- spec:begin compile -->
+
+```ents
+func f(x: u32) -> u32 {
+  func g(x: u32) -> u32 => x + 1
+  return g(x)
+}
+```
+
+```errors
+a parameter of a nested function cannot reuse the name of a parameter
+```
+
+```ents
+def k = 3
+
+func f(a: u32) -> u32 {
+  func g(k: u32) -> u32 => k + 1
+  func h(x: u32) -> (k: u32) { k = x }
+  return g(a) + h(a)
+}
+
+test "a def of the test" {
+  def d = 7
+  let z: u32 = 1
+  func top(d: u32) -> u32 => d + z
+  assert top(1) == 2
+}
+```
+
+```errors
+'k' is already declared: a parameter cannot reuse the name of a def (first declared at 1:5)
+'k' is already declared: a named result cannot reuse the name of a def (first declared at 1:5)
+'d' is already declared: a parameter cannot reuse the name of a def (first declared at 10:7)
+```
+
+<!-- spec:end -->
+
+(A result says `a result of a nested function cannot ...`.)
+
+**What it uses.** A nested function sees what the function around it sees where the nested function is declared: the names of the module, the parameters and named results, the `let`s declared before it (also in an earlier block, since a `let` is seen to the end of its function), and the variables of the loops, `if let`s and match arms around it. A variable declared after it is not seen in it, even where it is called after that variable. Globals, `def`s and `data` are the module's, and it uses them as any function does: they are not captured.
+
+<!-- spec:begin compile -->
+
+```ents
+func f() -> u32 {
+  func early() -> u32 => late
+  let late: u32 = 5
+  return early()
+}
+```
+
+```errors
+'late' is declared after 'early': a nested function uses only the variables declared before it
+```
+
+<!-- spec:end -->
+
+What it *captures*, and which of those it *writes*, is worked out where it is declared, from the names in its body (the bodies of the functions declared in it included):
+
+- it captures each variable seen at its declaration that its body names (as an operand, an argument, a receiver, a callee, the root of an assignment's target, a name in a `set` pattern, or the name of a shorthand argument `f(x:)`; a member after `.` and a label `(a: v)` name nothing);
+- it writes those of them its body assigns: as a name in a `set` pattern, or as the root of a target that assigns its root. A target assigns its root where every step from the root is a field or a tuple element of a struct or tuple held by value, an index of a fixed array held by value, or the `ptr` or `len` of a slice: `x = v`, `x += v`, `p.x = v`, `b.arr[1] = v`, `a[1][0] = v` (for `a: [2][2]u32`), `s.len = n`. A step through memory (`.*`, a type view such as `.u32`, a range, an index of a slice, a many-pointer or what a pointer points to, a field of what a pointer points to) writes memory, and the target only reads the variable: `q.x = v` for `q: *mut Point`, `q.* = v`, `s[i] = v`;
+- and it captures and writes, besides, what each nested function seen at its declaration that its body calls, calls as a method or gives for a comptime function parameter captures and writes. In a generic's body, a comptime function parameter it calls or passes on counts as the function given for it ([8.6](#86-comptime-function-parameters)).
+
+So a variable named only in a nested function that it declares and never calls still counts for it (and that function gets the warning `'h' is never used`). A struct, a tuple, a fixed array, a slice or a wide integer is captured as a whole, its parts all, whatever part the body uses.
+
+<!-- spec:begin compile -->
+
+```ents
+func tally(xs: []u32) -> u32 {
+  let total: u32 = 0
+  func add(x: u32) { total += x }
+  func add_twice(x: u32) {             // captures and writes total, through add
+    add(x)
+    add(x)
+  }
+  for x in xs { add_twice(x) }
+  return total
+}
+
+test "a nested function calls an earlier one" {
+  assert tally([1, 2, 3]) == 12
+}
+```
+
+<!-- spec:end -->
+
+**The variables are shared.** A nested function reads a captured variable as it is when it reads it, and what it assigns is the variable's value from then on, in the function around it too: by reference, as if its body stood where it is called. The order is exact: a call's receiver and arguments are evaluated left to right, then its captures are read, then it is called, and the variables it writes are assigned before the expression goes on. So `n + bump()` reads `n` before `bump` changes it, and `bump() + n` after; `n += bump()` is `n = n + bump()`, which reads `n` first ([4.5](#45-assignment-and-compound-assignment)). An argument is a copy as always: in `f(n)`, where `f` also assigns `n`, its parameter keeps the value `n` had at the call. In `rest[drop_one()] ?? 99`, `rest` is read before `drop_one` runs ([Evaluation Order](#evaluation-order)).
+
+<!-- spec:begin compile -->
+
+```ents
+func order() -> u32 {
+  let n: u32 = 1
+  func bump() -> u32 {
+    n += 1
+    return n
+  }
+  func show(a: u32) -> u32 => a * 100 + n
+  return show(bump()) * 10 + n           // bump() makes n 2 before show reads it: 202 * 10 + 2
+}
+
+func lost() -> u32 {
+  let n: u32 = 1
+  func bump() -> u32 {
+    n += 5
+    return 10
+  }
+  n += bump()                            // n = n + bump(): n is read first, as 1
+  return n
+}
+
+func kept() -> u32 {
+  let n: u32 = 1
+  func bump() -> u32 {
+    n += 5
+    return 10
+  }
+  n = bump() + n                         // bump() first, then n, which is 6
+  return n
+}
+
+test "a nested function shares its function's variables" {
+  assert order() == 2022
+  assert lost() == 11
+  assert kept() == 16
+}
+```
+
+A parameter or a named result of the function around it is a variable like any other, and so are the variables of loops and `if let`s: assigning a count loop's variable changes the passes that follow, as in the loop's body ([Loop Variables](#loop-variables)). A struct is captured as its fields, and a write through its fields or an array in it writes it. A pointer is the value captured: writing through it writes memory.
+
+```ents
+type Point = (x: i32, y: i32)
+
+data cells = [7:u32, 8, 9]
+
+// 0, 3, 6 and 9: every third index below n
+func thirds(n: u32) -> (count: u32) {
+  for i in n {
+    func skip() { i += 2 }               // assigns the loop's counter
+    count += 1
+    skip()
+  }
+}
+
+func scaled(i: u32, k: u32) -> u32 {
+  if let v = cells[i] {
+    func times(m: u32) -> u32 => v * m
+    return times(k)
+  }
+  return 0
+}
+
+func walk(steps: u32) -> Point {
+  let p = Point(0, 0)
+  func step() {
+    p.x += 1                             // p is captured as its two fields
+    p.y -= 1
+  }
+  for i in steps { step() }
+  return p
+}
+
+type Box = (arr: [3]u32, k: u32)
+
+func poked() -> u32 {
+  let b = Box([1, 2, 3], 4)
+  let a: [2][2]u32 = [[1, 2], [3, 4]]
+  func poke() {
+    b.arr[1] = 9                         // a field, then an index: a write of b
+    a[1][0] = 7                          // two indexes: a write of a
+  }
+  poke()
+  return b.arr[1] * 10 + a[1][0]
+}
+
+test "loop variables, if let bindings and structs" {
+  assert thirds(10) == 4
+  assert scaled(1, 3) == 24
+  assert scaled(5, 3) == 0
+  assert walk(3).x == 3
+  assert walk(3).y == -3
+  assert poked() == 97
+}
+```
+
+```ents
+data words = [3:u32, 1, 4]
+data tail = [1:u32, 4]
+
+// The first element of rest, read before drop_one changes rest
+export func first_of_old(k: u32) -> u32 {
+  let rest: []u32 = words
+  func drop_one() -> u32 {
+    rest = tail
+    return k
+  }
+  return rest[drop_one()] ?? 99
+}
+
+test "the object of a checked index is read before its index" {
+  assert first_of_old(0) == 3
+  assert first_of_old(2) == 4
+}
+```
+
+<!-- spec:end -->
+
+A variable it assigns counts as assigned wherever the function is named: a comparison does not narrow the variable where the code it narrows, or the condition it comes from, calls the function, calls it as a method or gives it ([Ranged Integers](#ranged-integers)). In `if i < 4 && far()`, `far` runs after the comparison. A call of a function does not assign that function's own variables, so a recursive call leaves the caller's parameters narrowed. A comparison around a nested function's declaration narrows the variables in its body, since it runs only there; one that assigns the variable declared in that code takes the narrowing away. A loop count it assigns is still read once, before the loop.
+
+<!-- spec:begin compile -->
+
+```ents
+data buf = [1:u32, 2, 3, 4]
+
+func at(i: u32) -> u32 {
+  func far() { i = 100 }
+  if i < 4 {
+    far()                                // assigns i: i is not known to be below 4 here
+    return buf[i]
+  }
+  return 0
+}
+
+func at_and(i: u32) -> u32 {
+  func far() -> bool {
+    i = 100000
+    return true
+  }
+  if i < 4 && far() {                    // far runs after the comparison
+    return buf[i]
+  }
+  return 0
+}
+
+func at_guard(i: u32) -> u32 {
+  func far() -> bool {
+    i = 100000
+    return false
+  }
+  if i >= 4 || far() { return 0 }
+  return buf[i]                          // the guard's condition is part of the region
+}
+```
+
+```errors
+runtime index on *[4]u32 requires 'if let' or '??'
+runtime index on *[4]u32 requires 'if let' or '??'
+runtime index on *[4]u32 requires 'if let' or '??'
+```
+
+```ents
+data buf = [1:u32, 2, 3, 4]
+
+// The sum of buf from index 0 on
+func total() -> u32 {
+  func from(i: u32) -> u32 {
+    if i < 4 {
+      return buf[i] + from(i + 1)        // from's own i: the call does not assign it
+    }
+    i = 0
+    return 0
+  }
+  return from(0)
+}
+
+func at(i: u32) -> u32 {
+  if i < 4 {
+    func get() -> u32 => buf[i]          // i is below 4 wherever get can run
+    return get()
+  }
+  return 0
+}
+
+test "narrowing reaches into nested functions" {
+  assert total() == 10
+  assert at(2) == 3
+  assert at(9) == 0
+}
+```
+
+```ents
+data buf = [1:u32, 2, 3, 4]
+
+func at(i: u32) -> u32 {
+  if i < 4 {
+    func get() -> u32 => buf[i]
+    func far() { i = 100 }               // declared in the region: the region assigns i
+    far()
+    return get()
+  }
+  return 0
+}
+```
+
+```errors
+runtime index on *[4]u32 requires 'if let' or '??'
+```
+
+```ents
+func passes(n: u32) -> u32 {
+  let runs: u32 = 0
+  func stop() { n = 0 }
+  for i in n {
+    runs += 1
+    stop()                               // the count was read once, before the loop
+  }
+  return runs
+}
+
+test "a loop's count is read once" {
+  assert passes(3) == 3
+}
+```
+
+<!-- spec:end -->
+
+**In WebAssembly.** A nested function is a function of the module. The nested functions of a function follow it, in source order, each followed by its own nested functions: for `a` declaring `b` and then `d`, and `b` declaring `c`, the order is `a`, `b`, `c`, `d`. Its parameters are its own and then, for each variable it captures, the variable's registers (a struct one for each field, a slice its pointer and length), in the order the functions around it declare those variables, the outermost function's first, and each function's in the order its text declares them (parameters, named results, then the variables of its body); in an instance of a generic, the variables it reaches through a comptime function parameter come after those, in the order of the instance's own extra parameters ([8.6](#86-comptime-function-parameters)). Its results are its own and then the registers of the variables it writes, in the same order. A call passes the variables after the arguments and assigns those written back from the results, last first. Where the call stands in the middle of an expression and writes a variable, that sequence is a `block` whose value is the call's own results. A nested function that captures nothing is exactly the function written at module level. The registers of the variables it captures count toward the 1000 a wasm function takes as parameters, and those of the variables it writes toward the 1000 it gives back ([2.12](#212-limits)). As every WAT name, the name the compiler gives it (`$order.bump`, its function's name, a `.` and its own) does not reach the `.wasm` file.
+
+```wat
+(func $order (result i32)
+  (local $n i32)
+  (local.set $n (i32.const 1))
+  (i32.add
+    (i32.mul
+      (call $order.show
+        (block (result i32) (call $order.bump (local.get $n)) (local.set $n))
+        (local.get $n))
+      (i32.const 10))
+    (local.get $n)) (return)
+  (unreachable))
+(func $order.bump (param $n i32) (result i32 i32)
+  (local.set $n (i32.add (local.get $n) (i32.const 1)))
+  (local.get $n) (local.get $n) (return)
+  (unreachable))
+(func $order.show (param $a i32) (param $n i32) (result i32)
+  (i32.add (i32.mul (local.get $a) (i32.const 100)) (local.get $n)))
+```
+
+`$order.bump` gives back `n` after its own result; the call in `show(bump())` is a `block` because its value is used, and the one in `note(x)` above is not, since it is a statement.
+
+<!-- spec:begin compile -->
+
+```ents
+// The number of ways to climb n steps one or two at a time, and how many calls finding them took
+export func climbs(n: u32) -> (ways: u32, calls: u32) {
+  func walk(left: u32) {
+    calls += 1
+    if left == 0 {
+      ways += 1
+      return
+    }
+    walk(left - 1)
+    if left >= 2 { walk(left - 2) }
+  }
+  walk(n)
+}
+
+test "a recursive nested function" {
+  let ways, calls = climbs(4)
+  assert ways == 5
+  assert calls == 12
+}
+```
+
+```ents same-wasm
+// The number of ways to climb n steps one or two at a time, and how many calls finding them took
+export func climbs(n: u32) -> (ways: u32, calls: u32) {
+  set (ways, calls) = walk(n, ways, calls)
+}
+
+func walk(left: u32, ways: u32, calls: u32) -> (ways: u32, calls: u32) {
+  calls += 1
+  if left == 0 {
+    ways += 1
+    return
+  }
+  set (ways, calls) = walk(left - 1, ways, calls)
+  if left >= 2 { set (ways, calls) = walk(left - 2, ways, calls) }
+}
+
+test "a recursive nested function" {
+  let ways, calls = climbs(4)
+  assert ways == 5
+  assert calls == 12
+}
+```
+
+```ents
+export func area(w: u32, h: u32) -> u32 {
+  func double(x: u32) -> u32 => x * 2
+  return w.double() * h                  // a nested function is called as a method too
+}
+```
+
+```ents same-wasm
+export func area(w: u32, h: u32) -> u32 {
+  return double(w) * h
+}
+func double(x: u32) -> u32 => x * 2
+```
+
+```ents
+export func a() -> u32 {
+  func b() -> u32 {
+    func c() -> u32 => 1
+    return c()
+  }
+  func d() -> u32 => 2
+  return b() + d()
+}
+```
+
+```ents same-wasm
+export func a() -> u32 {
+  return b() + d()
+}
+func b() -> u32 {
+  return c()
+}
+func c() -> u32 => 1
+func d() -> u32 => 2
+```
+
+<!-- spec:end -->
+
+**What it cannot do.** `return` leaves the nested function, not the function around it, and runs its own deferred expressions; its value is checked against the nested function's own results. `break` and `continue` cannot leave it (`cannot break out of a nested function`, `cannot continue out of a nested function`): its loops are its own. A `defer` in it belongs to it. At every exit its own results are given as a module function gives them, and the variables it writes are given back last, read after its deferred expressions have run: at `return v`, `v` is computed, the deferred expressions run, then the variables are read; at a bare `return`, the named results are read, the deferred expressions run, then the variables; at the end of a block body the deferred expressions run, then the named results and the variables are read. So a deferred assignment of a captured variable is never lost.
+
+<!-- spec:begin compile -->
+
+```ents
+func later() -> u32 {
+  let n: u32 = 0
+  func bump() { n += 10 }
+  func work() -> u32 {
+    defer bump()                         // runs when work returns; n is given back after it
+    n += 1
+    return n                             // the value, 1, is computed before bump runs
+  }
+  let r = work()
+  return r * 100 + n                     // 1 * 100 + 11
+}
+
+test "a deferred assignment in a nested function reaches its function" {
+  assert later() == 111
+}
+```
+
+```ents
+// g's named result is read after its deferred if, and so is the n it writes
+export func outer() -> u32 {
+  let n: u32 = 0
+  func g() -> (r: u32) {
+    defer if true {
+      r = 7
+      n = 5
+    }
+    r = 1
+  }
+  return g() * 10 + n
+}
+
+test "the end of a nested function's body runs its deferred expressions first" {
+  assert outer() == 75
+}
+```
+
+<!-- spec:end -->
+
+A nested function is not a value: its name stands only as the callee of a call, as the method of a method call, or as the argument given for a comptime function parameter. So it is never stored, returned, compared or passed at run time, and it cannot outlive its function. Anywhere else its name is an error:
+
+<!-- spec:begin compile -->
+
+```ents
+func apply(f: (u32) -> u32, x: u32) -> u32 => x
+
+func f(x: u32) -> u32 {
+  func inc(y: u32) -> u32 => y + 1
+  let g = inc
+  return apply(inc, x)
+}
+```
+
+```errors
+'inc' is a nested function: it can only be called, or given for a comptime function parameter
+'inc' is a nested function: it can only be called, or given for a comptime function parameter
+```
+
+<!-- spec:end -->
+
+There is no lambda, and no other syntax for a function written in place. Each of these is a syntax error whose message says what to write instead:
+
+<!-- spec:begin compile -->
+
+```ents
+func f(xs: []u32, n: u32) -> u32 => xs.count(|x| x > n)
+```
+
+```errors
+there are no lambdas: declare a nested function, func name(x: T) -> R => ..., before this statement, and call it or pass its name
+```
+
+```ents
+func f(xs: []u32, n: u32) -> u32 => xs.count((x) => x > n)
+```
+
+```errors
+there are no lambdas
+```
+
+```ents
+func f(n: u32) -> u32 {
+  fn twice(x: u32) -> u32 { x * 2 }
+  return twice(n)
+}
+```
+
+```errors
+a function is declared with func: func name(x: T) -> R { ... }
+```
+
+```ents
+func f(xs: []u32, n: u32) -> u32 => xs.count(func(x: u32) -> bool => x > n)
+```
+
+```errors
+a function is not a value: declare it as a statement, func name(x: T) -> R => ..., and call it or pass its name
+```
+
+```ents
+func f(n: u32) -> u32 {
+  export func twice(x: u32) -> u32 => x * 2
+  return twice(n)
+}
+```
+
+```errors
+export is written at module level: a function declared in a body cannot be exported
+```
+
+```ents
+func first(xs: []u32) -> u32 {
+  for x in xs {
+    return x
+  }
+  return 0
+
+func second(xs: []u32) -> u32 => xs[1] ?? 0
+```
+
+```errors
+Expected "}": the body that starts at line 1 does not end before this declaration
+```
+
+<!-- spec:end -->
+
+(`count` need not exist: a syntax error stops the file before any name is looked up.) Exactly, where the first syntax error is at the position `pos`, these rules are tried in this order, and every other syntax error keeps the parser's list of what it expected:
+
+0. `pos` is at the end of the input (nothing but whitespace after it), or at the first character of a line that starts with one of the keywords `func`, `inline`, `export`, `import`, `global`, `type`, `def`, `data`, `memory`, `enum` or `test`; and a line at or before `pos` starts, at its first character, with the whole word `func`, `inline` or `export` inside a `{` that is not closed before that line (braces counted outside comments, string literals and the text of template literals). The error is then reported at the first such line, as `Expected "}": the body that starts at line L does not end before this declaration`, where L is the line of the outermost `{` open there. A body left open would otherwise take in the functions after it as nested ones, and the error would stand at the end of the file.
+1. `fn` (the whole word) stands on the line, at or before `pos`, as the first token of the line, right after `{`, `;`, `(` or `,`, and is followed by `(` or by whitespace, a name and `(`, in a file that declares no function named `fn` (`func fn(`, where `fn(x)` is a call): `a function is declared with func`.
+2. Where `"=>"` is not among what was expected there: at `||`, or at a `|` that begins a parameter list closed by `|`, one or more names, each with an optional `: Type`, separated by commas (the regular expression `^\|\s*[a-z_]\w*(\s*:\s*[^|,\n]+)?(\s*,\s*[a-z_]\w*(\s*:\s*[^|,\n]+)?)*\s*\|` on the text from `pos`): `there are no lambdas`. A match arm `1 | 2 => ...` expects `"=>"` there, and keeps the parser's message.
+3. At `=>`, right after `)` or after a name, whitespace between allowed: `there are no lambdas`.
+4. At a `>` right after a `-` (the `>` of `->`, where the `-` was read as a minus: `(x: u32) -> u32 => ...`): `there are no lambdas`.
+5. At the keyword `func`, where an expression was wanted: `a function is not a value`.
+6. At the keyword `export` followed by a function (`func` or `inline func`, with or without a quoted export name before it), where `"}"` is among what was expected (inside a body or a test): `export is written at module level`. An `export` before anything else there keeps the parser's list.
+
+A function declared in a `test`'s block, and one at the top of a test that uses the test's variables, is a nested function of the test ([12.4](#124-declarations-in-a-test)). A nested function given for a comptime function parameter takes its captures into the instance ([8.6](#86-comptime-function-parameters)). In a generic, each instance has its own nested functions ([8.4](#84-instances)).
+
 #### Function Types and Pointers
 
 A function type is written `(A, B) -> R`: the parameter types in parentheses, `->`, the result. One parameter needs no parentheses (`i32 -> i32`), `-> ()` is no result, and names are allowed (`(x: i32) -> (r: i32)`). `->` groups to the right: `i32 -> i32 -> i32` is `i32 -> (i32 -> i32)`. A type operator written before a parameter takes the whole function type instead: `[]u8 -> ()` is a slice of functions, `[](u8 -> ())`, and `*u8 -> u32` a pointer to a function. So write the parameters of a function type in parentheses, `([]u8) -> ()`.
@@ -4743,7 +5560,7 @@ test "a function given at compile time" {
 
 <!-- spec:end -->
 
-> **Not implemented: function values at run time.** A function has no run-time value: no variable, parameter, global, field or memory holds one, and nothing calls through one (an indirect call). Their design is under discussion. Calling a variable or a parameter of a function type is an error, and so is casting or comparing a function's name. Giving a function for a parameter that is not `comptime`, or storing one, is not refused by the compiler, and the module does not assemble (a known bug). A function type written for a global, a parameter or a field compiles to an `i32` that nothing can call. A function type can be given for a `comptime T: type`, `tick((u32) -> u32)`, but nothing can be done with a value of that `T`: in the instance, calling one and `sizeof(T)` are errors (`sizeof: cannot compute size of dynamically sized type`).
+> **Not implemented: function values at run time.** A function has no run-time value: no variable, parameter, global, field or memory holds one, and nothing calls through one (an indirect call). Their design is under discussion. Calling a variable or a parameter of a function type is an error, and so is casting or comparing a function's name. Giving a function for a parameter that is not `comptime`, or storing one, is not refused by the compiler, and the module does not assemble (a known bug). A function type written for a global, a parameter or a field compiles to an `i32` that nothing can call. A function type can be given for a `comptime T: type`, `tick((u32) -> u32)`, but nothing can be done with a value of that `T`: in the instance, calling one and `sizeof(T)` are errors (`sizeof: cannot compute size of dynamically sized type`). A nested function is never a value: its name anywhere but as a callee, a method or a comptime argument is `'inc' is a nested function: it can only be called, or given for a comptime function parameter` ([Nested Functions](#nested-functions)).
 
 <!-- spec:begin compile -->
 
@@ -4885,7 +5702,7 @@ func between(a: u32, b: u32, c: u32) -> bool => a < b < c
 
 #### Evaluation Order
 
-An expression is evaluated left to right, and each of its parts exactly once: the left operand of an operator before the right one, whatever the precedence of the operators around them, and the arguments of a call in the order written (the receiver of a method call first, [4.9](#49-method-call-syntax), and named arguments in the order written too, [2.8](#struct-constructors)). Every operand is computed before its operator applies. Only these evaluate a part when it is needed and not otherwise: `&&` and `||` their right side, `??` its fallback, and `if` and `match` the branch they take. An assignment computes the address of its target first, then the value, then stores it ([4.5](#45-assignment-and-compound-assignment)).
+An expression is evaluated left to right, and each of its parts exactly once: the left operand of an operator before the right one, whatever the precedence of the operators around them, and the arguments of a call in the order written (the receiver of a method call first, [4.9](#49-method-call-syntax), and named arguments in the order written too, [2.8](#struct-constructors)). Every operand is computed before its operator applies. Only these evaluate a part when it is needed and not otherwise: `&&` and `||` their right side, `??` its fallback, and `if` and `match` the branch they take. An assignment computes the address of its target first, then the value, then stores it ([4.5](#45-assignment-and-compound-assignment)). The object of an index or a range is evaluated before the index and the bounds, also in `xs[i] ?? d`, `if let v = xs[i]` and `&xs[i]`. A nested function's captured variables are read after its arguments, and those it assigns are assigned back before the expression goes on ([Nested Functions](#nested-functions)).
 
 <!-- spec:begin compile -->
 
@@ -5816,7 +6633,7 @@ test "if let unwraps an optional pointer" {
 
 <!-- spec:begin compile -->
 
-The binding is a variable of its own, seen in the first branch only, and so is a `let` in that branch. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where it is written (a parameter, a named result, a `let`, or the variable of a loop, `if let` or match arm it is in), nor of a global, `def` or `data` block (`'total' is already declared: an if let binding cannot reuse the name of a global`, `... of a data block`, `... of a def`). So it never hides a variable and never changes one. A function of the module has no value: a binding of its name hides the function in the first branch, and after the branch the name calls the function again (`value` below).
+The binding is a variable of its own, seen in the first branch only, and so is a `let` in that branch. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where it is written (a parameter, a named result, a `let`, or the variable of a loop, `if let` or match arm it is in), nor of a global, `def` or `data` block, nor of a nested function of its function, declared before or after it ([Nested Functions](#nested-functions)) (`'total' is already declared: an if let binding cannot reuse the name of a global`, `... of a data block`, `... of a def`). So it never hides a variable and never changes one. A function of the module has no value: a binding of its name hides the function in the first branch, and after the branch the name calls the function again (`value` below).
 
 ```ents
 data cells = [7:u32, 8, 9]
@@ -6273,7 +7090,7 @@ test "method calls" {
 2. **The receiver is the first argument.** `x.f(a, b)` is `f(x, a, b)`. For a generic `f` ([8. Generics](#8-generics)), the receiver is the argument of the first parameter that is not comptime (a comptime function parameter counts as comptime), and the arguments written after it fill the other parameters in the order they are declared, comptime function parameters among them, wherever they stand: a comptime function parameter is skipped when the receiver is chosen, but its argument is written in both forms. Leaving out the type and value parameters is the inferred form, so the receiver usually decides the type parameters: with `func twice(comptime T: type, comptime f: (T) -> T, x: T)`, `(5:u16).twice(inc)` is `twice(inc, 5:u16)`, and with `func apply(comptime T: type, x: T, comptime f: (T) -> T)`, `(3:u32).apply(inc)` is `apply(3:u32, inc)` (explicitly, `(3:u32).apply(u32, inc)`). Writing them, each in its own place, is the explicit form: `v.push(u32, 7)` is `push(u32, v, 7)`, and with `func scale(x: T, comptime T: type, k: T)`, `(3:u64).scale(u64, 5)` is `scale(3:u64, u64, 5)`. A wrong count is given after the receiver: `'scale' expects 1 argument after the receiver, or 2 with its type argument written; got 3`.
 3. **The receiver is passed as written.** It gets the conversions any argument gets (`*mut` to `*`, an array pointer to a slice, a narrower number widened) and nothing more: no address is taken of it, and no pointer is followed for it. With `p: *Point`, `p.norm2()` for `norm2(p: Point)` is `receiver: cannot assign *Point to Point`: write `p.*.norm2()`.
 4. **Calls chain left to right.** `v.last().double()` is `double(last(v))`.
-5. **It is only syntax.** `x.f(a)` and `f(x, a)` are the same call and compile to the same code. Which function `f` is, among functions that share the name, is decided as for any call ([3.4](#functions-that-share-a-name)). A builtin is called the same way: `x.sqrt()`, `a.min(b)`. A parameter or loop variable that has a function's name hides the function in this form too: with a parameter `double: u32`, `double.double()` is `double(double)`, a call of a `u32`, and is refused; its message, `no field 'double' on type u32, and no function 'double' accepts (u32)`, should name the parameter (a known bug). A variable with a builtin's name hides nothing ([10](#10-builtin-functions)), so with a parameter `max: u32`, `max.max(4)` should be `max(max, 4)`, the builtin; it is refused with the same message (a known bug): write `max(max, 4)`.
+5. **It is only syntax.** `x.f(a)` and `f(x, a)` are the same call and compile to the same code. Which function `f` is, among functions that share the name, is decided as for any call ([3.4](#functions-that-share-a-name)). A builtin is called the same way: `x.sqrt()`, `a.min(b)`. So is a nested function seen there (`w.double()`, [Nested Functions](#nested-functions)), and a comptime function parameter's argument can be written in this form too (`xs.sort(closer)`). A parameter or loop variable that has a function's name hides the function in this form too: with a parameter `double: u32`, `double.double()` is `double(double)`, a call of a `u32`, and is refused; its message, `no field 'double' on type u32, and no function 'double' accepts (u32)`, should name the parameter (a known bug). A variable with a builtin's name hides nothing ([10](#10-builtin-functions)), so with a parameter `max: u32`, `max.max(4)` should be `max(max, 4)`, the builtin; it is refused with the same message (a known bug): write `max(max, 4)`.
 
 ```ents
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
@@ -6370,6 +7187,7 @@ A block, `{ ... }`, is a sequence of statements, run in order. Statements need n
 | `return`, `break`, `continue` | leaves the function, the loop, or the pass of the loop | [5.3](#53-control-statements) |
 | `defer` | runs an expression when its block exits | [Defer](#defer) |
 | `assert` | traps when a condition is false | [Assertions](#assertions) |
+| `func` | declares a nested function, which reads and assigns the variables of the function around it | [3.4](#nested-functions) |
 
 `if` and `match` are expressions. Written as a statement, one runs for what its branches do; written where a value is wanted, it gives one.
 
@@ -6784,7 +7602,7 @@ test "a slice for a *[!]T, a row index for a *[NxM]T, a count for two arrays" {
 
 <!-- spec:begin compile -->
 
-The variables of a loop, its element and its index, are seen in its body only. They cannot have the name of a variable seen where the loop is: a parameter, a named result, a `let` before the loop ([3.3](#33-variables)), the variable of a loop, `if let` or match arm the loop is in, or a global. Nor can they have the name of a `def` or a `data` block, which stand for a value wherever they are written. So a loop never hides a variable, and never changes one:
+The variables of a loop, its element and its index, are seen in its body only. They cannot have the name of a variable seen where the loop is: a parameter, a named result, a `let` before the loop ([3.3](#33-variables)), the variable of a loop, `if let` or match arm the loop is in, or a global. Nor can they have the name of a `def` or a `data` block, which stand for a value wherever they are written, nor of a nested function of the function the loop is in, declared before or after the loop (`'step' is already declared in 'g': a nested function's name is its own in the whole function that declares it`, [Nested Functions](#nested-functions)). So a loop never hides a variable, and never changes one:
 
 ```ents
 func count(n: u32) -> u32 {
@@ -6882,17 +7700,17 @@ test "a loop's variables are its body's" {
 
 <!-- spec:end -->
 
-The body can assign its loop's variables. The element is a copy, so assigning to it changes nothing else. A count's variable is the one the loop steps: after each pass it goes up by one from the value it holds and is compared with the count, so assigning to it changes the passes that follow, never the rest of the pass it is in: `i = n - 1` makes the pass the last, and so does any value at or past the count. The step wraps, so after `i = 0xFFFFFFFF` the next pass has `i` 0. An element loop's index counts on from a value assigned to it, while the elements are walked as before. A `u32#N` variable takes only values below `N` (`cannot assign int(20) to u32#10`).
+The body can assign its loop's variables, also from a nested function the body calls ([Nested Functions](#nested-functions)). The element is a copy, so assigning to it changes nothing else. A count's variable is the one the loop steps: after each pass it goes up by one from the value it holds and is compared with the count, so assigning to it changes the passes that follow, never the rest of the pass it is in: `i = n - 1` makes the pass the last, and so does any value at or past the count. The step wraps, so after `i = 0xFFFFFFFF` the next pass has `i` 0. An element loop's index counts on from a value assigned to it, while the elements are walked as before. A `u32#N` variable takes only values below `N` (`cannot assign int(20) to u32#10`).
 
 ### 5.3 Control Statements
 
 #### `return`
 
-`return value` ends the function with that value as its result, checked against the result type as a `let` of that type checks its value. A bare `return` is for a function with no result, or with named results, which it returns as they are set; in a function with an unnamed result, `return` needs a value (`return needs a value: the function returns i32`). `return` takes the expression after it, on its line or the next ([1.6](#16-statements-and-line-breaks)), so a bare `return` is written last in its block or with its `when`: a bare `return` on its own line followed by `assert c` takes `assert` as its value, a name (`unknown identifier 'assert'`), as it takes any line that starts with a name. Before the function ends, `return` runs the deferred expressions of every block it is in ([Defer](#defer)). A function whose body is a block and whose result is unnamed must end every path with a `return` (`function 'f' can reach its end without returning a value`). The compiler decides this by the body's last statement, which must be a `return` without `when`, a `loop` with no `break` out of it, an `if` with an `else` whose every branch ends so, or a `match` with a `_` arm whose every arm ends so; a trailing value does not count ([3.4](#34-functions)).
+`return value` ends the function with that value as its result, checked against the result type as a `let` of that type checks its value. A bare `return` is for a function with no result, or with named results, which it returns as they are set; in a function with an unnamed result, `return` needs a value (`return needs a value: the function returns i32`). `return` takes the expression after it, on its line or the next ([1.6](#16-statements-and-line-breaks)), so a bare `return` is written last in its block or with its `when`: a bare `return` on its own line followed by `assert c` takes `assert` as its value, a name (`unknown identifier 'assert'`), as it takes any line that starts with a name. Before the function ends, `return` runs the deferred expressions of every block it is in ([Defer](#defer)). A function whose body is a block and whose result is unnamed must end every path with a `return` (`function 'f' can reach its end without returning a value`). The compiler decides this by the body's last statement, which must be a `return` without `when`, a `loop` with no `break` out of it, an `if` with an `else` whose every branch ends so, or a `match` with a `_` arm whose every arm ends so; a trailing value does not count ([3.4](#34-functions)). In a nested function, `return` leaves the nested function only, and runs only its deferred expressions ([Nested Functions](#nested-functions)).
 
 #### `break` and `continue`
 
-`break` leaves the innermost loop around it, and `continue` ends that loop's pass ([5.2](#52-loops)). Written in the branch of an `if` or a match arm inside a loop, they act on that loop. Neither takes a value, and neither names a loop: to leave several loops at once, `return` from a function that holds them, or set a variable that the outer loop tests (`break when found`). Both are written inside a loop: one outside every loop is accepted and gives a module that does not assemble (a known bug). Each runs the deferred expressions of the blocks it leaves, up to and including the loop's body.
+`break` leaves the innermost loop around it, and `continue` ends that loop's pass ([5.2](#52-loops)). Written in the branch of an `if` or a match arm inside a loop, they act on that loop. Neither takes a value, and neither names a loop: to leave several loops at once, `return` from a function that holds them, or set a variable that the outer loop tests (`break when found`). Both are written inside a loop: one outside every loop is accepted and gives a module that does not assemble (a known bug). Neither leaves a nested function: in one, they act on its own loops, and one outside them is `cannot break out of a nested function` (`cannot continue out of a nested function`), even where the function around it is in a loop ([Nested Functions](#nested-functions)). Each runs the deferred expressions of the blocks it leaves, up to and including the loop's body.
 
 <!-- spec:begin compile -->
 
@@ -6979,7 +7797,7 @@ test "when" {
 
 #### Defer
 
-`defer expr` runs `expr` when the enclosing block exits, by any path: falling off its end, `break` or `continue` (which run the blocks they leave, up to the loop body), or `return` (which runs every open block). Deferred expressions run newest first, and only those reached before the exit run. The enclosing block is the innermost `{ ... }`: a function body, a branch, a loop body (so a `defer` there runs at the end of each pass) or a match arm. A body written with `=>` holds no statement, so no `defer`.
+`defer expr` runs `expr` when the enclosing block exits, by any path: falling off its end, `break` or `continue` (which run the blocks they leave, up to the loop body), or `return` (which runs every open block). Deferred expressions run newest first, and only those reached before the exit run. The enclosing block is the innermost `{ ... }`: a function body, a branch, a loop body (so a `defer` there runs at the end of each pass) or a match arm. A body written with `=>` holds no statement, so no `defer`. A `defer` in a nested function belongs to it: it runs at that function's exits, never at those of the function around it, and the variables the nested function writes are given back after it has run ([Nested Functions](#nested-functions)).
 
 <!-- spec:begin compile -->
 
@@ -7630,7 +8448,7 @@ Item = func local(parameters) -> results        a function; local and -> results
 ```
 
 - The first string is the module. A string that starts with `./`, `../` or `/` names a source file (below); any other string is a module of the host, `"env"` or `"wasi_snapshot_preview1"` for instance, and is passed to the host as it is written.
-- The second string is the name the other side exports. `local` is the name the thing has in this module. The two may differ, so an import renames. Without a local name (`"now" func() -> f64`) the local name is the import's; one that is not an identifier, such as `"console.log"`, then cannot be called, so give it a local name.
+- The second string is the name the other side exports. `local` is the name the thing has in this module. The two may differ, so an import renames. Without a local name (`"now" func() -> f64`) the local name is the import's; one that is not an identifier, such as `"console.log"`, then cannot be called, so give it a local name. In WAT such an import is named with a `%` before its name, each character a WAT name cannot hold written as `%XX` (`$%console.log`, `$%two%20words`), a name no declaration has: a nested function `log` of a function `console` is `$console.log`.
 - The declaration is written as one in the module would be, without a body: a function's parameters and results as in [3.4](#34-functions) (a host function's parameters may be types without names, `func(i32, i32)`), a global's type after a colon, with no value.
 - The grouped form takes one or more items, one after another, with no commas between them. An import, like a declaration, can span lines.
 - An import stands at module level, anywhere in the file, and its names are module-level names like those the module declares: they can be used above the import, and a `let` cannot take one (`'log' is already declared in this scope`). An import inside a `test` block is part of the program only when the tests are built, and only for the files whose tests are run ([Tests](#12-tests)).
@@ -7814,7 +8632,7 @@ When a file is checked without the files it imports (the editor's web worker, a 
 
 `export` before a declaration gives it a name outside the module. What can be exported is a function (`func`, also `inline func`), a global, the memory ([7.3](#73-memory-declarations)), and a generic function or generic type, which other source modules can then import. `data`, `def`, `type` and an import cannot be exported (a syntax error): a module shares data through a function or a global that holds its address.
 
-The export name is the declaration's own name, and `"memory"` for the memory. `export "name"` before the declaration gives another name, any string (a name with a double quote, a backslash or a character outside ASCII is written into the module unescaped and does not assemble, a known bug that holds for the names an import writes too); the declaration keeps its own name in the module. Each export name is used once in a module. Any two exports of one name are refused at the second, whether two functions share the name or `export "f"` gives a function another one's name (``export name 'f' is used twice: give one an explicit name, as in export "f_u32" func k(...)``), so functions that share a name are exported under names of their own:
+The export name is the declaration's own name, and `"memory"` for the memory. `export "name"` before the declaration gives another name, any string, also one with a double quote, a backslash or a character outside ASCII (so can the names an import writes), as long as it is UTF-8 text: a byte that is part of no character is refused (`export "a\x80"`: ``an export's name is UTF-8 text: \x80 is no character of it``); the declaration keeps its own name in the module. Each export name is used once in a module. Any two exports of one name are refused at the second, whether two functions share the name or `export "f"` gives a function another one's name (``export name 'f' is used twice: give one an explicit name, as in export "f_u32" func k(...)``), so functions that share a name are exported under names of their own:
 
 <!-- spec:begin compile -->
 
@@ -7824,6 +8642,9 @@ export func add(a: i32, b: i32) -> i32 => a + b
 
 // Exported as "area"; in the module it is still rect_area
 export "area" func rect_area(w: u32, h: u32) -> u32 => w * h
+
+// Any string, as "größe \"w\""
+export "größe \"w\"" func width() -> u32 => 640
 
 // Functions that share a name are exported under names of their own
 export "hash_u32" func hash(k: u32) -> u32 => k * 0x9e3779b1
@@ -8332,14 +9153,14 @@ A call with the wrong number of arguments for the one function of its name is a 
 
 An *instance* is one generic function with all its comptime arguments fixed.
 
-- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. A host type compares by its name, the one name it has program-wide ([2.13](#213-host-references)): `id(c)` for a `Canvas` and for a `Screen = Canvas` is one instance, and for a `Context` another. The names of a function type's parameters are not part of it. A function given for a comptime function parameter is an argument like a type: two instances are one when their functions are the same function, whatever name a module imports it under (two modules that import one `dbl` as `dbl` and as `twice` share `apply<dbl>`). A number given for a value parameter is one too: two instances are one when theirs are the same number in the parameter's type. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
+- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. A host type compares by its name, the one name it has program-wide ([2.13](#213-host-references)): `id(c)` for a `Canvas` and for a `Screen = Canvas` is one instance, and for a `Context` another. The names of a function type's parameters are not part of it. A function given for a comptime function parameter is an argument like a type: two instances are one when their functions are the same function, whatever name a module imports it under (two modules that import one `dbl` as `dbl` and as `twice` share `apply<dbl>`). A nested function given for one is a function like any other: two calls that give the same nested function share an instance, and two nested functions are two instances whatever their bodies; each instance of a generic that holds a nested function has its own nested function, and so makes its own instances of the generics it gives it to ([Nested Functions](#nested-functions)). A number given for a value parameter is one too: two instances are one when theirs are the same number in the parameter's type. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
 - **Once.** An instance is one function in the output however many calls use it. Across source modules, one whose body calls a function of the module that asked for it is one for each such module ([8.8](#88-generics-across-modules)).
 - **On demand.** An instance is created by the first call that needs it. A generic nobody calls has no instances; a generic used only from `test` blocks has instances only in test builds.
 - **Zero cost.** An instance is the function you would get by writing the generic out by hand for those arguments, and it compiles to the same bytes. A call compiles to one `call` of the instance with only the non-comptime arguments. Nothing exists at run time for a type parameter, for a generic type, or for a generic that is not used. No function tables and no indirect calls are involved.
 - **Statics.** A data literal in a generic body belongs to each instance separately, as it would in hand-written copies; a `mut` or `&` literal is one cell per instance, kept from one call of that instance to the next ([Literals in Memory](#literals-in-memory)). With `let c = &0:u32` and `c.* += 1` in the body of `tick(comptime T: type)`, `tick(u32)` gives 1 and then 2, and `tick(u64)` then gives 1.
 - **Recursion.** A generic may call itself or another generic. A generic that instantiates itself with a larger type each time never finishes; the compiler stops with one error after 64 nested instantiations (`too many nested instantiations (64) while instantiating 'f'`), or sooner when one call has led to 1000 instances (`too many instantiations (1000) from one call while instantiating 'f'`) or to type arguments many times the size of its own (`type arguments grow without end while instantiating 'f'`). A type argument written in ordinary code may be of any size.
 - **Limits.** A module has fewer than 2^24 (16777216) instances of its generics, and a generic is declared within the first 2^28 bytes (256 MiB) of its file. A call past either is `cannot instantiate 'f': the source is too large or has too many instances`.
-- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$larger<u32>`, `$head<''u8>`, `$sort<i32|ascending>`, `$push<8|u32>` (a number in decimal); a type is spelled by its structure, as types are structural, so `insertion_sort` given `Rec = (key: u32, name: []u8)` and `by_key` is `$insertion_sort<<key:u32|name:''u8>|by_key>`; the exact spelling is not part of the language and names do not reach the `.wasm` file.
+- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$larger<u32>`, `$head<''u8>`, `$sort<i32|ascending>`, `$push<8|u32>` (a number in decimal), `$sort<i32|by_distance.closer>` (a nested function by its path, [8.6](#86-comptime-function-parameters)); a type is spelled by its structure, as types are structural, so `insertion_sort` given `Rec = (key: u32, name: []u8)` and `by_key` is `$insertion_sort<<key:u32|name:''u8>|by_key>`; the exact spelling is not part of the language and names do not reach the `.wasm` file.
 
 ```ents
 func bytes(comptime T: type, n: u32) -> u32 => n * sizeof(T)
@@ -8628,9 +9449,121 @@ parameter 'f' is declared twice
 
 - the name of a function declared at module level in this module, before or after the call;
 - the name of an imported function, from the host or from another source module ([8.8](#88-generics-across-modules));
+- the name of a nested function seen at the call ([Nested Functions](#nested-functions)), also one that uses the variables of the function around it: the instance then takes those variables as extra parameters, after its own, and gives back the ones assigned, after its own results, as the nested function does; every call of the parameter in it passes them on, and every call of the instance passes them and assigns them back;
+- the name of a function a `test` declares or imports, given in that test ([12.4](#124-declarations-in-a-test)): its instance exists in the test build only, and one imported from another source module is that module's function, as above;
 - inside a generic, one of its own comptime function parameters, passed on.
 
-Nothing else is a function there: not an expression, not a value of a function type, not a generic function, not a builtin (`abs`, `sqrt`), not a function a `test` declares, and not a name that several functions share ([3.4](#functions-that-share-a-name)), since nothing tells which of them is meant. The argument is a name, never evaluated: nothing of it is left for run time.
+Nothing else is a function there: not an expression, not a value of a function type, not a generic function, not a builtin (`abs`, `sqrt`), and not a name that several functions share ([3.4](#functions-that-share-a-name)), since nothing tells which of them is meant. The argument is a name, never evaluated: nothing of it is left for run time.
+
+A nested function that counts as it compares, given to `sort` above:
+
+```ents
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  let p = xs.ptr
+  for i in xs.len {
+    let x = p[i]
+    let j = i
+    while j > 0 && before(x, p[j - 1]) {
+      p[j] = p[j - 1]
+      j -= 1
+    }
+    p[j] = x
+  }
+}
+
+// Sorts xs by distance from center, and says how many comparisons that took
+export func by_distance(xs: []mut i32, center: i32) -> u32 {
+  let compared: u32 = 0
+  func closer(a: i32, b: i32) -> bool {
+    compared += 1
+    return abs(a - center) < abs(b - center)
+  }
+  xs.sort(closer)
+  return compared
+}
+
+data nums = mut [5:i32, -1, 8, 3]
+
+test "a nested function given for a comptime function parameter" {
+  assert by_distance(nums, 4) == 6
+  assert nums[0] == 5 && nums[1] == 3 && nums[2] == 8 && nums[3] == -1
+}
+```
+
+
+The instance is `sort<i32|by_distance.closer>` (`sort(T = i32, before = by_distance.closer)` in messages). It takes `center` and `compared` after `xs` and gives `compared` back, and its call of `before` is `call $by_distance.closer` with them after the two elements. Where several functions are given, the instance takes the variables the first one captures, in that function's order, then those of the next not taken yet, and so on, in the order of the comptime parameters. A nested function in a generic's body that calls the comptime parameter, or passes it on, captures what the function given for it captures ([Nested Functions](#nested-functions)): in `each_twice<total_twice.add>`, `both` takes `total` and gives it back.
+
+```ents
+func each_twice(comptime visit: (u32) -> (), xs: []u32) {
+  func both(x: u32) {
+    visit(x)
+    visit(x)
+  }
+  for x in xs { both(x) }
+}
+
+export func total_twice(xs: []u32) -> u32 {
+  let total: u32 = 0
+  func add(x: u32) { total += x }
+  each_twice(add, xs)
+  return total
+}
+
+test "a nested function of a generic calls the function given for its parameter" {
+  assert total_twice([1, 2, 3]) == 12
+}
+```
+
+Each instance of a generic has its own nested functions, `over<u32>.big` and `over<f64>.big` here, and each makes its own instance of the generic it is given to:
+
+```ents
+func count_if(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> (n: u32) {
+  for x in xs {
+    if keep(x) { n += 1 }
+  }
+}
+
+func over(comptime T: type, xs: []T, limit: T) -> u32 {
+  func big(x: T) -> bool => x > limit
+  return xs.count_if(big)
+}
+
+data small = [1:u32, 5, 9]
+data wide = [0.5, 2.5]
+
+test "each instance of a generic has its own nested functions" {
+  assert over(small, 4:u32) == 2
+  assert over(wide, 1.0) == 1
+}
+```
+
+The variables an instance takes for the functions given are the caller's, and only the function given names them. A parameter, a named result, a `let` or a loop variable of the generic, or a variable a nested function of the generic captures, is another variable even where it has the same name, and the two never share a register: here `count_if`'s result `n` counts, while `grows` adds to the caller's `n`.
+
+```ents
+func count_if(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> (n: u32) {
+  for x in xs {
+    if keep(x) { n += 1 }
+  }
+}
+
+// How many elements end a running sum above 6, and the sum
+export func sums_over(xs: []u32) -> u32 {
+  let n: u32 = 0
+  func grows(x: u32) -> bool {
+    n += x
+    return n > 6
+  }
+  let count = xs.count_if(grows)
+  return count * 10000 + n
+}
+
+data small = [1:u32, 5, 9, 2, 7]
+
+test "the instance's n and the caller's n are two variables" {
+  assert sums_over(small) == 30024
+}
+```
+
 
 **Its type is exactly the declared type**, with the call's type and value arguments put in: the same parameter types and the same result types, in order. Names of parameters and results do not count. A function whose types only convert to the declared ones is refused, so one that takes a `u64` where the parameter says `u32`, or returns a `u8` where it says `u32`, is an error. A range is part of a type here: a `func r8(x: u32#8) -> u32` is refused for `comptime f: (u32) -> u32` (`'r8' is (u32#8) -> u32, but 'apply' needs f: (u32) -> u32`), and so is a `(u32) -> u32#8` for it, and a `(u32) -> u32` for a `(u32#8) -> u32`. The one relaxation: a function that lists a struct's fields as its results, `-> (sum: f64, n: u32)`, is one that returns the struct.
 
@@ -8708,7 +9641,7 @@ argument 2 of 'twice' must be the name of a function: f is a comptime function p
 'twice' expects 2 arguments, or 3 with its type argument written; got 1
 ```
 
-A function declared in a `test` is refused with `argument 1 of 'twice' must be a function declared at module level: 'helper' is declared inside a test`.
+A function declared in a `test` can be given in that test ([12.4](#124-declarations-in-a-test)).
 
 **In the instance** the parameter is the function given. A call of it, `f(x)`, or `x.f()` as a method, is a direct call of that function, with that function's parameter and result types. A name the declared type gives a result is therefore not there when the function's results have other names, or none, and a body that reaches a result by name is an error in the instances where it is not there. A result reached by its position, `f(n).1`, is there in every one:
 
@@ -9150,8 +10083,9 @@ export func visited(n: u32) -> u32 {
 - **The library comes first.** A function of the generic's module that accepts the arguments is the one called, and nothing outside replaces it: a `hash(k: u32)` written in `cells.ents` is not called by a `Set(u32)`, which uses the library's own.
 - **Only calls are looked up at the site, and only plain functions.** The types, globals and helpers of a generic's body are always its own module's. A generic function of the site's with the name is not looked up, and the error for want of the function says so in a note: `the site's 'hash' is generic, and only plain functions are looked up at the site`.
 - **A function declared in a test is no function of the site.** It belongs to the test ([12.4](#124-declarations-in-a-test)), so a generic called in a test does not find it (`no function 'hash' accepts (...), in bucket(K = ...)`). A requirement for a type that only tests use is declared in the module.
+- **A nested function of the site is not looked up**: a lookup in a generic's body never finds a nested function of a function that asked for the instance, which reaches the instance only as a comptime argument. The nested functions declared in the generic's own body are found there as in any body ([Nested Functions](#nested-functions)). A nested function given to a generic of another module is called by the instance directly, as a function of the giving module is, and the variables it captures come from that module's call, in the order of [8.6](#86-comptime-function-parameters), whatever the two files.
 - **A comptime function argument is not looked up**: it is written where the generic is called, in the module that calls it ([8.6](#86-comptime-function-parameters)). `sort(xs, by_cost)` with `by_cost` declared in, or imported from, another module is an instance that calls that function directly, and two modules that give the same function, under whatever names they import it, share the instance.
-- **An instance that needed the site is made for that site**, and so is an instance that calls one: it is still the generic's module's function, with that module's names and code, but it calls the site's functions. Another module that uses the same generic with the same arguments shares it where its own functions of the names looked up are the same functions (both import `hash` and `eq` for `Cell` from one module), and otherwise gets its own copy, which calls its own functions: two functions in the output, the second named with its site after the arguments in WAT, `add<<x:i32|y:i32>>@other`. An instance that did not need the site exists once in the program.
+- **An instance that needed the site is made for that site**, and so is an instance that calls one: it is still the generic's module's function, with that module's names and code, but it calls the site's functions. Another module that uses the same generic with the same arguments shares it where its own functions of the names looked up are the same functions (both import `hash` and `eq` for `Cell` from one module), and otherwise gets its own copy, which calls its own functions: two functions in the output, the second named with its site after the arguments in WAT, `add<<x:i32|y:i32>>@other`. An instance that did not need the site exists once in the program. The data of such instances is laid out by their arguments and then the name of the first module of the program whose code asks for each, in the order the build without tests checks the modules (each after those it imports), so that a test, or a module only a test imports, that asks first moves none of the program's.
 
 **Errors.** An error in an instance is the generic's module's, at its line in the generic, labelled with the instance, and with the calls it was required from, each in the module of that call. Where the chain of instantiations was started by ordinary code of another module, that module is told too, once, at its call, of the first error of the instance it asked for or of an instance that one's body asked for, however deep; nothing is said at the calls between. For a `cells.ents` that keeps a `Set(Cell)` and writes an `eq` for `Cell` but no `hash`:
 
@@ -9187,7 +10121,8 @@ The containers of [`lib/`](../lib/README.md) are written this way: `lib/vec.ents
 | A generic type with a parameter that is neither `comptime X: type` nor an integer (a function, a `bool`), or with no parameter | `generic type 'Vec' takes comptime type and integer parameters only, as (comptime n: u32, comptime T: type)` |
 | A generic type with a block body or conditions | A syntax error: its body is one type |
 | A type parameter applied to arguments, `T(u32)` as a type | `a type parameter cannot be applied` |
-| An expression or a function written in place (a closure) for a comptime function parameter | `argument 3 of 'sort' must be the name of a function: before is a comptime function parameter` |
+| A function written in place, `sort(xs, \|a, b\| a < b)` | A syntax error: `there are no lambdas: declare a nested function, ...` ([Nested Functions](#nested-functions)) |
+| An expression for a comptime function parameter | `argument 3 of 'sort' must be the name of a function: before is a comptime function parameter` |
 | A name several functions share, for a comptime function parameter | The same, followed by `('less' has several overloads)` |
 | A comptime function parameter used as a value | `'before' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter` |
 | Function values at run time, called indirectly ([Function Types and Pointers](#function-types-and-pointers)) | Calling one: `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called` |
@@ -9236,7 +10171,7 @@ The rules of this chapter refuse these too; they are not features to come:
 
 ### 8.10 How This Is Compile-Time Evaluation
 
-A name bound at compile time is declared at module level (`def n = 64` binds a number, `type Pt = (...)` a type, `func f` a function), or it is a comptime parameter, bound anew by each call of a generic. A compile-time value is a type, a function or a number. The table puts the two kinds of binding side by side; its last column is not in the language ([8.9](#89-not-implemented)):
+A name bound at compile time is declared at module level (`def n = 64` binds a number, `type Pt = (...)` a type, `func f` a function), or it is a nested function, a function declared in a body and seen in the rest of its block ([Nested Functions](#nested-functions)), or it is a comptime parameter, bound anew by each call of a generic. A compile-time value is a type, a function or a number. The table puts the two kinds of binding side by side; its last column is not in the language ([8.9](#89-not-implemented)):
 
 | Bound at compile time | Declared at module level | Given to a generic | Not implemented |
 |---|---|---|---|
@@ -9274,7 +10209,7 @@ A literal laid out in memory takes one place in the data for each place it is wr
 
 Memory has no read-only part. Const data is const in the type system: nothing writes through a const pointer, but a cast to a `*mut` pointer does (`text as *mut [3]u8`), and every literal that shares those bytes then reads what was written.
 
-`sizeof data` is the address just past the last byte of the program's data: where the memory that nothing is laid out in begins. It is a `u32`, at least 8, the same in every module of the program ([10.4](#104-sizes)); in a program with no data at all it reads 0, which is a known bug. The test build ([12. Tests](#12-tests)) lays out more than the program: after all of the program's data come the `data` blocks declared in tests and the literals that tests lay out. A constant literal of a test still shares bytes with the program's, as any constant literal does: `"abc"` in a test is the address of the program's `data text = "abc"`, and reads what a write through `text as *mut [3]u8` left there. The program's data keeps its addresses, and `sizeof data` there is the address past the last of these, larger than in the compiled program whenever a test lays something out, so a test that asserts its value checks the test build only.
+`sizeof data` is the address just past the last byte of the program's data: where the memory that nothing is laid out in begins. It is a `u32`, at least 8, the same in every module of the program ([10.4](#104-sizes)); in a program with no data at all it reads 0, which is a known bug. The test build ([12. Tests](#12-tests)) lays out more than the program: after all of the program's data come the `data` blocks declared in tests and the literals that tests lay out, and the data of a module that only tests import (an import in a test is part of the program only when the tests are built, [7.1](#71-imports)). The modules are laid out in the order the program has them, a test's import of one of them changing nothing. The data of an instance of a generic that only tests, or modules only tests import, ask for comes after the program's too. A constant literal of a test still shares bytes with the program's, as any constant literal does: `"abc"` in a test is the address of the program's `data text = "abc"`, and reads what a write through `text as *mut [3]u8` left there. The program's data keeps its addresses, and `sizeof data` there is the address past the last of these, larger than in the compiled program whenever a test lays something out, so a test that asserts its value checks the test build only.
 
 <!-- spec:begin compile -->
 
@@ -10315,15 +11250,39 @@ test "the tests share one instance of the module" {
 
 <!-- spec:end -->
 
-A group holds declarations and tests. Statements written in a group, beside its tests, are checked but never run, and neither is a test without a name, `test { ... }`: both parse, and the compiler should run them or refuse them (a known bug). Give every test a name, and put statements only in a test that holds no tests.
+A group holds declarations and tests. Statements written in a group, beside its tests, are checked but never run, and neither is a test without a name, `test { ... }`: both parse, and the compiler should run them or refuse them (a known bug). Give every test a name, and put statements only in a test that holds no tests. Since a group's statements never run, its variables never get a value: the tests nested in a group cannot use them, and a function declared at its top cannot either. The tests nested in it see the group's `def`s, `data`, functions and imports, not its variables:
+
+<!-- spec:begin compile -->
+
+```ents
+test "rectangles" {
+  let base: u32 = 1
+  func plus(x: u32) -> u32 => x + base
+  test "inner" {
+    assert plus(1) == 2
+    assert base == 1
+  }
+}
+```
+
+```errors
+'base' is a variable of the group "rectangles", whose statements are never run (12.3): a function declared at its top cannot use it
+'base' is a variable of the group "rectangles", whose statements are never run (12.3): a test nested in it cannot use it
+```
+
+<!-- spec:end -->
+
+(`plus` is then taken to capture nothing, so its call in `inner` says nothing more.)
 
 ### 12.4 Declarations in a Test
 
 A test can declare `def`, `data`, functions and imports, and these are the test's own. They are seen in the test from the declaration to its end, and in the tests nested after it. Above the declaration the name is the module's, or unknown (`unknown identifier 'f'`) where the module has none. Module code cannot use them.
 
 - A `def` or a `data` block declared in a test replaces a module name of the same name inside that test only, below its declaration. The rest of the module reads the name as if the test were not there.
-- A function declared in a test is called by its name in the test, below its declaration, and there it replaces a module function of that name. Module code, a generic's instances included, calls the module's function. The compiler gets this wrong in three ways (known bugs). In the test build a `data` block or a function declared in a test is what its name means in the whole test, above its declaration too, where the checker took the name for the module's. It gives the test's function to the tests that come after it in the file: a call written in one of them calls the test's function, while module code they call still calls the module's. And in the test build it gives the module's function of that name the test function's parameters: if their types differ, the test build does not assemble, and if their names differ, the compiler stops with an internal error. Two tests can each declare a function of one name: with the same parameter types each test calls its own, and with different parameter types the test build does not assemble (`type mismatch in call`, the same known bugs). What is safe: give each function and `data` a test declares a name no module declaration has, declare it at the top of the test, and give functions of one name in different tests the same parameter types, and the functions a test imports the signatures of the functions of their names elsewhere in the module.
-- An import declared in a test is part of the test build only: a host function, a host global or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. A host global imported there gets the stand-in of [12.6](#126-the-test-host), so a test can take a plain host reference to pass to the code it tests. The compiler gets an import wrong as it does a function (known bugs): in the test build an import is what its name means in the whole test, above its declaration too, and it is given to the tests that come after it in the file. And in the test build the signature of a function a test imports is given to the module's function of that name and to the function of that name an earlier test imports: where the two differ, the test build does not assemble.
+- A function declared in a test is called by its name in the test, below its declaration, and there it replaces a module function of that name. Module code, a generic's instances included, calls the module's function. The compiler gets this wrong in two ways (known bugs). In the test build a `data` block or a function declared in a test is what its name means in the whole test, above its declaration too, where the checker took the name for the module's: such a call calls the test's function, in the test's statements, its nested functions and the tests nested in it. A function of the test that captures nothing ([3.4](#34-functions)), declared above the test's function, is the exception: a call in it calls the module's function, as the checker said. Where a call calls the test's function and the wasm types of the two signatures differ (an `i64` for an `i32`, or another number of values), the test build mostly does not assemble: a type mismatch at the call, where its value is used, or at the end of the function the call is in. It assembles, and runs the test's function, where the call's value is dropped (a call as a statement) or is returned with values left under it (`return f(1, 2)` where the test's `f` takes one parameter). Where the wasm types are the same (`u32` and `i32`, `u8` and `i32`, `bool` and `i32`), it assembles, and the test runs the test's function in the module's place. It gives the test's function to the tests that come after it in the file: a call written in one of them calls the test's function, while module code they call still calls the module's. Each function keeps its own signature: the module's function of the name, and another test's, whatever their parameters and results. What is safe: give each function and `data` a test declares a name no module declaration has, and declare it at the top of the test.
+- A function declared at the top of a test that uses the test's variables (or calls a function that does) is a nested function of the test ([Nested Functions](#nested-functions)), in a test that holds no tests: it is seen in that test alone, from its declaration to its end, it takes no name of the module (`'helper' is already declared: a function that uses its test's variables cannot reuse the name of a function of the module`), nor of a function or import its group declares, but it may take the name of one another test declares, as a function of the test may, it is one of the names of the test as its other functions and imports are (no other function or import of the test can take its name, below), and none of the known bugs above concern it. One at the top of a group cannot use the group's variables ([12.3](#123-groups)). A function declared in a block of a test (a branch, a loop body) is a nested function of the test too. What a function at the top of a test is, is decided where it is declared: one that captures nothing is a function of the test, as above. A name the function declares itself (a parameter, a named result, a `let` of its body, a loop, `if let` or match binding around the use, or a parameter of a function nested in it) is its own there, and no use of a variable of the test of that name: `func double(x: u32) -> u32 => x * 2` after `let x` is a function of the test.
+- A function declared in a test can be given for a comptime function parameter in that test ([8.6](#86-comptime-function-parameters)): a nested one as any nested function, one that captures nothing by the name its test gives it. So can a function the test imports from the host: the instance calls the import. Such an instance exists in the test build of the test's own file only: building the tests of a module that imports this one leaves it out, with the tests it serves and the instances given a function nested in it ([12.5](#125-running-tests)). A function the test imports from another source module is that module's function, as one the module imports is: its instance is the one that module code giving the function gets ([8.4](#84-instances)). Outside the test (in module code, a generic's instances and the other tests) a name given for a comptime function parameter is the module's function of that name, also after a test that declares or imports a function of the name: the known bugs above concern calls, not this. Where the module has no function of the name, the name is none there, as in a build without tests (`argument 1 of 'apply' must be the name of a function: k is a comptime function parameter`).
+- An import declared in a test is part of the test build only: a host function, a host global or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. A host global imported there gets the stand-in of [12.6](#126-the-test-host), so a test can take a plain host reference to pass to the code it tests. The compiler gets an import wrong as it does a function (known bugs): in the test build an import is what its name means in the whole test, above its declaration too, and it is given to the tests that come after it in the file. A function a test imports keeps its own signature, as the module's function of the name and another test's import of it keep theirs, so a call above the import, which the checker took for the module's function, calls the import where a call above a test's function calls that function (not in a function of the test that captures nothing, declared above the import, which calls the module's function), and the wasm types of the two signatures decide, as for a function, whether the test build assembles and runs the import in the module function's place.
 
 <!-- spec:begin compile -->
 
@@ -10338,10 +11297,57 @@ test "a test's def is seen from its declaration on" {
 }
 ```
 
+```ents
+test "a function declared in a test uses the test's variables" {
+  let seen: u32 = 0
+  func see(x: u32) { seen += x }
+  see(2)
+  see(3)
+  assert seen == 5
+}
+```
+
+```ents
+test "a parameter named like a variable of the test is the function's own" {
+  let x: u32 = 4
+  func double(x: u32) -> u32 => x * 2
+  func two() -> (x: u32) { x = 2 }
+  assert double(x) == 8
+  assert two() + x == 6
+}
+```
+
+```ents
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  let p = xs.ptr
+  for i in xs.len {
+    let x = p[i]
+    let j = i
+    while j > 0 && before(x, p[j - 1]) {
+      p[j] = p[j - 1]
+      j -= 1
+    }
+    p[j] = x
+  }
+}
+
+data nums = mut [5:i32, -1, 8, 3]
+
+test "a test sorts with a comparator that captures" {
+  let center: i32 = 4
+  func closer(a: i32, b: i32) -> bool => abs(a - center) < abs(b - center)
+  func desc(a: i32, b: i32) -> bool => a > b
+  nums.sort(closer)
+  assert nums[0] == 5 && nums[1] == 3 && nums[2] == 8 && nums[3] == -1
+  nums.sort(desc)
+  assert nums[0] == 8 && nums[3] == -1
+}
+```
+
 <!-- spec:end -->
 
 
-A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)). Nor do two functions or imports of one test share a name, whatever their parameters: the functions of a test do not share a name as the module's do. A test nested in it can declare its own of the name, and so can another test.
+A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)). The error for an import's name ends with where the import's local name is, as [3.3](#33-variables) says. The one exception is a function or a global of another source module imported again under the name the module imports it by, which is that one again ([3.4](#34-functions)), also where the two imports spell the file's path differently (`./lib`, `./lib.ents`). The same host function imported again under the name is refused, whatever its parameters: the functions of a test share no name, and at module level a second import of one name with the same parameter types is refused too ([7.1](#71-imports)). Nor do two functions or imports of one test share a name, whatever their parameters: the functions of a test do not share a name as the module's do. The second is refused (`'twice' is already declared in this test`) and is the name all the same, so that the calls written for it say nothing more; a later declaration of the name, a `let` or a function of a test nested in it, is told the kind and place of the first, as [3.3](#33-variables) says. A test nested in it can declare its own of the name, and so can another test.
 
 <!-- spec:begin compile -->
 
@@ -10349,9 +11355,13 @@ A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax 
 def size = 4
 func hash(k: u32) -> u32 => k
 func hash(k: u64) -> u32 => 1
+import "env" "log" func log(x: u32)
 
 test "what a test cannot declare" {
   func size() -> u32 => 4
+  func log(x: u32) { }
+  import "env" "warn" func log(x: u32)
+  import "env" "log" func log(x: u32)
   func hash(k: u32) -> u32 => 0
   func pick(comptime T: type, a: T) -> T => a
   func Box(comptime T: type) -> type => (v: T)
@@ -10364,11 +11374,36 @@ test "what a test cannot declare" {
 
 ```errors
 'size' is already declared
+'log' is already declared: a function declared in a test cannot reuse the name of an import (first declared at 4:25)
+'log' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 4:25)
+'log' is already declared: an import in a test cannot reuse the name of an import of the module (first declared at 4:25)
 'hash' is the name of several functions of the module: a function declared in a test cannot take it over
 a generic function is declared at module level, not inside a test
 a generic type is declared at module level, not inside a test
 'twice' is already declared in this test
 'twice' is already declared in this test
+```
+
+A name that only a test declares or imports is no function outside that test, even below it:
+
+```ents
+func apply(comptime k: () -> u32) -> u32 => k()
+
+test "declares tf" {
+  func tf() -> u32 => 2
+  assert apply(tf) == 2
+}
+
+export func below() -> u32 => apply(tf)
+
+test "a later test" {
+  assert apply(tf) == 2
+}
+```
+
+```errors
+argument 1 of 'apply' must be the name of a function: k is a comptime function parameter
+argument 1 of 'apply' must be the name of a function: k is a comptime function parameter
 ```
 
 <!-- spec:end -->
@@ -10473,7 +11508,19 @@ cannot assign bool to u32
 
 <!-- spec:end -->
 
-A test that holds neither statements nor tests, `test "todo" {}` or one that only declares, fails (`fn is not a function`), and a test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives: both are known bugs.
+A test that holds neither statements nor tests, `test "todo" {}` or one that only declares, passes: nothing in it fails. A test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives (a known bug).
+
+<!-- spec:begin compile -->
+
+```ents
+test "todo" {}
+
+test "only declares" {
+  func helper() -> u32 => 1
+}
+```
+
+<!-- spec:end -->
 
 ---
 
@@ -10695,7 +11742,7 @@ A narrower integer key (`u8`, `u16`, `i8`, `i16`) fits several of `set.ents`' ow
 | `is_sorted(comptime T: type, xs: []T, comptime before: (T, T) -> bool) -> bool` | Whether `xs` is sorted |
 | `lower_bound(comptime T: type, xs: []T, x: T, comptime before: (T, T) -> bool) -> u32` | Where `x` goes in sorted `xs`: the first index whose element does not come before `x` |
 
-`before` is a comptime function parameter ([8.6](#86-comptime-function-parameters)): the name of a function declared at module level, in any module. Each comparator is its own copy of `sort`, which calls it directly.
+`before` is a comptime function parameter ([8.6](#86-comptime-function-parameters)): the name of a function declared at module level, in any module, of a nested function seen at the call, also one that uses the variables of the function around it ([Nested Functions](#nested-functions)), or of a function a test declares, given in that test. Each comparator is its own copy of `sort`, which calls it directly; the copy for a nested function that uses variables takes them as extra parameters and gives back the ones it assigns.
 
 Complete programs that use the library are [`examples/aoc/day1.ents`](../examples/aoc/day1.ents), a WASI program for `encantis run`, and [`examples/containers/main.ents`](../examples/containers/main.ents), which uses the Vec, Set, Map and sort with a key type of its own; [`examples/containers/fixed.ents`](../examples/containers/fixed.ents) uses the containers of a fixed capacity.
 
@@ -11027,9 +12074,11 @@ Functions share a name when their parameter types differ ([Functions That Share 
 
 ### 15.5 Closures
 
-**Not implemented:** there is no closure syntax, and function values, which closures would build on, are not implemented either ([Function Types and Pointers](#function-types-and-pointers)).
+**Implemented: functions that capture without escaping.** A function declared in a body captures the variables of the function around it ([Nested Functions](#nested-functions)), with no memory, table or environment: it never outlives that function, since it is never a value. It is called where its name is seen, and given for a comptime function parameter, so `xs.sort(closer)` sorts with a comparator that counts in a variable of its caller.
 
-Functions that capture variables from their enclosing scope. A plain function value would be an index into the function table ([Function Types and Pointers](#function-types-and-pointers)); a closure would carry state as well:
+**Not implemented:** closures that escape: a function value that holds captured variables, stored, returned or passed at run time (#167). Function values, which they would build on, are not implemented either ([Function Types and Pointers](#function-types-and-pointers)). Encantis has no lambda syntax; a nested function is declared with `func` and passed by name.
+
+What follows is about closures that escape. A plain function value would be an index into the function table ([Function Types and Pointers](#function-types-and-pointers)); a closure would carry state as well:
 
 ```ents
 func make_counter(start: i32) -> () -> i32 {
@@ -11059,8 +12108,8 @@ counter()  // 2
 
 **Design questions:**
 
-- Syntax: `|| expr`, `|x| expr`, or `func |x| expr`?
-- Capture semantics: by-value (copy) or by-reference (requires lifetime tracking)?
+- Syntax: a nested function given as a value by its name, or a form written in place? (There is no lambda: `|| expr` and `|x| expr` are syntax errors that say to declare a nested function.)
+- Capture semantics: by-value (copy) or by-reference (requires lifetime tracking)? A nested function shares its function's variables by reference, which is sound only because it cannot escape.
 - Should closure types be distinct from function types, or unified with automatic coercion?
 
 **Why:** Closures allow functional patterns (map, filter and reduce with the logic written in place), callbacks with context, and remove the boilerplate of passing an environment by hand. Engines with WebAssembly's garbage collection could hold closure environments without manual memory allocation, though the compiler targets WebAssembly 2.0, which has none ([11](#11-webassembly-reference)).

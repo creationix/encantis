@@ -450,6 +450,35 @@ export func many(c: Canvas, n: u32) -> i32 {
     }
   })
 
+  // Each module's names are its own (7.1): two modules of a program can
+  // import host functions and globals under one name, the same ones or
+  // others, and each calls its own
+  test('two modules import host functions and globals under one name', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-host-'))
+    try {
+      await writeFile(join(dir, 'gen.ents'), 'export func apply(comptime k: () -> u32) -> u32 => k()\n')
+      await writeFile(join(dir, 'lib.ents'), `import "./gen.ents" ("apply" func apply(comptime k: () -> u32) -> u32)
+import "env" "a" func f() -> u32
+import "env" "now" func now() -> u32
+import "env" "g" global g: u32
+export func lib_code() -> u32 => f() * 100 + apply(now) * 10 + g
+`)
+      await writeFile(join(dir, 'main.ents'), `import "./lib.ents" ("lib_code" func lib_code() -> u32)
+import "./gen.ents" ("apply" func apply(comptime k: () -> u32) -> u32)
+import "env" "b" func f() -> u32
+import "env" "now" func now() -> u32
+import "env" "g2" global g: u32
+export func m() -> u32 => lib_code() * 1000 + f() * 100 + apply(now) * 10 + g
+`)
+      const bytes = await compileToWasm(join(dir, 'main.ents'))
+      const env = { a: () => 1, b: () => 2, now: () => 3, g: new WebAssembly.Global({ value: 'i32' }, 4), g2: new WebAssembly.Global({ value: 'i32' }, 5) }
+      const { instance } = await WebAssembly.instantiate(bytes, { env })
+      expect((instance.exports.m as () => number)()).toBe(134235)
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+
   // The test host gives each imported global the zero of its type: none
   // for an optional host reference.
   test('the tests of a module that imports globals run with their zeros', async () => {

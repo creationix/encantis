@@ -82,10 +82,18 @@ export function recoverParse(text: string, parse: (text: string) => ParseResult,
     // be another (k = 1), and is left out with it.
     const ownLine = current.slice(line, stopped).trim() === '' || before(line) === undefined;
     if (!declared && ownLine) candidates.push({ start: line, end: after(stopped) });
+    // A function whose body does not end takes the declarations after it
+    // into its body, as nested functions (reference 3.4), so the parser can
+    // stop well past it: each declaration before the place, latest first,
+    // on its own, before what is left out with the declarations after it.
+    const alone = starts.filter((at) => at < (own ?? stopped)).reverse().map((at) => ({ start: at, end: after(at) }))
     if (own !== undefined) {
       candidates.push({ start: own, end: after(stopped) });
+      candidates.push(...alone);
       const earlier = before(own);
       if (earlier !== undefined) candidates.push({ start: earlier, end: after(stopped) });
+    } else {
+      candidates.push(...alone);
     }
     let next: { text: string; result: ParseResult; span: Span } | null = null;
     for (const span of candidates) {
