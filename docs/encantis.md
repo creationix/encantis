@@ -6541,7 +6541,7 @@ Used as a statement, an `if` has no value to agree on: its branches can end in a
 | `for x in iterable body` | once for each number of a count, or for each element of an array or slice |
 | `loop body` | until a `break` or a `return` leaves it |
 
-`break` leaves the innermost loop, and `continue` ends the pass: a `while` tests its condition again, a `for` goes on to its next number or element, and a `loop` runs its body again ([5.3](#53-control-statements)). A loop is a statement and has no value. Each compiles to a wasm `loop` inside a `block`: the end of a pass branches back to the `loop`, and `break` branches out of the `block`. A `loop` that no `break` leaves ends only by `return` (or a trap), so a function body that ends in one returns on every path ([3.4](#34-functions)).
+`break` leaves the innermost loop, and `continue` ends the pass: a `while` tests its condition again, a `for` goes on to its next number or element, and a `loop` runs its body again ([5.3](#53-control-statements)). A loop is a statement and has no value. Each compiles to a wasm `loop` inside a `block`, or for a count loop inside an `if` on the count (and a `for` over a `*[0]T` to no loop at all): the end of a pass branches back to the `loop`, and `break` branches out of the `block` or the `if`. A `while` tests its condition at the top of each pass. A count loop tests its count once, before its first pass, and then whether to go on after each pass; a slice walk tests at the top of each pass whether elements are left; and a walk over a `*[N]T` with `N` above 0, which always has a first pass, is tested only after each pass. [11.3](#113-control-flow-instructions) gives each instruction by instruction. A `loop` that no `break` leaves ends only by `return` (or a trap), so a function body that ends in one returns on every path ([3.4](#34-functions)).
 
 <!-- spec:begin compile -->
 
@@ -6576,7 +6576,7 @@ A `for` binds one variable, `for x in xs`, or two, `for i, x in xs`: the index f
 
 #### Counting
 
-`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`, or `... not f64` for a float), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that starts at 0. A pass runs while `i` is below the count, the two compared as `u32`s, and after each pass, one a `continue` ends too, `i` is stepped by 1, wrapping at 2^32. A signed count is tested once, before the first pass: a negative one runs the loop zero times, and one that isn't is the same number as a `u32`. So whatever the count's type, a pass that sets `i` to a value from the count minus 1 up to `0xFFFFFFFE` is the last one; one that sets it to a smaller value, or to `0xFFFFFFFF`, which the step wraps to 0, is followed by a pass with the stepped `i`. With `n: i32` of 5, an `i = 0x80000000` in the body ends the loop, as it does with `n: u32`, and an `i = 0xFFFFFFFF` in the first pass is followed by five more, with `i` from 0 to 4. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A count that is a variable gives `i` no range, a ranged one too: with `n: u32#4`, `for i in n` makes `i` a plain `u32`. To index with it, count to the constant and stop at the variable, `for i in 4 { break when i >= n ... }`, where `i` is a `u32#4`. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`. A count computed from constants with operators should be its value; the compiler takes the number furthest from zero among its operands instead (the number [Comptime Literal Promotion](#comptime-literal-promotion) checks; for a count, a known bug). So `for k in n / 4` with `def n = 8` gives `k` the range `u32#8`, and `two[k]` on a `*[2]u32` is refused. A negative count whose largest operand is positive, such as `2 - 3`, runs as the `u32` 4294967295 with `i` taken as a `u32#3`, so an index that range claims to prove is read past the array with no check. Write a constant count as a literal, a `.len`, or a `def` whose value is a literal (`def half = 4`).
+`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`, or `... not f64` for a float), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that starts at 0. Before the first pass the loop tests whether the count is above 0, signed for a signed count, so a negative count runs the loop zero times, and a count that isn't negative is the same number as a `u32`. After each pass, one a `continue` ends too, `i` is stepped by 1, wrapping at 2^32, and the next pass runs while the stepped `i` is below the count, the two compared as `u32`s for either kind of count ([11.3](#113-control-flow-instructions)). So whatever the count's type, a pass that sets `i` to a value from the count minus 1 up to `0xFFFFFFFE` is the last one; one that sets it to a smaller value, or to `0xFFFFFFFF`, which the step wraps to 0, is followed by a pass with the stepped `i` ([Loop Variables](#loop-variables)). With `n: i32` of 5, an `i = 0x80000000` in the body ends the loop, as it does with `n: u32`, and an `i = 0xFFFFFFFF` in the first pass is followed by five more, with `i` from 0 to 4. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A count that is a variable gives `i` no range, a ranged one too: with `n: u32#4`, `for i in n` makes `i` a plain `u32`. To index with it, count to the constant and stop at the variable, `for i in 4 { break when i >= n ... }`, where `i` is a `u32#4`. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`). A negative constant count is an `i32` count, as a negative `i32` variable is: `for i in -3` runs no pass, and its `i` is a plain `u32`. A count computed from constants with operators should be its value; the compiler takes the number furthest from zero among its operands instead (the number [Comptime Literal Promotion](#comptime-literal-promotion) checks; for a count, a known bug). So `for k in n / 4` with `def n = 8` gives `k` the range `u32#8`, and `two[k]` on a `*[2]u32` is refused. A negative count whose largest operand is positive, such as `2 - 3`, runs as the `u32` 4294967295 with `i` taken as a `u32#3`, so an index that range claims to prove is read past the array with no check. Write a constant count as a literal, a `.len`, or a `def` whose value is a literal (`def half = 4`).
 
 There is no range form: `for i in 2..10` is a syntax error. Count from 0 and add the start, or loop over the elements of a range of an array or slice ([4.8](#48-slicerange-syntax)). A count loop has one variable; with two, `for i, j in n`, the first is never set (a known bug).
 
@@ -6596,6 +6596,35 @@ func total() -> (t: u32) {
 func span(lo: i32, hi: i32) -> (t: i32) {
   for k in hi - lo {               // a negative count runs no pass
     t += lo + k as i32
+  }
+}
+
+func passes(n: u32) -> (t: u32) {
+  for i in n {
+    t += 1
+  }
+}
+
+func signed_passes(n: i32) -> (t: u32) {
+  for i in n {
+    t += 1
+  }
+}
+
+func none() -> (t: u32) {
+  for i in -3 {
+    t += 1
+  }
+}
+
+// A u32 count past the largest i32: the first pass moves i to 2999999996,
+// and the passes for 2999999997 to 2999999999 follow.
+func past() -> (t: u32) {
+  for i in 3000000000 {
+    t += 1
+    if t == 1 {
+      i = 2999999996
+    }
   }
 }
 
@@ -6621,6 +6650,13 @@ test "counting" {
   assert total() == 724
   assert span(2, 5) == 9
   assert span(5, 2) == 0
+  assert passes(0) == 0
+  assert passes(1) == 1
+  assert passes(3) == 3
+  assert signed_passes(3) == 3
+  assert signed_passes(-3) == 0
+  assert none() == 0
+  assert past() == 4
   assert c_assign_signed(5) == 1
   assert c_assign_signed(-5) == 0
   assert c_assign(5, 4) == 1            // the count minus 1: stepped to the count
@@ -6640,7 +6676,7 @@ test "counting" {
 - a pointer to a fixed array, `*[N]T` or `*mut [N]T`: a `data` block, a string literal, or a fixed array that lies in memory, such as the field `p.cells` of the struct a pointer `p` points to;
 - a table, `*[N][M]T`, whose elements are its row pointers, each a `*[M]T` ([Nesting](#nesting)), and so a table of framed or packed rows, `*[N][!]T` or `*[N][AxB]T`, whose row pointers are each a `*[!]T` or a `*[AxB]T`.
 
-The loop walks a pointer from the first element to the end of the array, loading each element into the variable as it gets there, so it needs no bounds checks. The slice or pointer is evaluated once, before the loop: assigning another slice to the variable it came from changes nothing about the loop. The elements are read one pass at a time, so a write to a later element in the body is what the loop reads when it gets there. An element can be of any type: a struct or a slice is loaded whole, each of its values into a register, and since the variable is a copy, assigning to it doesn't change the array.
+The loop walks a pointer from the first element to the end of the array, loading each element into the variable as it gets there, so it needs no bounds checks. It runs one pass for each element, `N` for a `*[N]T` and `len` for a slice, from whatever address it starts at: a `*[N]T` walk stops when the pointer reaches the address `N` elements past its start, and a slice walk counts the elements it has left ([11.3](#113-control-flow-instructions)). A slice or array pointer is not checked against memory, so one that reaches past the end of memory, made from a number (`(0xFFFFFFF0 as [*]u8, 32)`, `4096 as *[1073741823]u32`) or with a length too large for its address, traps at the first element past the end, as a load there does ([9.7](#97-traps)), after the passes over the elements before it. (In a memory of 65536 pages, which every 32-bit address is in, the pointer goes on from the last address to 0 instead, and only an element that straddles 2^32 traps.) The slice or pointer is evaluated once, before the loop: assigning another slice to the variable it came from changes nothing about the loop. The elements are read one pass at a time, so a write to a later element in the body is what the loop reads when it gets there. An element can be of any type: a struct or a slice is loaded whole, each of its values into a register, and since the variable is a copy, assigning to it doesn't change the array.
 
 <!-- spec:begin compile -->
 
@@ -6690,7 +6726,16 @@ func name_len() -> (t: u32) {
   }
 }
 
+data nothing: *[0]u32 = []
+
+func empty() -> (t: u32) {
+  for x in nothing {               // a *[0]u32 runs no pass
+    t += 1
+  }
+}
+
 test "element loops" {
+  assert empty() == 0
   assert total([Spot(1, 2, 3), Spot(4, 5, 6)]) == 21
   assert find("hello", 'l') == 2
   assert find("hello", 'z') == 5
@@ -6882,7 +6927,50 @@ test "a loop's variables are its body's" {
 
 <!-- spec:end -->
 
-The body can assign its loop's variables. The element is a copy, so assigning to it changes nothing else. A count's variable is the one the loop steps: after each pass it goes up by one from the value it holds and is compared with the count, so assigning to it changes the passes that follow, never the rest of the pass it is in: `i = n - 1` makes the pass the last, and so does any value at or past the count. The step wraps, so after `i = 0xFFFFFFFF` the next pass has `i` 0. An element loop's index counts on from a value assigned to it, while the elements are walked as before. A `u32#N` variable takes only values below `N` (`cannot assign int(20) to u32#10`).
+The body can assign its loop's variables. The element is a copy, so assigning to it changes nothing else. A count's variable is the one the loop steps: after each pass it goes up by one from the value it holds and is compared with the count as a `u32`, a signed count too, so assigning to it changes the passes that follow, never the rest of the pass it is in: `i = n - 1` makes the pass the last, and so does any value past it up to `0xFFFFFFFE`, `i = 0x80000000` with a count of 5 among them. The step wraps, so after `i = 0xFFFFFFFF` the next pass has `i` 0. An element loop's index counts on from a value assigned to it, while the elements are walked as before: as many passes, over the same elements. A `u32#N` variable takes only values below `N` (`cannot assign int(20) to u32#10`).
+
+<!-- spec:begin compile -->
+
+```ents
+// The passes of a loop whose first pass sets i to `to`.
+func passes(n: u32, to: u32) -> (t: u32) {
+  for i in n {
+    t += 1
+    if t == 1 {
+      i = to
+    }
+  }
+}
+
+func signed_passes(n: i32, to: u32) -> (t: u32) {
+  for i in n {
+    t += 1
+    if t == 1 {
+      i = to
+    }
+  }
+}
+
+// Each index, as a digit, after the first pass sets it to 5.
+func marks(s: []u8) -> (t: u32) {
+  for i, x in s {
+    t = t * 10 + i
+    i = 5
+  }
+}
+
+test "assigning a loop's variables" {
+  assert passes(5, 100) == 1
+  assert passes(5, 3) == 2         // i = 3, then the pass for 4
+  assert passes(3, 0xFFFFFFFF) == 4  // then the passes for 0, 1 and 2
+  assert signed_passes(5, 100) == 1
+  assert signed_passes(5, 0x80000000) == 1
+  assert signed_passes(3, 0xFFFFFFFF) == 4
+  assert marks("abc") == 66        // i is 0, 6, 6: three passes, one per byte
+}
+```
+
+<!-- spec:end -->
 
 ### 5.3 Control Statements
 
@@ -9837,7 +9925,7 @@ These trap:
 | integer `/` and `%` by zero | `a / b` or `a % b` with `b` zero: signed or unsigned, any width |
 | signed `/` that overflows | the most negative value divided by -1, `-2147483648 / -1` (its `%` is 0, no trap) |
 | a float cast to an integer that cannot hold it | `x as i32` with `x` NaN, infinite or out of the range of the 32- or 64-bit integer it is truncated to: `1.0e30 as i32`, `-1.0 as u8` (a narrower type is truncated to 32 bits first, then masked: `300.0 as u8` is 44) |
-| a load or a store past the end of memory | a many-pointer indexed far past its data, a pointer cast from a number, a `*[!]T` length scan that finds no terminator before the end |
+| a load or a store past the end of memory | a many-pointer indexed far past its data, a pointer cast from a number, a `*[!]T` length scan that finds no terminator before the end, an element loop over a slice or `*[N]T` that reaches past the end, at the first element past it ([Elements](#elements)) |
 | `memcpy`, `memset`, `memzero`, a range fill or a range copy past the end of memory | a length known only at run time that is too large ([10.3](#103-memory-builtins)) |
 | a `match` whose subject matches no arm, with no `_` arm | [5.4](#54-match-expressions) |
 | an `assert` whose condition is false | outside `encantis test` as well |
@@ -10189,7 +10277,10 @@ A float truncates toward zero, and the `trunc` instructions trap on NaN, an infi
 | `match` | one comparison per arm in the order written, as nested `if`/`else`; with no `_` arm the last `else` is `unreachable` |
 | `while c { ... }` | `(block $break (loop $continue (br_if $break (i32.eqz c)) ... (br $continue)))` |
 | `loop { ... }` | `(block $break (loop $continue ... (br $continue)))` |
-| `for` | a `block` and a `loop` that step a counter, or an address by the element's size; the body is a `block` of its own, which `continue` leaves to reach the step. A count's counter is compared with `i32.ge_u` (a negative constant count with `i32.ge_s` against the constant, which ends the loop before the first pass), and a signed variable count is first tested with `i32.lt_s` against 0 in the `block`, before the `loop` |
+| `for i in n { ... }` | `(local.set $i (i32.const 0)) (if $break G (then (loop $next (block $continue ...) (br_if $next (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) n)))))`. The guard `G` is `n` for an unsigned count and for a count that is a constant and not negative, of any type (binaryen folds such a guard away), and `(i32.gt_s n (i32.const 0))` for any other signed count, a negative constant among them. `n` is read where it is written when it is a number (a literal, a `def` of one, the `.len` of a fixed array, `*[N]T` or `[N]T`), or a variable or a field of one, held in a local or a global, that the body does not change (a global only when the body calls nothing); anything else is evaluated once, into a local of its own, before `$i` is set |
+| `for x in s { ... }`, `s` a slice | `s` (its address and length) `(local.set $left) (local.set $p) (block $break (loop $next (br_if $break (i32.eqz (local.get $left))) X (block $continue ...) (local.set $p (i32.add (local.get $p) (i32.const W))) (local.set $left (i32.sub (local.get $left) (i32.const 1))) (br $next)))`, where `W` is the element's size and `X` loads the element at `$p` into `x` ([11.4](#114-memory-access)) |
+| `for x in p { ... }`, `p` a `*[N]T` | `(local.set $p p) (local.set $end (i32.add (local.get $p) (i32.const N*W))) (block $break (loop $next X (block $continue ...) (br_if $next (i32.ne (local.tee $p (i32.add (local.get $p) (i32.const W))) (local.get $end)))))`; for `N` = 0, `(drop p)` and no loop |
+| `for i, x in ...` | as without `i`, after `(local.set $i (i32.const 0))`, which comes before the slice or pointer is evaluated (for a `*[0]T` too, before its `(drop p)`), and with `(local.set $i (i32.add (local.get $i) (i32.const 1)))` after the step of `$left` in a slice walk and before the `br_if` in a `*[N]T` walk |
 | `break`, `break when c` | `br $break`, `br_if $break c` |
 | `continue`, `continue when c` | `br` and `br_if` to the loop's head, or in a `for` to its step |
 | `return`, `return x when c` | `return`, `(if c (then x (return)))` |
@@ -10199,6 +10290,8 @@ A float truncates toward zero, and the `trunc` instructions trap on NaN, an infi
 | `assert c` | `(if (i32.eqz c) (then (unreachable)))` |
 
 A `match` is never a `br_table`: its arms are compared one after another. A function's code may end in an `unreachable` that never runs: every path through a function with results returns a value, as the checker requires.
+
+Every count loop has the one form above, whatever its count. It tests the count once, before its first pass, and then the stepped `$i` at the bottom, in the `br_if` that branches back, which reads `$i` from the step's `local.tee`. In a release build this is smaller than a loop tested at its top for a constant count, whose guard folds away, and for a computed one, and it can be a few bytes larger for a variable count (a signed one most) and for some bodies, such as one that starts with a `break when`. Past its guard a signed count is above 0, so the bottom test is unsigned for it too, and `$i` is compared as the `u32` it is, whatever the body assigns it ([Loop Variables](#loop-variables)). An element walk never compares the pointer with an address past the elements by size: a `*[N]T` with `N` above 0 has a first pass, so its walk is tested after each pass, for the pointer being at the end address, `i32.ne` and not `i32.lt_u`, and a slice walk counts the elements it has left. Each runs one pass per element from any address, also when the address after the last element wraps past 2^32, and `len * W` is never computed ([Elements](#elements)). The labels are those of the other loops: `break` branches to `$break`, which is the `if` of a count loop, and `continue` to the end of the `$continue` block, which is followed by the step.
 
 ### 11.4 Memory Access
 

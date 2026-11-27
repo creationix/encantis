@@ -2897,6 +2897,16 @@ function makesCall(node: unknown): boolean {
   return Object.entries(node).some(([k, v]) => k !== 'span' && typeof v === 'object' && makesCall(v))
 }
 
+// The two scratch locals of an element loop: the pointer (`$p` in 11.3), and
+// the end address of a *[N]T walk (`$end`) or the elements a slice walk has
+// left (`$left`).
+function forLocals(stmt: AST.ForStmt, ctx: CodegenContext): [string, string] {
+  const uid = scratchId(stmt.span.start)
+  const type = lookupExprType(stmt.iterable, ctx)
+  const slice = type !== undefined && unwrap(type).kind === 'slice'
+  return [`__for_ptr_${uid}`, slice ? `__for_left_${uid}` : `__for_end_${uid}`]
+}
+
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   // The locals collectLocals gave the loop's variables, which its names stand
   // for in the body only: neither in the iterable nor after the loop.
@@ -2917,78 +2927,114 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   const iterWat = exprToWat(stmt.iterable, ctx)
 
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
-    // Range loop: for value in N → value = 0; while value < N { ...; value += 1 }
-    // The body sits in its own $continue block so that continue still reaches
-    // the increment. The count is evaluated once, before the loop: a constant,
-    // or a variable the body doesn't change, is read where it is compared.
-    // value is a u32, compared unsigned with the count. A signed variable
-    // count is first tested once, before the first pass: a negative one runs
-    // no pass, and one that isn't is the same number as a u32. (A negative
-    // constant is compared signed, and 0 is past it before the first pass.)
+    // Count loop: i = 0, then, if there is a pass, a loop tested at its
+    // bottom (11.3):
+    //   (local.set $i (i32.const 0))
+    //   (if $break GUARD (then
+    //     (loop $next
+    //       (block $continue BODY)
+    //       (br_if $next (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) COUNT)))))
+    // `continue` leaves the $continue block for the step, `break` leaves the
+    // `if`. The guard is the count itself for an unsigned count (for a
+    // constant one binaryen folds it away), and (i32.gt_s COUNT (i32.const 0))
+    // for a signed one, so a negative count runs no pass. Past the guard the
+    // count is above 0, so the step compares i unsigned, as the u32 it is:
+    // whatever value the body assigns i, the next pass runs only while i + 1
+    // (wrapping) is below the count.
+    // The count is evaluated once, before the loop: a constant, or a variable
+    // the body doesn't change, is read where it is used, and anything else is
+    // kept in a scratch local.
     const constant = /^\(i32\.const (-?\d+)\)$/.exec(iterWat)
     const steady = constant !== null || steadyRead(stmt, iterWat)
-    const count = steady ? iterWat : scratchLocal(ctx, 'i32')
-    const read = steady ? count : `(local.get ${count})`
-    const signed = iterType.kind === 'primitive' && RT.isSigned(iterType)
-    const compare = signed && constant && Number(constant[1]) < 0 ? 'i32.ge_s' : 'i32.ge_u'
-    const negative = signed && !constant ? `\n    (br_if $break (i32.lt_s ${read} (i32.const 0)))` : ''
-    return `${steady ? '' : `(local.set ${count} ${iterWat})\n`}(local.set $${valueName} (i32.const 0))
-(block $break${negative}
-    (loop $next
-      (br_if $break (${compare} (local.get $${valueName}) ${read}))
-      (block $continue
-        ${body}
-      )
-      (local.set $${valueName} (i32.add (local.get $${valueName}) (i32.const 1)))
-      (br $next)
+    const local = steady ? null : scratchLocal(ctx, 'i32')
+    const count = local ? `(local.get ${local})` : iterWat
+    const signed = iterType.kind === 'primitive' && RT.isSigned(iterType) && !(constant && Number(constant[1]) >= 0)
+    const guard = signed ? `(i32.gt_s ${count} (i32.const 0))` : count
+    const i = `$${valueName}`
+    return `${local ? `(local.set ${local} ${iterWat})\n` : ''}(local.set ${i} (i32.const 0))
+(if $break ${guard} (then
+  (loop $next
+    (block $continue
+      ${body}
     )
-  )`
+    (br_if $next (i32.lt_u (local.tee ${i} (i32.add (local.get ${i}) (i32.const 1))) ${count}))
+  )
+))`
   }
 
-  // Element loop over a slice or *[N]T: walk a pointer from the first
-  // element to the end, loading each element into the binding. No bounds
-  // checks are needed: the pointer never leaves the range.
+  // Element loop over a slice or *[N]T: a pointer walks from the first
+  // element by the element's size, and each pass loads the element it is at
+  // into the binding, so no element needs a bounds check (11.3). The pointer
+  // is never compared with an end address that could wrap: a *[N]T walk is
+  // tested after each pass for the pointer being at the end address N
+  // elements on (`ne`, not `lt_u`), and a slice walk counts the elements it
+  // has left. Each runs its number of passes from any start, whatever the
+  // body assigns the index, and a walk that leaves memory traps at the first
+  // element past it.
   const u = iterType ? unwrap(iterType) : undefined
   const elemType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
   if (!u || !elemType) throw new Error('for loop over an untyped iterable')
   const stride = byteSize(elemType)
   if (!stride) throw new Error(`for loop over elements of unknown size: ${RT.typeToString(elemType)}`)
-  const uid = scratchId(stmt.span.start)
-  const ptr = `$__for_ptr_${uid}`
-  const end = `$__for_end_${uid}`
-  let setup: string
-  if (u.kind === 'slice') {
-    // The iterable leaves (ptr, len) on the stack.
-    setup = `${iterWat}
-(local.set ${end})
-(local.set ${ptr})
-(local.set ${end} (i32.add (local.get ${ptr}) (i32.mul (local.get ${end}) (i32.const ${stride}))))`
-  } else {
-    const pointee = u.kind === 'pointer' ? unwrap(u.pointee) : null
-    const count = pointee?.kind === 'array' ? pointee.sizes?.[0] : null
-    if (typeof count !== 'number') throw new Error(`cannot iterate over ${RT.typeToString(u)}`)
-    setup = `(local.set ${ptr} ${iterWat})
-(local.set ${end} (i32.add (local.get ${ptr}) (i32.const ${count * stride})))`
-  }
+  const [ptr, end] = forLocals(stmt, ctx).map((name) => `$${name}`)
   const load = loadFromMemory(elemType, `(local.get ${ptr})`, ctx)
   const bind = valueLocals.length === 1
     ? `(local.set $${valueLocals[0]} ${load})`
     : `${load}\n${[...valueLocals].reverse().map(n => `(local.set $${n})`).join('\n')}`
   const index = indexName ? `$${indexName}` : null
-  return `${setup}
-${index ? `(local.set ${index} (i32.const 0))` : ''}
+  // The index is set before the iterable is evaluated, which cannot read it.
+  const startIndex = index ? `(local.set ${index} (i32.const 0))\n` : ''
+  const stepIndex = index ? `\n    (local.set ${index} (i32.add (local.get ${index}) (i32.const 1)))` : ''
+  const step = `(i32.add (local.get ${ptr}) (i32.const ${stride}))`
+
+  if (u.kind === 'slice') {
+    // The iterable leaves (ptr, len) on the stack. Tested before each pass:
+    //   S (local.set $left) (local.set $p)
+    //   (block $break (loop $next
+    //     (br_if $break (i32.eqz (local.get $left)))
+    //     BIND (block $continue BODY)
+    //     (local.set $p (i32.add (local.get $p) (i32.const SIZE)))
+    //     (local.set $left (i32.sub (local.get $left) (i32.const 1)))
+    //     (br $next)))
+    return `${startIndex}${iterWat}
+(local.set ${end})
+(local.set ${ptr})
 (block $break
-    (loop $next
-      (br_if $break (i32.ge_u (local.get ${ptr}) (local.get ${end})))
-      ${bind}
-      (block $continue
-        ${body}
-      )
-      (local.set ${ptr} (i32.add (local.get ${ptr}) (i32.const ${stride})))
-      ${index ? `(local.set ${index} (i32.add (local.get ${index}) (i32.const 1)))` : ''}
-      (br $next)
+  (loop $next
+    (br_if $break (i32.eqz (local.get ${end})))
+    ${bind}
+    (block $continue
+      ${body}
     )
-  )`
+    (local.set ${ptr} ${step})
+    (local.set ${end} (i32.sub (local.get ${end}) (i32.const 1)))${stepIndex}
+    (br $next)
+  )
+)`
+  }
+
+  const pointee = u.kind === 'pointer' ? unwrap(u.pointee) : null
+  const count = pointee?.kind === 'array' ? pointee.sizes?.[0] : null
+  if (typeof count !== 'number') throw new Error(`cannot iterate over ${RT.typeToString(u)}`)
+  // A *[0]T has no element: the index is set and the pointer evaluated, as
+  // in any walk, and there is no pass.
+  if (count === 0) return `${startIndex}(drop ${iterWat})`
+  // Any other *[N]T has a pass, so the walk is tested after each one:
+  //   (local.set $p P) (local.set $end (i32.add (local.get $p) (i32.const N*SIZE)))
+  //   (block $break (loop $next
+  //     BIND (block $continue BODY)
+  //     (br_if $next (i32.ne (local.tee $p (i32.add (local.get $p) (i32.const SIZE))) (local.get $end)))))
+  return `${startIndex}(local.set ${ptr} ${iterWat})
+(local.set ${end} (i32.add (local.get ${ptr}) (i32.const ${count * stride})))
+(block $break
+  (loop $next
+    ${bind}
+    (block $continue
+      ${body}
+    )${stepIndex}
+    (br_if $next (i32.ne (local.tee ${ptr} ${step}) (local.get ${end})))
+  )
+)`
 }
 
 function breakToWat(stmt: AST.BreakStmt, ctx: CodegenContext): string {
@@ -3443,9 +3489,9 @@ function collectLocals(
       const bindingType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
       if (bindingType) declare(stmt, stmt.binding.value, claimLocals(ctx, stmt.binding.value, bindingType, locals))
       if (stmt.binding.index) declare(stmt, stmt.binding.index, claimLocals(ctx, stmt.binding.index, RT.primitive('u32'), locals))
-      // Element loops walk a pointer up to an end address.
-      const uid = scratchId(stmt.span.start)
-      locals.push({ name: `__for_ptr_${uid}`, type: 'i32' }, { name: `__for_end_${uid}`, type: 'i32' })
+      // An element loop's pointer, and the end address of a *[N]T walk or the
+      // elements a slice walk has left (a count loop uses neither).
+      for (const name of forLocals(stmt, ctx)) locals.push({ name, type: 'i32' })
       visitBody(stmt.body)
     }
     // Handle expression statements that may contain if expressions

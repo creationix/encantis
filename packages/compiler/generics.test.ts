@@ -1601,7 +1601,7 @@ describe('zero cost', () => {
   })
 
   test('a larger program is the module written by hand, byte for byte', async () => {
-    expect(await expectSameWasm(Z1_GENERIC, Z1_BY_HAND)).toHaveLength(535)
+    expect(await expectSameWasm(Z1_GENERIC, Z1_BY_HAND)).toHaveLength(525)
   })
 
   test('data literals in a generic body are laid out as in the functions written by hand', async () => {
@@ -4113,7 +4113,7 @@ describe('zero cost, generic types and comptime function parameters', () => {
   // The size is that of the hand-written side compiled by the branch this one
   // stands on.
   test('a vector for two element types and a sort with three comparators are the module written by hand', async () => {
-    expect(await expectSameWasm(ZC2_GENERIC, ZC2_BY_HAND)).toHaveLength(1326)
+    expect(await expectSameWasm(ZC2_GENERIC, ZC2_BY_HAND)).toHaveLength(1314)
     const wat = watOfSource(ZC2_GENERIC)
     expect(funcs(wat)).toEqual([
       'alloc', "vec<''u8>", 'vec<u64>', "push<''u8>", 'push<u64>', "items<''u8>", 'items<u64>',
@@ -4125,7 +4125,7 @@ describe('zero cost, generic types and comptime function parameters', () => {
   })
 
   test('with fields through the pointer, the header stored and loaded whole, and struct elements', async () => {
-    expect(await expectSameWasm(NATURAL_GENERIC, NATURAL_BY_HAND)).toHaveLength(913)
+    expect(await expectSameWasm(NATURAL_GENERIC, NATURAL_BY_HAND)).toHaveLength(907)
     const { slots } = await run(NATURAL_GENERIC)
     // The fifth slot is used: its hash, 4 * 7, and the capacity grown to 8.
     expect(slots(5)).toBe(28 + 8)
@@ -4704,7 +4704,7 @@ describe('zero cost, method calls and functions that share a name', () => {
   test('the stage 2 program written with method calls is the same module written by hand', async () => {
     expect(ZC2_METHODS).not.toBe(ZC2_GENERIC)
     expect(ZC2_METHODS.match(/\.(push|items|sort)\(/g)).toHaveLength(9)
-    expect(await expectSameWasm(ZC2_METHODS, ZC2_BY_HAND)).toHaveLength(1326)
+    expect(await expectSameWasm(ZC2_METHODS, ZC2_BY_HAND)).toHaveLength(1314)
   })
 
   test('x.f(a) and f(x, a) are the same code', async () => {
@@ -4723,7 +4723,7 @@ export func f(xs: []u32, a: u32, b: u32) -> u32 => xs.ptr[1..3].total() + (a + 1
   })
 
   test('each instance calling the function for its own key type is the module written by hand', async () => {
-    expect(await expectSameWasm(OVERLOADS_GENERIC, OVERLOADS_BY_HAND)).toHaveLength(361)
+    expect(await expectSameWasm(OVERLOADS_GENERIC, OVERLOADS_BY_HAND)).toHaveLength(354)
     expect(funcs(watOfSource(OVERLOADS_GENERIC))).toEqual([
       'hash', "hash:''u8", 'eq', "eq:''u8|''u8", "bucket<''u8>", 'bucket<u32>', "same<''u8>", 'same<u32>', 'f', 'g',
     ])

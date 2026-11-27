@@ -1048,27 +1048,25 @@ describe('counted loops', () => {
     expect([c_assign_signed(5), call(), changed(5), glob(), field(5)]).toEqual([1, 1, 1, 1, 1])
     // A negative count still runs no pass, and one that isn't runs as many.
     expect([c_assign_signed(-1), c_assign_signed(0), changed(-5), field(-3), steps(4), steps(-4), steps(-2147483648)]).toEqual([0, 0, 0, 0, 6, 0, 0])
-    // The count is tested for being negative once, before the loop, and i is compared unsigned.
+    // The count is tested for being above 0 once, before the first pass,
+    // and i is compared unsigned with it after each pass (11.3).
     expect(bodyOf('func steps(n: i32) -> u32 {\n let t: u32 = 0\n for i in n { t += i }\n return t\n}', 'steps')).toEqual([
       '(local.set $t (i32.const 0))',
       '(local.set $i (i32.const 0))',
-      '(block $break',
-      '(br_if $break (i32.lt_s (local.get $n) (i32.const 0)))',
+      '(if $break (i32.gt_s (local.get $n) (i32.const 0)) (then',
       '(loop $next',
-      '(br_if $break (i32.ge_u (local.get $i) (local.get $n)))',
       '(block $continue',
       '(local.set $t (i32.add (local.get $t) (local.get $i)))',
       ')',
-      '(local.set $i (i32.add (local.get $i) (i32.const 1)))',
-      '(br $next)',
+      '(br_if $next (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) (local.get $n)))',
       ')',
-      ')',
+      '))',
       '(local.get $t) (return)',
       '(unreachable)',
     ])
   })
 
-  test('an unsigned or constant count is compared as it was', () => {
+  test('an unsigned or constant count is compared unsigned, and only a negative one is guarded signed', () => {
     const wat = modWat(`
       def k = -3
       export func f(n: u32) -> u32 {
@@ -1080,10 +1078,15 @@ describe('counted loops', () => {
         return t
       }
     `)
-    expect(wat).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $n)))')
-    expect(wat).toContain('(br_if $break (i32.ge_u (local.get $i) (i32.const 4)))')
-    expect(wat.match(/\(br_if \$break \(i32\.ge_s \(local\.get \$i\) \(i32\.const -3\)\)\)/g)?.length).toBe(2)
-    expect(wat).not.toContain('i32.lt_s')
+    const step = (count: string) => `(br_if $next (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) ${count}))`
+    expect(wat).toContain('(if $break (local.get $n) (then')
+    expect(wat).toContain(step('(local.get $n)'))
+    expect(wat).toContain('(if $break (i32.const 4) (then')
+    expect(wat).toContain(step('(i32.const 4)'))
+    // -3 and the def k of it: a signed guard, and the step unsigned.
+    expect(wat.match(/\(if \$break \(i32\.gt_s \(i32\.const -3\) \(i32\.const 0\)\) \(then/g)?.length).toBe(2)
+    expect(wat.split(step('(i32.const -3)')).length - 1).toBe(2)
+    expect(wat).not.toMatch(/i32\.(ge|lt)_s/)
   })
 
   test('the count is evaluated once, before the loop', async () => {
@@ -1154,8 +1157,331 @@ describe('counted loops', () => {
     expect([field(5), gfield()]).toEqual([5, 4])
     // A variable the body doesn't change is read where it is compared; a
     // store through a pointer it holds doesn't change it.
-    expect(modWat(code)).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $n)))')
-    expect(modWat(code)).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $xs_len)))')
+    expect(modWat(code)).toContain('(br_if $next (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) (local.get $n)))')
+    expect(modWat(code)).toContain('(br_if $next (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) (local.get $xs_len)))')
+  })
+})
+
+// The lowerings of a `for` that the reference states in 11.3, instruction by
+// instruction, and what follows from them in 5.2.
+describe('for loop lowerings', () => {
+  // A loop's scratch locals are named by its offset in the source.
+  const shape = (code: string, name: string) => bodyOf(code, name).map((l) => l.replace(/__for_(ptr|end|left)_\d+/g, '__for_$1'))
+  const COUNTS = `
+    func next() -> u32 => 3
+    func constant() -> (t: u32) { for i in 4 { t += i } }
+    func variable(n: u32) -> (t: u32) { for i in n { t += i } }
+    func computed(n: u32) -> (t: u32) { for i in n * 2 { t += i } }
+    func called() -> (t: u32) { for i in next() { t += i } }
+    func signed(n: i32) -> (t: u32) { for i in n { t += i } }
+    func negative() -> (t: u32) { for i in -3 { t += i } }
+  `
+  // i = 0; an if on the guard around a loop whose body is the $continue
+  // block, then the step, tested unsigned against the count.
+  const countLoop = (guard: string, count: string) => [
+    '(local.set $i (i32.const 0))',
+    `(if $break ${guard} (then`,
+    '(loop $next',
+    '(block $continue',
+    '(local.set $t (i32.add (local.get $t) (local.get $i)))',
+    ')',
+    `(br_if $next (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) ${count}))`,
+    ')',
+    '))',
+    '(local.get $t)',
+  ]
+
+  test('a count loop is an if on the count around a loop tested after each step', () => {
+    // A constant, and a variable the body leaves alone, are read where used.
+    expect(shape(COUNTS, 'constant')).toEqual(countLoop('(i32.const 4)', '(i32.const 4)'))
+    expect(shape(COUNTS, 'variable')).toEqual(countLoop('(local.get $n)', '(local.get $n)'))
+    // Anything else is evaluated once, into a scratch local.
+    expect(shape(COUNTS, 'computed')).toEqual([
+      '(local.set $__tmp_0 (i32.mul (local.get $n) (i32.const 2)))',
+      ...countLoop('(local.get $__tmp_0)', '(local.get $__tmp_0)'),
+    ])
+    expect(shape(COUNTS, 'called')).toEqual([
+      '(local.set $__tmp_0 (call $next))',
+      ...countLoop('(local.get $__tmp_0)', '(local.get $__tmp_0)'),
+    ])
+    // A signed count is guarded by being above 0, and then compared unsigned
+    // too; a negative constant is a signed count.
+    expect(shape(COUNTS, 'signed')).toEqual(countLoop('(i32.gt_s (local.get $n) (i32.const 0))', '(local.get $n)'))
+    expect(shape(COUNTS, 'negative')).toEqual(countLoop('(i32.gt_s (i32.const -3) (i32.const 0))', '(i32.const -3)'))
+  })
+
+  const WALKS = `
+    type Spot = (c: i32, di: i32, room: i32)
+    data words = [1:u32, 2, 3]
+    data none: *[0]u32 = []
+    func array() -> (t: u32) { for x in words { t += x } }
+    func array_index() -> (t: u32) { for i, x in words { t += x + i } }
+    func slice(s: []u16) -> (t: u32) { for x in s { t += x } }
+    func slice_index(s: []u16) -> (t: u32) { for i, x in s { t += x + i } }
+    func spots(s: []Spot) -> (t: i32) { for p in s { t += p.room } }
+    func empty() -> (t: u32) { for x in none { t += x } }
+    func empty_index() -> (t: u32) { for i, x in none { t += i } }
+  `
+
+  test('a *[N]T walk is tested after each pass, for the pointer being at the end', () => {
+    const walk = (bind: string, body: string, step: string[]) => [
+      '(local.set $__for_ptr (i32.const 0))',
+      '(local.set $__for_end (i32.add (local.get $__for_ptr) (i32.const 12)))',
+      '(block $break',
+      '(loop $next',
+      bind,
+      '(block $continue',
+      body,
+      ')',
+      ...step,
+      '(br_if $next (i32.ne (local.tee $__for_ptr (i32.add (local.get $__for_ptr) (i32.const 4))) (local.get $__for_end)))',
+      ')',
+      ')',
+      '(local.get $t)',
+    ]
+    const bind = '(local.set $x (i32.load (local.get $__for_ptr)))'
+    expect(shape(WALKS, 'array')).toEqual(walk(bind, '(local.set $t (i32.add (local.get $t) (local.get $x)))', []))
+    expect(shape(WALKS, 'array_index')).toEqual([
+      '(local.set $i (i32.const 0))',
+      ...walk(bind, '(local.set $t (i32.add (local.get $t) (i32.add (local.get $x) (local.get $i))))', [
+        '(local.set $i (i32.add (local.get $i) (i32.const 1)))',
+      ]),
+    ])
+    // A *[0]T has no pass: the pointer is evaluated, and that is all, after
+    // the index is set, as in any walk.
+    expect(shape(WALKS, 'empty')).toEqual(['(drop (i32.const 0))', '(local.get $t)'])
+    expect(shape(WALKS, 'empty_index')).toEqual(['(local.set $i (i32.const 0))', '(drop (i32.const 0))', '(local.get $t)'])
+  })
+
+  test('a slice walk counts the elements it has left', () => {
+    const walk = (bind: string[], body: string, stride: number, step: string[]) => [
+      '(local.get $s_ptr) (local.get $s_len)',
+      '(local.set $__for_left)',
+      '(local.set $__for_ptr)',
+      '(block $break',
+      '(loop $next',
+      '(br_if $break (i32.eqz (local.get $__for_left)))',
+      ...bind,
+      '(block $continue',
+      body,
+      ')',
+      `(local.set $__for_ptr (i32.add (local.get $__for_ptr) (i32.const ${stride})))`,
+      '(local.set $__for_left (i32.sub (local.get $__for_left) (i32.const 1)))',
+      ...step,
+      '(br $next)',
+      ')',
+      ')',
+      '(local.get $t)',
+    ]
+    const bind = ['(local.set $x (i32.load16_u (local.get $__for_ptr)))']
+    expect(shape(WALKS, 'slice')).toEqual(walk(bind, '(local.set $t (i32.add (local.get $t) (local.get $x)))', 2, []))
+    expect(shape(WALKS, 'slice_index')).toEqual([
+      '(local.set $i (i32.const 0))',
+      ...walk(bind, '(local.set $t (i32.add (local.get $t) (i32.add (local.get $x) (local.get $i))))', 2, [
+        '(local.set $i (i32.add (local.get $i) (i32.const 1)))',
+      ]),
+    ])
+    // A struct element is loaded whole, each part at its offset.
+    expect(shape(WALKS, 'spots')).toEqual(walk([
+      '(i32.load (local.get $__for_ptr)) (i32.load offset=4 (local.get $__for_ptr)) (i32.load offset=8 (local.get $__for_ptr))',
+      '(local.set $p_room)',
+      '(local.set $p_di)',
+      '(local.set $p_c)',
+    ], '(local.set $t (i32.add (local.get $t) (local.get $p_room)))', 12, []))
+  })
+
+  test('counts 0, 1, 3, past 2^31, and negative ones', async () => {
+    const { passes, big, bigvar, negative, span } = await run(`
+      export func passes(n: u32) -> (t: u32) {
+        for i in n { t += 1 }
+      }
+      // After i = 2999999996 the passes for 2999999997 to 2999999999 follow.
+      export func big() -> (t: u32) {
+        for i in 3000000000 {
+          t += 1
+          if t == 1 { i = 2999999996 }
+        }
+      }
+      export func bigvar(n: u32) -> (t: u32) {
+        for i in n {
+          t += 1
+          if t == 1 { i = 2999999996 }
+        }
+      }
+      export func negative() -> (t: u32) {
+        for i in -3 { t += 1 }
+      }
+      export func span(lo: i32, hi: i32) -> (t: i32) {
+        for k in hi - lo { t += lo + k as i32 }
+      }
+    `)
+    expect([passes(0), passes(1), passes(3)]).toEqual([0, 1, 3])
+    expect([big(), bigvar(3000000000), negative()]).toEqual([4, 4, 0])
+    expect([span(2, 5), span(5, 2), span(-2, 2)]).toEqual([9, 0, -2])
+  })
+
+  test('assigning i changes the passes that follow; the step is compared unsigned', async () => {
+    const { far, wrap, signedFar, signedWrap, high, highUnsigned } = await run(`
+      export func far(n: u32) -> (t: u32) {
+        for i in n {
+          t += 1
+          if t == 1 { i = 100 }
+        }
+      }
+      export func wrap(n: u32) -> (t: u32) {
+        for i in n {
+          t += 1
+          if t == 1 { i = 0xFFFFFFFF }
+        }
+      }
+      export func signedFar(n: i32) -> (t: u32) {
+        for i in n {
+          t += 1
+          if t == 1 { i = 100 }
+        }
+      }
+      export func signedWrap(n: i32) -> (t: u32) {
+        for i in n {
+          t += 1
+          if t == 1 { i = 0xFFFFFFFF }
+        }
+      }
+      export func high(n: i32) -> (t: u32) {
+        for i in n {
+          t += 1
+          if t == 1 { i = 0x80000000 }
+          break when t > 10
+        }
+      }
+      export func highUnsigned(n: u32) -> (t: u32) {
+        for i in n {
+          t += 1
+          if t == 1 { i = 0x80000000 }
+          break when t > 10
+        }
+      }
+    `)
+    // Past the count: that pass is the last.
+    expect([far(5), far(200), signedFar(5), signedFar(200)]).toEqual([1, 100, 1, 100])
+    // The step wraps: after 0xFFFFFFFF the next pass has i = 0.
+    expect([wrap(3), signedWrap(3)]).toEqual([4, 4])
+    // 0x80000001 is past a signed count of 5 as it is past an unsigned one
+    // (#257: the step was compared signed, and the loop went on).
+    expect([high(5), highUnsigned(5)]).toEqual([1, 1])
+  })
+
+  test('continue, break and defer, in count loops, walks and nested loops', async () => {
+    const { skip, stop, deferred, walkDigits, walkArray, nested, logged } = await run(`
+      global log: u32 = 0
+      data digits = [3:u8, 0, 4, 9, 5]
+      func note(k: u32) { log = log * 10 + k }
+      export func skip(n: u32) -> (t: u32) {
+        for i in n {
+          continue when i % 2 == 0
+          t += i
+        }
+      }
+      export func stop(n: u32) -> (t: u32) {
+        for i in n {
+          break when i == 3
+          t += 1
+        }
+      }
+      export func deferred(n: u32) -> u32 {
+        log = 0
+        for i in n {
+          defer note(i + 1)
+          continue when i == 0
+          break when i == 2
+          note(7)
+        }
+        return log
+      }
+      func walk(s: []u8) -> (t: u32) {
+        for i, x in s {
+          defer note(i)
+          continue when x == 0
+          break when x == 9
+          t = t * 10 + x
+        }
+      }
+      export func walkDigits() -> u32 {
+        log = 0
+        return walk(digits)
+      }
+      export func walkArray() -> (t: u32) {
+        for i, x in digits {
+          continue when x == 0
+          break when x == 9
+          t = t * 10 + x + i
+        }
+      }
+      export func nested(n: u32) -> (t: u32) {
+        for i in n {
+          for j in 3 {
+            continue when j == 1
+            t += 1
+          }
+          break when i == 2
+        }
+      }
+      export func logged() -> u32 => log
+    `)
+    expect([skip(6), skip(0), stop(10), stop(2)]).toEqual([9, 0, 3, 2])
+    // Each pass runs its defer on its way out: by continue, at the end, by
+    // break.
+    expect([deferred(5), deferred(0)]).toEqual([1723, 0])
+    expect(walkDigits()).toBe(34)
+    expect(logged()).toBe(123)
+    expect(walkArray()).toBe(36)
+    expect([nested(5), nested(1)]).toEqual([6, 2])
+  })
+
+  // A walk never compares the pointer with an end address that wraps (#161):
+  // it runs its passes from any start and traps at the first element past
+  // memory, here one page.
+  test('a walk that leaves memory traps at the first element past it', async () => {
+    const m = await run(`
+      export func count8(s: []u8) -> (n: u32) {
+        for x in s { n += 1 }
+      }
+      export func count32(s: []u32) -> (n: u32) {
+        for x in s { n += 1 }
+      }
+      export func arr(a: u32) -> (t: u32) {
+        let p = a as *[4]u32
+        for x in p { t += 1 }
+      }
+      export func huge(a: u32) -> (t: u32) {
+        let p = a as *[1073741823]u32
+        for x in p {
+          t += 1
+          break when t == 100000
+        }
+      }
+      export func assigned(s: []u8) -> (n: u32) {
+        for i, x in s {
+          n += 1
+          i = 0
+        }
+      }
+    `)
+    const end = 65536
+    // A slice that ends at 2^32, and one whose len * 4 is past it.
+    expect(() => m.count8(0xfffffff0 | 0, 32)).toThrow('Out of bounds')
+    expect(() => m.count32(64, 0x40000001)).toThrow('Out of bounds')
+    // A *[4]u32 whose end wraps, and one of 2^30 - 1 elements at 4096,
+    // whose end address 4096 + 4 * (2^30 - 1) wraps to 4092, below it.
+    expect(() => m.arr(0xfffffff8 | 0)).toThrow('Out of bounds')
+    expect(() => m.huge(4096)).toThrow('Out of bounds')
+    // A loop that assigns its index walks the elements as before.
+    expect(() => m.assigned(0xfffffff0 | 0, 32)).toThrow('Out of bounds')
+    expect(m.assigned(8, 3)).toBe(3)
+    // Up to the end of memory, and one element past it.
+    expect([m.count8(end - 6, 6), m.count32(end - 16, 4), m.arr(end - 16)]).toEqual([6, 4, 4])
+    expect(() => m.count8(end - 6, 7)).toThrow('Out of bounds')
+    expect(() => m.count32(end - 16, 5)).toThrow('Out of bounds')
+    expect(() => m.arr(end - 12)).toThrow('Out of bounds')
   })
 })
 

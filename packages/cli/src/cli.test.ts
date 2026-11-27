@@ -8,6 +8,8 @@ import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { watOfSource } from '@encantis/compiler/test-utils'
+import { optimizeWasm, watToWasm } from './wasm'
 
 const CLI = join(import.meta.dir, 'cli.ts')
 
@@ -453,6 +455,70 @@ Bun.plugin({
     expect(throws.exitCode).toBe(1)
     expect(throws.written).toBeNull()
     expect(throws.stderr).toContain('Error: binaryen failed: Aborted(')
+  }, 60_000)
+
+  // binaryen assumes traps happen (wasm.ts), so the release build of a loop
+  // does what the unoptimized one does: a walk that leaves memory traps at
+  // the first element past it (#161), and a pass that assigns i past a
+  // signed count is the last (#257).
+  test('a release build keeps what a loop does', async () => {
+    const source = `
+export func count32(s: []u32) -> (n: u32) {
+  for x in s { n += 1 }
+}
+export func huge(a: u32) -> (t: u32) {
+  let p = a as *[1073741823]u32
+  for x in p {
+    t += 1
+    break when t == 100000
+  }
+}
+export func high(n: i32) -> (t: u32) {
+  for i in n {
+    t += 1
+    if t == 1 { i = 0x80000000 }
+    break when t > 10
+  }
+}
+`
+    const debug = await watToWasm('loops.ents', watOfSource(source))
+    for (const wasm of [debug, await optimizeWasm(debug, 'release')]) {
+      const m = (await WebAssembly.instantiate(wasm, {})).instance.exports as Record<string, (...args: number[]) => number>
+      expect(m.count32(65536 - 16, 4)).toBe(4)
+      expect(() => m.count32(64, 0x40000001)).toThrow('Out of bounds')
+      expect(() => m.huge(4096)).toThrow('Out of bounds')
+      expect(m.high(5)).toBe(1)
+    }
+  }, 60_000)
+
+  // release() has a try that runs binaryen's rse pass once before -Oz, and
+  // keeps it where it is the smallest: this module is 4 bytes smaller with it
+  // (110 bytes against 114, with the binaryen package.json pins). Without the
+  // pass, here a binaryen whose runPasses does nothing, that try is the plain
+  // -Oz one. (#172; without the try, release builds of examples/ and lib/
+  // are 45 bytes larger.)
+  test('--release keeps the try that runs rse first where it is smaller', async () => {
+    const source = `export "mem" memory
+type Tree = (kids: []Tree, v: u32)
+export func depth(t: Tree) -> u32 {
+  let deepest: u32 = 0
+  for k in t.kids {
+    deepest = max(deepest, depth(k))
+  }
+  return deepest + 1
+}
+`
+    const binaryen = (await import('binaryen')).default
+    const noPasses = Object.create(binaryen)
+    noPasses.readBinary = (bytes: Uint8Array) => {
+      const module = binaryen.readBinary(bytes)
+      module.runPasses = () => {}
+      return module
+    }
+    const debug = await watToWasm('rse.ents', watOfSource(source))
+    const withRse = await optimizeWasm(debug, 'release')
+    const withoutRse = await optimizeWasm(debug, 'release', async () => noPasses)
+    expect(withRse.length).toBeLessThan(withoutRse.length)
   }, 60_000)
 })
 
