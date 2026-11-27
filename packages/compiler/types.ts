@@ -63,6 +63,7 @@ export type ResolvedType =
   | NamedRT
   | ForwardRefRT
   | HostRT
+  | EnumRT
 
 // Primitive types: i32, u8, f64, bool, etc.
 // For unsigned integers, max is an optional upper bound (exclusive): u8#16 means [0, 16)
@@ -177,6 +178,29 @@ export interface HostRT {
   kind: 'host'
   name: string
   optional?: boolean // true for ?Canvas
+}
+
+// An enum, a tagged union: a value is one of its variants, each with its
+// payload, a field list as a struct's, or none (a unit variant). A variant's
+// tag is its place in the list, from 0. Its identity is structural, as a
+// struct's is: two enums are one type when their variants are alike, name by
+// name, in order, with the same payloads (typeEquals). Its name is a NamedRT
+// around it, as a struct's is.
+export interface EnumRT {
+  kind: 'enum'
+  variants: EnumVariantRT[]
+  // The name it is declared with, for messages only: it is not part of the
+  // type (two enums alike in their variants are one type, whatever they are
+  // called), and a type that names it shows its own name (NamedRT).
+  name?: string
+}
+
+export interface EnumVariantRT {
+  name: string
+  // null for a unit variant
+  fields: ResolvedField[] | null
+  // Where the variant's name is written, as a field's (FieldPlace)
+  at?: FieldPlace
 }
 
 // Forward reference - a type named before it is resolved: one declared further
@@ -451,9 +475,27 @@ export function heldIn<T extends ResolvedType>(t: ResolvedType, picks: (t: Resol
         if (found) return found
       }
       return null
+    case 'enum':
+      for (const v of t.variants) {
+        for (const f of v.fields ?? []) {
+          const found = heldIn(f.type, picks, seen)
+          if (found) return found
+        }
+      }
+      return null
     default:
       return null
   }
+}
+
+const isEnum = (t: ResolvedType): t is EnumRT => t.kind === 'enum'
+
+// The first enum a type holds by value, at any depth (the type itself, a
+// field, an element), or null. A value that holds one has no one list of
+// scalars at fixed offsets in memory (memoryParts): which bytes it has
+// depends on its variant.
+export function enumIn(t: ResolvedType): EnumRT | null {
+  return heldIn(t, isEnum)
 }
 
 const isHost = (t: ResolvedType): t is HostRT => t.kind === 'host'
@@ -668,6 +710,18 @@ export function typeEquals(a: ResolvedType, b: ResolvedType, assumed?: Assumed):
 
     case 'host':
       return a.name === (b as HostRT).name && !!a.optional === !!(b as HostRT).optional
+
+    case 'enum': {
+      const bEnum = b as EnumRT
+      if (a.variants.length !== bEnum.variants.length) return false
+      return a.variants.every((v, i) => {
+        const w = bEnum.variants[i]
+        if (v.name !== w.name || (v.fields === null) !== (w.fields === null)) return false
+        if (v.fields === null || w.fields === null) return true
+        const fs = w.fields
+        return v.fields.length === fs.length && v.fields.every((f, j) => fieldEquals(f, fs[j], assumed))
+      })
+    }
   }
 }
 
@@ -1188,7 +1242,29 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
 
     case 'host':
       return `${t.optional ? '?' : ''}${t.name}`
+
+    case 'enum':
+      return t.name ?? enumText(t, opts)
   }
+}
+
+// An enum written out: enum { Red, Rgb(r: u8, g: u8, b: u8) }
+export function enumText(t: EnumRT, opts?: { compact?: boolean }): string {
+  const sep = opts?.compact ? ',' : ', '
+  return `enum { ${t.variants.map((v) => variantToString(v, opts)).join(sep)} }`
+}
+
+// A variant as it is declared: Red, Rgb(r: u8, g: u8, b: u8), Grey(u8)
+export function variantToString(v: EnumVariantRT, opts?: { compact?: boolean }): string {
+  const sep = opts?.compact ? ',' : ', '
+  return v.fields === null ? v.name : `${v.name}(${v.fields.map((f) => fieldToString(f, opts)).join(sep)})`
+}
+
+// A payload variant as the function its constructor is, what it is built
+// from and the enum it makes: (r: u8, g: u8, b: u8) -> Color. A unit
+// variant is its enum alone.
+export function variantSignature(v: EnumVariantRT, enumName: string): string {
+  return v.fields === null ? enumName : `(${v.fields.map((f) => fieldToString(f)).join(', ')}) -> ${enumName}`
 }
 
 function fieldToString(f: ResolvedField, opts?: { compact?: boolean }): string {
@@ -1447,6 +1523,136 @@ export function memoryParts(t: ResolvedType): MemoryPart[] | null {
   }
 }
 
+// === Enums ===
+
+// The wasm values a value of a type held by value is laid out in, in order:
+// a number, a bool, a pointer or a function one; a slice two (ptr, then len);
+// a wide integer its 64-bit limbs, least significant first; a struct or tuple
+// its fields in turn, a fixed array its elements in turn; a host reference an
+// externref; an enum its i32 tag, then its slots (enumSlots). Comptime types
+// have none: they are given a concrete type before they are laid out.
+export function wasmTypes(t: ResolvedType): string[] {
+  const u = unwrap(t)
+  switch (u.kind) {
+    case 'primitive': {
+      if (['i8', 'i16', 'u8', 'u16', 'i32', 'u32', 'bool'].includes(u.name)) return ['i32']
+      if (u.name === 'i64' || u.name === 'u64') return ['i64']
+      if (u.name === 'f32') return ['f32']
+      if (u.name === 'f64') return ['f64']
+      const size = primitiveByteSize(u)
+      if (size !== null && size >= 16) return Array(size / 8).fill('i64')
+      throw new Error(`Unknown primitive type: ${u.name}`)
+    }
+    case 'pointer':
+      return ['i32']
+    case 'slice':
+      return ['i32', 'i32']
+    case 'array':
+      if (u.sizes && u.sizes.length === 1 && typeof u.sizes[0] === 'number') {
+        const elemTypes = wasmTypes(u.element)
+        return Array(u.sizes[0]).fill(elemTypes).flat()
+      }
+      // Non-value arrays (many-pointer, framed) are pointers
+      return ['i32']
+    case 'comptime_array': {
+      const elemTypes = wasmTypes(u.element)
+      return Array(u.count).fill(elemTypes).flat()
+    }
+    case 'tuple':
+      return u.fields.flatMap((f) => wasmTypes(f.type))
+    case 'func':
+      return ['i32']
+    case 'void':
+      return []
+    case 'host':
+      return ['externref']
+    case 'enum':
+      return ['i32', ...enumSlots(u)]
+    case 'comptime_int':
+      throw new Error('comptime_int should be concretized before codegen')
+    case 'comptime_float':
+      throw new Error('comptime_float should be concretized before codegen')
+    case 'comptime_list':
+      throw new Error('comptime_list should be concretized before codegen')
+    default:
+      throw new Error(`Unknown type kind: ${(u as ResolvedType).kind}`)
+  }
+}
+
+const slotsOf = new WeakMap<EnumRT, string[]>()
+
+// The slots of an enum in registers, after its i32 tag (reference 2.9). Each
+// variant's payload is laid out as the struct of its fields would be
+// (wasmTypes), and slot j holds the j-th wasm value of every variant whose
+// list reaches j: its type is the one type those values have, else i64 where
+// one of them is 64 bits, else i32 (i32s and f32s). So there are as many
+// slots as the longest list, and a value is never moved to another slot.
+export function enumSlots(e: EnumRT): string[] {
+  const known = slotsOf.get(e)
+  if (known) return known
+  const lists = e.variants.map((v) => (v.fields ?? []).flatMap((f) => wasmTypes(f.type)))
+  const count = lists.reduce((n, list) => Math.max(n, list.length), 0)
+  const slots: string[] = []
+  for (let j = 0; j < count; j++) {
+    const at = new Set(lists.filter((list) => list.length > j).map((list) => list[j]))
+    slots.push(at.size === 1 ? [...at][0] : at.has('i64') || at.has('f64') ? 'i64' : 'i32')
+  }
+  slotsOf.set(e, slots)
+  return slots
+}
+
+// How a value of wasm type `from` goes into a slot of type `to`, and comes
+// back out, bit for bit (reference 2.9): the instructions to wrap around it,
+// innermost first. Empty where the two are one type.
+export function slotConversion(from: string, to: string): { into: string[]; out: string[] } {
+  if (from === to) return { into: [], out: [] }
+  if (from === 'i32' && to === 'i64') return { into: ['i64.extend_i32_u'], out: ['i32.wrap_i64'] }
+  if (from === 'f64' && to === 'i64') return { into: ['i64.reinterpret_f64'], out: ['f64.reinterpret_i64'] }
+  if (from === 'f32' && to === 'i32') return { into: ['i32.reinterpret_f32'], out: ['f32.reinterpret_i32'] }
+  if (from === 'f32' && to === 'i64') return { into: ['i32.reinterpret_f32', 'i64.extend_i32_u'], out: ['i32.wrap_i64', 'f32.reinterpret_i32'] }
+  throw new Error(`no slot conversion from ${from} to ${to}`)
+}
+
+// The wasm values of a variant's payload, in order (its list), empty for a
+// unit variant
+export function variantValues(v: EnumVariantRT): string[] {
+  return (v.fields ?? []).flatMap((f) => wasmTypes(f.type))
+}
+
+// An enum in memory (reference 2.9): its tag, the smallest unsigned integer
+// that counts its variants (1 byte for up to 256, 2 for up to 65536, else 4),
+// then the payload of the variant it holds, its fields packed as a struct's,
+// then padding up to the largest payload. Null where a payload has no size.
+export interface EnumLayout {
+  tag: PrimitiveRT
+  tagBytes: 1 | 2 | 4
+  size: number
+}
+
+export function enumLayout(e: EnumRT): EnumLayout | null {
+  const tagBytes = e.variants.length <= 256 ? 1 : e.variants.length <= 65536 ? 2 : 4
+  let largest = 0
+  for (const v of e.variants) {
+    let size = 0
+    for (const f of v.fields ?? []) {
+      const n = byteSize(f.type)
+      if (n === null) return null
+      size += n
+    }
+    largest = Math.max(largest, size)
+  }
+  return { tag: primitive(tagBytes === 1 ? 'u8' : tagBytes === 2 ? 'u16' : 'u32'), tagBytes, size: tagBytes + largest }
+}
+
+// A variant as it lies in memory: the struct (tag: uN, fields...) of that
+// variant, which a store of the variant writes and a load of it reads. Its
+// padding is not part of it.
+export function variantStruct(e: EnumRT, k: number): TupleRT {
+  const layout = enumLayout(e)
+  const tag = layout?.tag ?? primitive('u8')
+  return tuple([{ name: null, type: tag }, ...(e.variants[k].fields ?? [])])
+}
+
 // Check if comptime int value fits in a given integer type, or is exact in a
 // given float type
 export function comptimeIntFits(value: bigint, target: PrimitiveRT): boolean {
@@ -1496,6 +1702,9 @@ export function byteSize(t: ResolvedType): number | null {
 
     case 'void':
       return 0
+
+    case 'enum':
+      return enumLayout(u)?.size ?? null
 
     default:
       return null
@@ -1608,6 +1817,10 @@ function partsOf(t: ResolvedType, byValue: boolean): [readonly Part[], number] {
       return [[...t.params, ...t.returns].map((f) => at(f.type, true)), 1]
     case 'comptime_list':
       return [t.elements.map((e) => at(e)), 1]
+    case 'enum':
+      // The enum counts 1, each variant 1, and each payload field what its
+      // type counts, as a struct's field does.
+      return [t.variants.flatMap((v) => (v.fields ?? []).map((f) => at(f.type))), 1 + t.variants.length]
     default:
       return [[], 1]
   }
@@ -1673,6 +1886,10 @@ export function typeRegisters(t: ResolvedType, memo: Map<ResolvedType, number> =
     case 'void':
       n = 0
       break
+    case 'enum':
+      // The tag, then the slots (enumSlots)
+      n = 1 + enumSlots(t).length
+      break
     default:
       // A pointer, a function (a table index), a number not yet given a type
       n = 1
@@ -1695,7 +1912,7 @@ export function shownApart(a: ResolvedType, b: ResolvedType): [string, string] {
       const own = typeToString(u)
       return own === shown ? `${shown} (a host type)` : `${shown} (host type ${own})`
     }
-    const plain = typeToString(u)
+    const plain = u.kind === 'enum' ? enumText(u) : typeToString(u)
     return plain === shown ? shown : `${shown} (${plain})`
   }
   return [standsFor(a, sa), standsFor(b, sb)]
@@ -1792,6 +2009,10 @@ export function canonicalKey(t: ResolvedType, open: readonly { name: string; dep
       // The names of parameters and results are not part of a function's
       // type: (x: i32) -> i32 and (y: i32) -> i32 take the same functions.
       return `(${fields(t.params, false)})->(${fields(t.returns, false)})`
+    case 'enum':
+      // Its structure: the variants, their names and payloads, in order
+      // (enum(Red,Rgb(r:u8,g:u8,b:u8))). Its name is not part of it.
+      return `enum(${t.variants.map((v) => (v.fields === null ? v.name : `${v.name}(${fields(v.fields, true)})`)).join(',')})`
     default:
       throw new Error(`not a concrete type: ${t.kind}`)
   }

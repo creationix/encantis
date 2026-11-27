@@ -10,6 +10,7 @@ import {
   serializeFloat,
   serializeF64,
   bigintReplacer,
+  decimalF32,
 } from './utils'
 
 describe('hex encoding', () => {
@@ -184,5 +185,24 @@ describe('bigintReplacer', () => {
     const obj = { num: 42, big: 9007199254740993n, str: 'hello' }
     const json = JSON.stringify(obj, bigintReplacer)
     expect(json).toBe('{"num":42,"big":"9007199254740993","str":"hello"}')
+  })
+})
+
+describe('decimalF32', () => {
+  test('the f32 nearest the decimals, where the f64 they are read as is halfway between two', () => {
+    // Just past, just short of, and at the midpoint 1 + 2^-24
+    expect(decimalF32('1.0000000596046448')).toBe(1 + 2 ** -23)
+    expect(decimalF32('-1.0000000596046448')).toBe(-(1 + 2 ** -23))
+    expect(decimalF32('1.0000000596046447')).toBeUndefined()
+    expect(decimalF32('1.000000059604644775390625')).toBeUndefined()
+    // Below the midpoint 1 + 3 * 2^-24, which ties to the f32 above it
+    expect(decimalF32('1.0000001788139343')).toBe(1 + 2 ** -23)
+    // Past the largest f32 but short of halfway to 2^128, and half the
+    // smallest one, just past
+    expect(decimalF32('3.4028235677973366e38')).toBe(3.4028234663852886e38)
+    expect(decimalF32('7.0064923216240854e-46')).toBe(2 ** -149)
+    // No midpoint: what Math.fround gives
+    expect(decimalF32('0.1')).toBeUndefined()
+    expect(decimalF32('1.5')).toBeUndefined()
   })
 })

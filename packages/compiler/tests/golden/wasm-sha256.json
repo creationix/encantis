@@ -56,6 +56,7 @@
   "examples/types/data-structs.ents": "3c0ae9e08603aad692778b704af044834f011695994ab2da5e2ed13935410ea1",
   "examples/types/defer.ents": "dbcd914bbef5752c62734e6309e022d4badefc306f95ef0247aaa92284e49669",
   "examples/types/defs.ents": "5478ebdc949b888eca5e36670902f07b50245dfe76c282e169b844ce47f2b12c",
+  "examples/types/enums.ents": "84c1f9cbb6fee4bc59669c2d278bc10cff0df00991ee69c41af64e2b80ba4326",
   "examples/types/for-continue.ents": "932bfb188755589a09820dfe59feee6a1ffcef8839eb9e0430e8015a81f7e723",
   "examples/types/for-elements.ents": "c75ccc8c50052ff3cfd27d8511c23afcc2c937d659bf2b630160672ba0ef06c5",
   "examples/types/global-constants.ents": "5e2a39a9465c2e87d7b1ec5efc00dfb3ab71699979912a62175f96a46d0fadcb",

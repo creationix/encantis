@@ -1,0 +1,79 @@
+// Enums (reference 2.9). In registers a value is an i32 tag and the slots of
+// its payload; in memory it is its tag and payload, byte-packed. A match takes
+// one apart and handles every variant; if let and elif let take one variant.
+
+type Point = (x: f32, y: f32)
+enum Shape { Dot(Point), Circle(at: Point, r: f32), Box(min: Point, max: Point) }
+
+export func area(s: Shape) -> f32 => match s {
+  Dot(_) => 0.0
+  Circle(r:) => 3.0 * r * r
+  Box(min:, max:) => (max.x - min.x) * (max.y - min.y)
+}
+
+data shapes = [Box(Point(0.0, 0.0), Point(4.0, 2.0)), Circle(Point(1.0, 3.0), 1.0)]
+
+// A shape in memory is loaded whole, then matched
+export func centre(p: *Shape) -> Point => match p.* {
+  Dot(at) => at
+  Circle(at:) => at
+  Box(min:, max:) => Point((min.x + max.x) / 2.0, (min.y + max.y) / 2.0)
+}
+
+// The program of an accumulator machine, laid out as data: each op a u8 tag
+// and four bytes of payload
+enum Op { Set(u32), Add(u32), Mul(u32), Stop }
+
+data program: *[5]Op = [Set(2), Add(3), Mul(4), Stop, Add(100)]
+data code = mut [Set(1), Add(1), Stop]
+
+global last: Op = Stop
+
+// Runs ops to the first Stop
+export func run(ops: []Op) -> u32 {
+  let acc = 0:u32
+  for op in ops {
+    last = op
+    match op {
+      Set(n) => { acc = n }
+      Add(n) => { acc += n }
+      Mul(n) => { acc *= n }
+      Stop => { break }
+    }
+  }
+  return acc
+}
+
+// What an op takes, where it takes something
+export func operand(op: Op) -> u32 => if let Set(n) = op { n } elif let Add(n) = op { n } elif let Mul(n) = op { n } else { 0 }
+
+// A variant stored in place writes its tag and fields, never the padding
+export func patch(p: *mut Op, op: Op) {
+  p.* = op
+}
+
+test "a match handles every variant" {
+  assert area(Dot(Point(1.0, 1.0))) == 0.0
+  assert area(Circle(Point(0.0, 0.0), 2.0)) == 12.0
+  assert area(Box(min: Point(0.0, 0.0), max: Point(3.0, 2.0))) == 6.0
+}
+
+test "a shape through a pointer" {
+  let c = centre(&shapes[0])
+  assert c.x == 2.0 && c.y == 1.0
+  assert centre(&shapes[1]).y == 3.0
+  assert sizeof(Shape) == 17
+}
+
+test "the program runs to its Stop" {
+  assert run(program) == 20
+  assert if let Stop = last { true } else { false }
+  assert operand(Mul(7)) == 7 && operand(Stop) == 0
+}
+
+test "an op stored through a pointer" {
+  assert run(code) == 2
+  patch(&code[1], Mul(9))
+  assert run(code) == 9
+  assert sizeof(Op) == 5
+}

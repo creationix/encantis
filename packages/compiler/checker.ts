@@ -2,8 +2,9 @@
 // Produces a TypeCheckResult with concrete types attached to all AST nodes
 
 import type * as AST from './ast'
-import { argValue, ungroupedType, walkFuncBody, walkStatement } from './ast'
+import { argValue, negatedLiteral, ungroupedType, walkFuncBody, walkStatement } from './ast'
 import { isSourceImport, resolveModulePath } from './loader'
+import { f32Of } from './utils'
 import {
   type ResolvedType,
   type ForwardRefRT,
@@ -41,6 +42,11 @@ import {
   MAX_TYPE_PARTS,
   typeRegisters,
   hostRegisters,
+  enumIn,
+  heldIn,
+  variantToString,
+  type EnumRT,
+  type EnumVariantRT,
   shownApart,
   MAX_PARAM_REGISTERS,
   MAX_RESULT_REGISTERS,
@@ -84,7 +90,9 @@ import {
 // parameter is given
 export type ComptimeValue =
   | { kind: 'int'; value: bigint }
-  | { kind: 'float'; value: number }
+  // f32: a literal's own f32, where it is not the f32 nearest `value`
+  // (AST.LiteralValue)
+  | { kind: 'float'; value: number; f32?: number }
   | { kind: 'bool'; value: boolean }
   | { kind: 'data_ptr'; id: number }  // pointer to data section literal (id is AST offset for literalRefs lookup)
   | { kind: 'type'; type: ResolvedType }  // the argument of `comptime T: type`
@@ -109,6 +117,9 @@ export type Symbol =
   | { kind: 'local'; type: ResolvedType; binding?: BindingKind }
   | { kind: 'param'; type: ResolvedType }
   | { kind: 'return'; type: ResolvedType }
+  // A variant of an enum: `type` is the enum, under its name; `index` its
+  // tag, its place in the declaration
+  | { kind: 'variant'; type: ResolvedType; index: number }
   // A function with comptime parameters. It has no type of its own: each
   // distinct set of comptime arguments is an instance, which is an ordinary
   // function. `valid` is false when its declaration already has an error, so
@@ -210,6 +221,42 @@ const MAX_APPLY_DEPTH = 1000
 // identity, so that what the expression is used for stays silent about it.
 const RECOVERY: ResolvedType = primitive('i32')
 
+// Whether the binding of a pattern declared at `offset` (a match arm's, an if
+// let's) is a refused value: a name of a refused pattern. The editor shows it
+// with no type, where it is bound and where it is used.
+export const refusedBindingAt = (check: TypeCheckResult, offset: number): boolean => check.types.get(typeKey(offset, 'Binding')) === RECOVERY
+
+// The variant a variant pattern written at `offset` names where it is no
+// variant of the module's (of an enum another module declares, which a
+// function of it returns, or of one whose variant's name the module gave to
+// an enum declared first): the enum it takes apart and the variant's place
+// in it. The module has no declaration of it to go to.
+export function foreignVariantAt(check: TypeCheckResult, offset: number): { enumType: ResolvedType; variant: EnumVariantRT; index: number } | null {
+  // In a generic's body the pattern is checked in each instance, at its
+  // offset there: the first instance's answers (each takes the same enum
+  // apart, the one a function of the other module returns).
+  let at = offset
+  let enumType = check.patternEnums.get(offset)
+  if (!enumType && offset < INSTANCE_STRIDE) {
+    for (const [k, t] of check.patternEnums) {
+      if (k % INSTANCE_STRIDE === offset && (!enumType || k < at)) {
+        at = k
+        enumType = t
+      }
+    }
+  }
+  const e = enumType && unwrap(enumType)
+  if (!enumType || e?.kind !== 'enum' || check.symbolRefs.has(offset) || check.symbolRefs.has(at)) return null
+  const pattern = [...check.patternVariants].find(([p]) => (p.kind === 'variant' || p.kind === 'constructor') && p.span.start === at)
+  if (!pattern) return null
+  return { enumType, variant: e.variants[pattern[1]], index: pattern[1] }
+}
+
+// Whether a type is a refused value's (a name of a refused pattern, a
+// variable given a refused operator's result, a type that did not resolve):
+// the editor has no type to show for it.
+export const isRefusedType = (type: ResolvedType | undefined): boolean => type === RECOVERY
+
 export interface Scope {
   parent: Scope | null
   symbols: Map<string, Symbol>
@@ -224,8 +271,9 @@ export type BindingKind = 'loop' | 'if let' | 'match'
 
 // What makes a declaration the checker can meet more than once: a pattern of
 // a let, a named element of one, the variables of a for, an if let or elif
-// let, a match arm (see CheckContext.declared).
-type Declaration = AST.Pattern | AST.PatternElement | AST.ForBinding | AST.IfExpr | AST.ElifBranch | AST.MatchArm
+// let, a match arm (see CheckContext.declared), and
+// a match on an enum, whose coverage is said once.
+type Declaration = AST.Pattern | AST.PatternElement | AST.ForBinding | AST.IfExpr | AST.ElifBranch | AST.MatchArm | AST.MatchExpr
 
 // === Type Key Helper ===
 
@@ -337,6 +385,25 @@ export interface TypeCheckResult {
   // Ranges assigned one value that every element of them gets (a fill,
   // `p[a..b] = v`), as opposed to the elements of an array to copy in.
   fills: Set<AST.SliceExpr>
+  // The variant each value of an enum written as a variant is, by its tag:
+  // a unit variant's name (Red) and a variant's constructor (Rgb(1, 2, 3)).
+  // Its type in exprTypes is the enum.
+  variants: Map<AST.Expr, number>
+  // The payload of each variant constructor: the tuple of its arguments,
+  // whose type in exprTypes is the struct of the variant's fields, and whose
+  // field order (fieldOrder) is that of a constructor of that struct.
+  payloads: Map<AST.CallExpr, AST.TupleExpr>
+  // The variant each accepted variant pattern of a match, an if let or an
+  // elif let names, by its tag in the enum of the value it takes apart
+  patternVariants: Map<AST.MatchPattern, number>
+  // The enum each accepted variant pattern takes apart, by where the
+  // pattern's name is written: the editor's answer there where the enum is
+  // not the module's own (another module's, which a function of it returns)
+  patternEnums: Map<number, ResolvedType>
+  // The declarations of capitalised names declared second to one of their
+  // name (a type, an enum, a variant, a generic type): left out, as 2.9 says,
+  // so the editor answers for none of their names
+  leftOut: WeakSet<object>
   // Functions of other source modules that this module's code calls by a
   // name of its own (see CheckContext.externs): by that name, the path of
   // the module that has the function and the name it is known by there.
@@ -429,6 +496,9 @@ type ModuleSizeUse = { at: number; n: number; shown: string | null; host?: numbe
 // The advice where host references take a count over its limit: they have no
 // memory to go to.
 const HOLD_FEWER = 'a host reference is held only in registers, never in memory: hold fewer at once'
+// An enum's value is held whole in registers wherever it is used: a load, a
+// store and a match take all of it, so a large payload goes behind a pointer.
+const ENUM_HELD_WHOLE = 'an enum is held whole in registers wherever its value is used (a load, a store, a match): keep a large payload behind a pointer (a field *[N]T, not [N]T)'
 
 function checkModuleSize(modules: readonly { ctx: CheckContext; module: AST.Module; entry: boolean }[]): void {
   const counted = modules.map(({ ctx, module, entry }) => ({ ctx, uses: ctx.moduleSizeUses(module, entry) }))
@@ -553,6 +623,11 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     unproven: ctx.unproven,
     addressed: ctx.addressed,
     fills: ctx.fills,
+    variants: ctx.variants,
+    payloads: ctx.payloads,
+    patternVariants: ctx.patternVariants,
+    patternEnums: ctx.patternEnums,
+    leftOut: ctx.declaredSecond,
     externs: ctx.externs,
     calledFromInstances: ctx.calledFromInstances,
     tag: ctx.moduleTag(),
@@ -927,6 +1002,30 @@ class CheckContext {
   // constant: the values of a literal are worked out at the end of the
   // function, when its names are no longer in scope.
   readAs = new WeakMap<AST.IdentExpr, Symbol>()
+  // Names that are called, Point(1, 2): a type's name is a value there only
+  private callees = new WeakSet<AST.IdentExpr>()
+  // The declarations of capitalised names (types, enums, variants, generic
+  // types, declared or imported) that come second to a declaration of their
+  // name in the module: refused, and left out (see checkCapitalisedNames)
+  declaredSecond = new WeakSet<object>()
+  // The variants of the module's enums by name, whatever order they are
+  // declared in: a type that names one is told it is a variant
+  private variantNames = new Map<string, string>()
+  // The variants' names of the enums left out (declared second), which take
+  // no name: a use of one that names nothing else is a refused value
+  private leftOutVariants = new Set<string>()
+  // The variants each enum of the module binds, by the enum's name
+  private enumVariants = new Map<string, string[]>()
+  // The variant each variant value and constructor is (see
+  // TypeCheckResult.variants)
+  variants = new Map<AST.Expr, number>()
+  // The payload of each variant constructor, as the tuple of its arguments
+  // (see TypeCheckResult.payloads)
+  payloads = new Map<AST.CallExpr, AST.TupleExpr>()
+  // The variant each variant pattern names (see TypeCheckResult.patternVariants)
+  patternVariants = new Map<AST.MatchPattern, number>()
+  // The enum each one takes apart (see TypeCheckResult.patternEnums)
+  patternEnums = new Map<number, ResolvedType>()
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
   statementExprs = new Set<AST.Expr>()
@@ -963,6 +1062,10 @@ class CheckContext {
   moduleScope: Scope = { parent: null, symbols: new Map() }
   currentScope: Scope = this.moduleScope
   insideIfLetCondition = false
+  // Inside a value read at run time given for a comptime value parameter,
+  // which is that one error: an index in it is not told it needs an if let
+  // (evalComptimeArg)
+  runTimeArgument = 0
   currentReturnType: ResolvedType | null = null
   // The named results an expression body is being checked against, when
   // there are several: its value fills them in order.
@@ -1088,6 +1191,15 @@ class CheckContext {
   testDeclared = new Set<Symbol>()
   // Names of generics that a later declaration tried to take
   contested = new Set<string>()
+  // Where a def's value is put in for its name, by the parser
+  // (Module.defUses): the offset of the name, and the def's declaration
+  private defUseAt = new Map<number, number>()
+  // The defs whose value is refused, by where each is declared, with the
+  // length of its name: a use of one is a refused value (refusedDefUse)
+  private refusedDefs = new Map<number, number>()
+  // The matches on an enum this check found to handle every variant, or to
+  // have a _ arm: no value falls through one (exprTerminates)
+  private exhaustive = new WeakSet<AST.MatchExpr>()
   // The module's generic types, in the order they are declared, and how deep
   // in applications of them a type is being resolved
   typeFuncs: (Symbol & { kind: 'typefunc' })[] = []
@@ -1186,8 +1298,30 @@ class CheckContext {
     this.error(at, `cannot ${doing} ${shown}: ${holds}a host reference has no bytes, so it is never in memory (hold it in a variable, a parameter or a global)`)
   }
 
+  // The elements of null-terminated arrays written while the module's types
+  // are declared, checked once they are (see noEnumIn)
+  private framedChecks: { element: ResolvedType; at: number }[] | null = []
+
+  // A null-terminated array of what holds an enum by value, at any depth,
+  // is refused: the enum, or the element and the enum it holds.
+  private noEnumIn(element: ResolvedType, at: number): void {
+    if (this.framedChecks) {
+      this.framedChecks.push({ element, at })
+      return
+    }
+    const held = heldIn(element, (t): t is ResolvedType => t.kind === 'enum' || (t.kind === 'named' && unwrap(t).kind === 'enum'))
+    if (!held) return
+    const shown = typeToString(element)
+    const holds = unwrap(element) === unwrap(held) ? '' : ` holds ${typeToString(held)}`
+    this.error(at, `a null-terminated array of an enum is not supported yet: ${shown}${holds}`)
+  }
+
   // The types of the module are declared: what waited for them is checked.
   private typesDeclared(): void {
+    this.checkPayloads()
+    const framed = this.framedChecks ?? []
+    this.framedChecks = null
+    for (const check of framed) this.noEnumIn(check.element, check.at)
     const waiting = this.hostChecks ?? []
     this.hostChecks = null
     for (const check of waiting) {
@@ -1227,7 +1361,10 @@ class CheckContext {
       for (const leaf of this.literalLeaves(expr)) {
         if (this.constants.has(leaf)) continue
         const value = this.evalComptimeExpr(leaf, true)
-        if (value && value.kind !== 'type' && value.kind !== 'func') this.constants.set(leaf, value)
+        // An f32 is rounded to one before an f64 element widens it, as it
+        // is in code: (-k) for a `def k: f32 = 0.1` is the f32 nearest -0.1.
+        const own = this.exprTypes.get(leaf)
+        if (value && value.kind !== 'type' && value.kind !== 'func') this.constants.set(leaf, isF32(own) ? constantIn(value, own as ResolvedType) : value)
       }
     }
     this.literalsSettled = this.pendingLiterals.length
@@ -1255,9 +1392,27 @@ class CheckContext {
   // or of a struct written as a constructor, the two parts of a slice pair.
   private literalLeaves(expr: AST.Expr, leaves: AST.Expr[] = []): AST.Expr[] {
     let e = ungrouped(expr)
-    while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+    const annotated = e
+    let f32 = false
+    while (e.kind === 'AnnotationExpr') {
+      f32 ||= isF32(this.exprTypes.get(e))
+      e = ungrouped(e.expr)
+    }
+    // A number written as an f32 (0.1:f32, a typed def's value where its
+    // name is written) is that f32, which an f64 element widens: it is worked
+    // out as a computed value is, not laid out as the number written. So is
+    // one an f32 on the way to it: (0.1:f32):f64, and a `def wide: f64 = k`
+    // for a `def k: f32 = 0.1`, whose value is k's in f32, then widened.
+    if (annotated !== e && e.kind === 'LiteralExpr' && (e.value.kind === 'float' || e.value.kind === 'int') && f32) {
+      leaves.push(annotated)
+      return leaves
+    }
     switch (e.kind) {
       case 'LiteralExpr':
+        break
+      case 'IdentExpr':
+        // A unit variant is its tag
+        if (!this.variants.has(e)) leaves.push(e)
         break
       case 'ArrayExpr':
         for (const element of e.elements) this.literalLeaves(element, leaves)
@@ -1269,6 +1424,9 @@ class CheckContext {
         for (const element of e.elements) if (element.value) this.literalLeaves(element.value, leaves)
         break
       case 'CallExpr': {
+        // A variant's constructor is its tag and its payload's values
+        const payload = this.payloads.get(e)
+        if (payload) return this.literalLeaves(payload, leaves)
         const built = this.calls.get(e)
         if (built?.kind === 'TupleExpr') return this.literalLeaves(built, leaves)
         if (e.callee.kind === 'IdentExpr' && this.lookup(e.callee.name)?.kind === 'type') {
@@ -1285,6 +1443,9 @@ class CheckContext {
   }
 
   checkModule(module: AST.Module): void {
+    for (const { decl, at } of module.defUses ?? []) this.defUseAt.set(at, decl)
+    // Each capitalised name is declared once in its module: said first.
+    this.checkCapitalisedNames(module)
     // Pre-pass: register all type names (to allow forward references)
     for (const decl of module.decls) {
       this.preRegisterTypes(decl)
@@ -1296,13 +1457,13 @@ class CheckContext {
     // declaration can name a type declared below it, also in an initializer
     // that is checked where it is collected.
     for (const decl of module.decls) {
-      if (decl.kind === 'TypeDecl') this.collectDeclaration(decl)
+      if (decl.kind === 'TypeDecl' || decl.kind === 'EnumDecl') this.collectDeclaration(decl)
     }
     this.recountGrownTypes()
     this.reportTooLargeTypes()
     this.typesDeclared()
     for (const decl of module.decls) {
-      if (decl.kind !== 'TypeDecl') this.collectDeclaration(decl)
+      if (decl.kind !== 'TypeDecl' && decl.kind !== 'EnumDecl') this.collectDeclaration(decl)
     }
 
     this.settleLiterals()
@@ -1377,10 +1538,11 @@ class CheckContext {
     if (declared.kind === 'ImportDecl') {
       for (const item of declared.items) if (item.item.kind !== 'ImportTypeFunc') this.valueNames.add(item.item.ident ?? item.name)
     }
-    if (decl.kind === 'TypeDecl') {
+    if (decl.kind === 'TypeDecl' && !this.declaredSecond.has(decl)) {
       this.pendingTypeNames.add(decl.ident.name)
-      if (!this.typeBodies.has(decl.ident.name)) this.typeBodies.set(decl.ident.name, decl.type)
+      this.typeBodies.set(decl.ident.name, decl.type)
     }
+    if (decl.kind === 'EnumDecl' && !this.declaredSecond.has(decl)) this.pendingTypeNames.add(decl.ident)
     // A generic type needs nothing resolved to be declared, so every
     // signature of the module can apply it, wherever it stands.
     const item = decl.kind === 'ExportDecl' ? decl.item : decl
@@ -1391,7 +1553,7 @@ class CheckContext {
       const depExports = this.exportsOf(decl)
       const missing = isSourceImport(decl.module) && this.filePath && this.moduleExports && !depExports
       for (const imported of decl.items) {
-        if (imported.item.kind !== 'ImportTypeFunc') continue
+        if (imported.item.kind !== 'ImportTypeFunc' || this.declaredSecond.has(imported.item)) continue
         // Of a module that is not there, the one error is that it is not.
         if (missing) this.unknownTypeFunc(imported.item, imported.span.start)
         else this.importTypeFunc(decl, imported, imported.item, depExports)
@@ -1417,6 +1579,9 @@ class CheckContext {
         break
       case 'TypeDecl':
         this.collectTypeDecl(decl)
+        break
+      case 'EnumDecl':
+        this.collectEnumDecl(decl)
         break
       case 'DataDecl':
         this.collectData(decl)
@@ -1700,10 +1865,7 @@ class CheckContext {
       this.unknownTypeFunc(imported, at)
       return
     }
-    if (this.moduleScope.symbols.has(name) || this.pendingTypeNames.has(name)) {
-      this.error(at, `'${name}' is already declared: a generic type's name is unique in its module`)
-      return
-    }
+    if (this.declaredSecond.has(imported) || this.moduleScope.symbols.has(name) || this.pendingTypeNames.has(name)) return
     this.moduleScope.symbols.set(name, exported)
     this.recordDefinition(name, at)
   }
@@ -1973,13 +2135,151 @@ class CheckContext {
     for (const { offset, message } of found.sort((a, b) => a.offset - b.offset)) this.error(offset, message)
   }
 
+  // Each name of the namespace of capitalised names (the module's types,
+  // host types among them, enums, their variants, and generic types, declared
+  // or imported) is declared once in its module. The declarations are taken
+  // in source order, an enum's name before its variants, and one whose name
+  // an earlier one has is refused where its name is written: the first
+  // stands everywhere. A `type`, enum or generic type declared second is left
+  // out, its body not checked. An enum one of whose variants is declared
+  // second is kept whole, as its type's structure, but that variant's name is
+  // the first declaration's.
+  private checkCapitalisedNames(module: AST.Module): void {
+    const first = new Map<string, number>()
+    const declare = (name: string, at: number, node: object) => {
+      const earlier = first.get(name)
+      if (earlier === undefined) {
+        first.set(name, at)
+        return
+      }
+      this.declaredSecond.add(node)
+      // Its uses are the first declaration's, and say nothing of the generic
+      // type a name may be (contested).
+      this.contested.add(name)
+      this.error(at, `'${name}' is already declared${this.firstDeclared(earlier)}`)
+    }
+    for (const decl of module.decls) {
+      const item = decl.kind === 'ExportDecl' ? decl.item : decl
+      if (item.kind === 'TypeDecl') declare(item.ident.name, item.ident.span.start, item)
+      else if (item.kind === 'TypeFuncDecl') declare(item.ident, this.nameAt(item.span.start), item)
+      else if (item.kind === 'EnumDecl') {
+        declare(item.ident, item.identSpan.start, item)
+        // An enum left out declares nothing, its variants no more than the
+        // rest: their names stay free for the module's other declarations.
+        if (this.declaredSecond.has(item)) {
+          for (const v of item.variants) this.leftOutVariants.add(v.name)
+          continue
+        }
+        for (const v of item.variants) {
+          declare(v.name, v.span.start, v)
+          if (!this.variantNames.has(v.name)) this.variantNames.set(v.name, item.ident)
+        }
+      } else if (item.kind === 'ImportDecl') {
+        for (const imported of item.items) {
+          if (imported.item.kind === 'ImportTypeFunc') declare(imported.item.ident, this.nameAt(imported.item.span.start), imported.item)
+        }
+      }
+    }
+  }
+
+  // Where a declaration's name is written, past the keywords it starts with
+  // (see firstDeclared)
+  private nameAt(offset: number): number {
+    if (!this.source) return offset
+    const keywords = /^(?:(?:export|inline|func|def|data|global|memory)\s+)+/.exec(this.source.slice(offset, offset + 64))
+    return keywords && /^[A-Za-z_]/.test(this.source.slice(offset + keywords[0].length)) ? offset + keywords[0].length : offset
+  }
+
+  // An enum: a type, under its name, whose values are its variants. Its
+  // payloads are resolved as a struct's fields are; each variant's name is a
+  // name of the module, for its values and constructors.
+  collectEnumDecl(decl: AST.EnumDecl): void {
+    const name = decl.ident
+    if (this.declaredSecond.has(decl)) return
+    this.declaringType = true
+    let resolved: ResolvedType
+    const variants: EnumVariantRT[] = []
+    try {
+      for (const v of decl.variants) {
+        variants.push({
+          name: v.name,
+          fields: v.fields ? v.fields.map((f) => this.declaredField(f, this.resolveType(f.type))) : null,
+          at: { file: this.filePath ?? '', offset: v.span.start },
+        })
+      }
+    } finally {
+      this.declaringType = false
+    }
+    resolved = { kind: 'enum', variants, name } satisfies EnumRT
+    // A payload's fields are a struct's: each name once.
+    for (const v of decl.variants) {
+      const seen = new Set<string>()
+      for (const f of v.fields ?? []) {
+        if (f.ident === null) continue
+        if (seen.has(f.ident)) this.error(f.identSpan?.start ?? f.span.start, `${v.name}: field '${f.ident}' is declared twice`)
+        seen.add(f.ident)
+      }
+    }
+    // What a payload cannot hold yet, once every type it names is declared
+    this.payloadChecks.push({ decl, type: resolved as EnumRT })
+    if (decl.variants.length === 0) {
+      // Zero would be no value of it, and a match on it could not cover it.
+      this.error(decl.identSpan.start, `enum '${name}' has no variants`)
+      resolved = RECOVERY
+    }
+    const refs = this.forwardRefs.get(name) ?? []
+    if (resolved !== RECOVERY && refs.length > 0 && containsByValue(resolved, refs)) {
+      this.error(decl.span.start, `type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`)
+      resolved = RECOVERY
+    }
+    this.moduleScope.symbols.set(name, { kind: 'type', type: resolved, unique: false })
+    this.typeCache.set(name, resolved)
+    this.recordDefinition(name, decl.identSpan.start)
+    this.typeDeclaredAt.set(name, decl.span.start)
+    this.pendingTypeNames.delete(name)
+    for (const ref of refs) ref.target = resolved === RECOVERY ? RECOVERY : named(name, resolved)
+    if (refs.length > 0) this.typesGrew = true
+    // Its variants, but one whose name an earlier declaration has
+    const valueType = resolved === RECOVERY ? RECOVERY : named(name, resolved)
+    const bound: string[] = []
+    decl.variants.forEach((v, index) => {
+      if (this.declaredSecond.has(v)) return
+      this.moduleScope.symbols.set(v.name, { kind: 'variant', type: valueType, index })
+      this.recordDefinition(v.name, v.span.start)
+      bound.push(v.name)
+    })
+    this.enumVariants.set(name, bound)
+    this.limitTypeParts([name])
+  }
+
+  // The enums whose payloads are checked once the types are declared (see
+  // checkPayloads)
+  private payloadChecks: { decl: AST.EnumDecl; type: EnumRT }[] = []
+
+  // A payload holds no host reference (a slot holds numbers, and a plain one
+  // has no zero) and no function value (none is compiled yet), by value at
+  // any depth. Said at the field.
+  private checkPayloads(): void {
+    for (const { decl, type } of this.payloadChecks) {
+      decl.variants.forEach((v, k) => {
+        (v.fields ?? []).forEach((f, j) => {
+          const t = type.variants[k].fields?.[j]?.type
+          if (!t) return
+          const host = hostIn(t) ?? this.hostDeclared(f.type)
+          const fn = heldIn(t, (x): x is FuncRT => x.kind === 'func')
+          if (host) this.error(f.span.start, `an enum payload cannot hold a host reference yet: ${typeToString(host)}, in ${v.name}`)
+          else if (fn) this.error(f.span.start, `an enum payload cannot hold a function yet: ${signatureText(fn)}, in ${v.name}`)
+        })
+      })
+    }
+    this.payloadChecks = []
+  }
+
   collectTypeDecl(decl: AST.TypeDecl): void {
     const name = decl.ident.name
-    if (this.moduleScope.symbols.get(name)?.kind === 'typefunc') {
-      this.error(decl.span.start, `'${name}' is already declared: a generic type's name is unique in its module`)
-      this.pendingTypeNames.delete(name)
-      return
-    }
+    // One declared second is refused (checkCapitalisedNames): the first
+    // stands, and nothing of this one is checked.
+    if (this.declaredSecond.has(decl)) return
     // Types with @ prefix are unique/nominal, others are structural aliases
     const unique = name.startsWith('@')
     this.declaringType = true
@@ -2039,6 +2339,10 @@ class CheckContext {
       this.moduleScope.symbols.set(name, { ...sym, type: RECOVERY })
       this.typeCache.set(name, RECOVERY)
       for (const ref of this.forwardRefs.get(name) ?? []) ref.target = RECOVERY
+      for (const variant of this.enumVariants.get(name) ?? []) {
+        const v = this.moduleScope.symbols.get(variant)
+        if (v?.kind === 'variant') this.moduleScope.symbols.set(variant, { ...v, type: RECOVERY })
+      }
     }
   }
 
@@ -2148,15 +2452,33 @@ class CheckContext {
       this.error(decl.span.start, `def cannot contain array/string literals — use 'data ${decl.ident} = ...' instead`)
     }
 
-    // Regular comptime value (int, float, bool)
-    const type = declaredType ?? inferredType
-    const value = this.evalComptimeExpr(decl.value)
+    // Regular comptime value (int, float, bool). One of a float type is its
+    // value in that type, as each use of it is, which the parser puts in as
+    // (value):type: (7 / 2):f64 is 3.5, and (1 / 0):f64 infinity (3.1).
+    let value = this.evalComptimeExpr(decl.value)
+    if (decl.type && declaredType && isFloat(unwrap(declaredType)) && !isFloat(unwrap(inferredType))) {
+      const annotated: AST.AnnotationExpr = { kind: 'AnnotationExpr', expr: decl.value, type: decl.type, span: decl.value.span }
+      this.attempt(null, () => this.inferExpr(annotated))
+      value = this.evalComptimeExpr(annotated) ?? value
+    }
+    // A refused value (a type's name, a refused operator) has its error
+    // already, and each use of the def is a refused value too.
+    const refused = !value && ((inferredType === RECOVERY && !this.readsRunTime(decl.value)) || this.refusedValue(decl.value))
+    // A variant is no scalar: a def is one number or bool (3.1). That is its
+    // one error, and each use of it is a refused value as well.
+    const variant = !value && !refused && unwrap(inferredType).kind === 'enum' ? exprText(decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value) : null
+    if (refused || variant !== null) this.refusedDefs.set(decl.span.start, decl.ident.length)
+    if (!value && !refused) {
+      this.error(decl.span.start, variant !== null
+        ? `def value must be a number or a bool: ${variant} is a value of the enum ${typeToString(inferredType)}; use a global`
+        : `def value must be a compile-time constant`)
+    }
+    // A refused def has no type of its own to show, whatever is written
+    // (`def dv: u32 = Red` hovers as `def dv`), as its uses have none.
+    const type = refused || variant !== null ? RECOVERY : declaredType ?? inferredType
     const sym = value
       ? { kind: 'def' as const, type, value }
       : { kind: 'def' as const, type, value: { kind: 'int' as const, value: 0n } }
-    if (!value) {
-      this.error(decl.span.start, `def value must be a compile-time constant`)
-    }
     this.moduleScope.symbols.set(defKey, sym)
     this.currentScope.symbols.set(decl.ident, sym)
     const defIdentOff = this.findIdentOffset(decl.span.start, 'def')
@@ -2193,6 +2515,25 @@ class CheckContext {
     }
     if (literal.kind === 'TupleExpr' && literal.elements.length === 2 && literalType && unwrap(literalType).kind === 'slice') {
       this.error(decl.span.start, `data value must be a literal to lay out: a (ptr, len) pair is a slice already`)
+      return
+    }
+
+    // A declared type that did not resolve (an unknown type, a length that
+    // is a refused value) has its error: the data is declared all the same,
+    // of that type, so its uses say nothing more. What is wrong whatever the
+    // type is is still said: a (ptr, len) pair for a slice (above), a count
+    // of elements that is not the array's, a literal with no `mut` for a
+    // *mut or []mut; and its values are constants or not whatever it is.
+    if (declaredType && unresolved(declaredType)) {
+      const reported = this.errors.length
+      this.checkExpr(value, declaredType)
+      if (this.errors.length === reported) this.requireConstants(decl.ident, value)
+      const sym = { kind: 'def' as const, type: declaredType, value: { kind: 'data_ptr' as const, id: value.span.start } }
+      this.moduleScope.symbols.set(dataKey, sym)
+      this.currentScope.symbols.set(decl.ident, sym)
+      const at = this.findIdentOffset(decl.span.start, 'data')
+      if (at !== null) this.types.set(typeKey(at, 'IdentPattern'), declaredType)
+      this.recordDeclared(decl.ident, decl.span.start, sym)
       return
     }
 
@@ -2244,17 +2585,30 @@ class CheckContext {
     // For non-array data (scalars, tuples), still serialize to data section
     const type = declaredType ?? this.concretize(inferredType)
     const expr = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
-    const dataId = expr.span.start
-    if (expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr') {
-      if (expr.kind === 'LiteralExpr') {
-        (expr as AST.LiteralExpr).dataId = dataId
+    // A number negated is one number too: -z for a `def z: f32 = 0` is -0,
+    // which the parser leaves to the checker to work out (3.2).
+    const negated = expr.kind === 'UnaryExpr' && expr.op === '-' && expr.operand.kind === 'AnnotationExpr' && isNumberLiteral(expr.operand)
+    if (expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr' || negated) {
+      // A number written with its type (0.1:f32, or a def's value put in
+      // where its name is written) is laid out as that value: the f32
+      // nearest it, widened in an f64. It is the block of this data: one
+      // def's value used for two is two blocks, each of its own type.
+      const laidOut = value.kind === 'AnnotationExpr' && (expr.kind === 'LiteralExpr' || negated) ? value : expr
+      const dataId = laidOut.span.start
+      if (laidOut.kind === 'LiteralExpr') {
+        (laidOut as AST.LiteralExpr).dataId = dataId
       }
-      // A tuple laid out as a struct gives it its fields as it would
-      // anywhere: each meets its field's type, by name where it has names.
-      if (expr.kind === 'TupleExpr' && declaredType && unwrap(declaredType).kind === 'tuple') this.checkExpr(expr, declaredType)
-      const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
-      this.addLiteral(dataId, expr, arrType)
-      this.requireConstants(decl.ident, expr)
+      // The value is checked against the type written, as any value is
+      // (2.10): a number laid out by itself as one in an array is. (A tuple
+      // given for a pointer is not, the known bug 3.2 names: the cell is
+      // left 0.)
+      const reported = this.errors.length
+      if (declaredType && !(expr.kind === 'TupleExpr' && unwrap(declaredType).kind === 'pointer')) this.checkExpr(value, declaredType)
+      if (this.errors.length === reported) {
+        const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
+        this.addLiteral(dataId, laidOut, arrType)
+        this.requireConstants(decl.ident, laidOut)
+      }
       const sym = {
         kind: 'def' as const,
         type: pointer(type, false, isMut),
@@ -2267,14 +2621,30 @@ class CheckContext {
       return
     }
 
-    // A literal whose type has the error says nothing more.
-    if (!unresolved(inferredType)) this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
+    // A literal whose type has the error says nothing more, and a refused
+    // value (`data dk = -true`) neither: the data is declared all the same,
+    // refused, so its uses say nothing more either. With a type written, it
+    // is of the type that says (`data dk: u32 = -true` is a *u32), whatever
+    // the value: a pointer or a slice written is the name's own type.
+    if (!unresolved(inferredType)) {
+      this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
+      return
+    }
+    const addressed = declaredType && (unwrap(declaredType).kind === 'pointer' || unwrap(declaredType).kind === 'slice')
+    const refusedType = !declaredType ? RECOVERY : addressed ? declaredType : pointer(declaredType, false, isMut)
+    const sym = { kind: 'def' as const, type: refusedType, value: { kind: 'data_ptr' as const, id: value.span.start } }
+    this.moduleScope.symbols.set(dataKey, sym)
+    this.currentScope.symbols.set(decl.ident, sym)
+    if (dataIdentOff !== null) this.types.set(typeKey(dataIdentOff, 'IdentPattern'), refusedType)
+    this.recordDeclared(decl.ident, decl.span.start, sym)
   }
 
   // `data` is laid out when the program is compiled, and no code of the
   // program fills it in: each value in it has to be known by then.
   private requireConstants(name: string, literal: AST.Expr): void {
     for (const leaf of this.literalLeaves(literal)) {
+      // A refused value (a type's name, a refused operator) has its error
+      if (this.refusedValue(leaf)) continue
       if (!this.evalComptimeExpr(leaf, true)) {
         this.error(leaf.span.start, `data '${name}' is laid out at compile time: its values must be constants`)
       }
@@ -2728,7 +3098,7 @@ class CheckContext {
         return { kind: 'int', value: lit.value }
       }
       if (lit.kind === 'float') {
-        return { kind: 'float', value: lit.value }
+        return lit.f32 === undefined ? { kind: 'float', value: lit.value } : { kind: 'float', value: lit.value, f32: lit.f32 }
       }
       if (lit.kind === 'bool') {
         return { kind: 'bool', value: lit.value }
@@ -2744,11 +3114,16 @@ class CheckContext {
     // Handle unary negation
     if (expr.kind === 'UnaryExpr' && expr.op === '-') {
       const operand = this.evalComptimeExpr(expr.operand, typed)
+      // A float that holds an integer is negated as a float: -(0:f32) is -0
+      const negated = this.exprTypes.get(expr)
+      if (operand?.kind === 'int' && operand.value === 0n && negated && negated.kind !== 'comptime_int' && isFloat(unwrap(negated))) {
+        return { kind: 'float', value: -0 }
+      }
       if (operand?.kind === 'int') {
         return { kind: 'int', value: -operand.value }
       }
       if (operand?.kind === 'float') {
-        return { kind: 'float', value: -operand.value }
+        return operand.f32 === undefined ? { kind: 'float', value: -operand.value } : { kind: 'float', value: -operand.value, f32: -operand.f32 }
       }
     }
 
@@ -2768,7 +3143,12 @@ class CheckContext {
     if (expr.kind === 'BinaryExpr') {
       const left = this.evalComptimeExpr(expr.left, typed)
       const right = this.evalComptimeExpr(expr.right, typed)
-      if (left?.kind === 'int' && right?.kind === 'int') {
+      // Two integers divided as floats, where the quotient is a float
+      // (1:f32 / 0, 7 / 2 as an f64): infinity or NaN by zero, as when it
+      // runs (3.1).
+      const quotient = this.exprTypes.get(expr)
+      const floatQuotient = expr.op === '/' && quotient !== undefined && quotient.kind !== 'comptime_float' && isFloat(unwrap(quotient))
+      if (left?.kind === 'int' && right?.kind === 'int' && !floatQuotient) {
         const l = left.value
         const r = right.value
         // A sum or a product comes out the same whether its operands have
@@ -2807,7 +3187,7 @@ class CheckContext {
       const number = (v: ComptimeValue | null) => (v?.kind === 'int' || v?.kind === 'float' ? Number(v.value) : null)
       const l = number(left)
       const r = number(right)
-      if (l !== null && r !== null && (left?.kind === 'float' || right?.kind === 'float')) {
+      if (l !== null && r !== null && (left?.kind === 'float' || right?.kind === 'float' || floatQuotient)) {
         switch (expr.op) {
           case '+': return { kind: 'float', value: l + r }
           case '-': return { kind: 'float', value: l - r }
@@ -2824,6 +3204,9 @@ class CheckContext {
       if (sym?.kind === 'def') {
         return sym.value
       }
+      // A variant of an enum left out, taken for a number to see whether
+      // what is around it is a constant (constantBesidesLeftOut)
+      if (this.leftOutValue !== null && this.isLeftOut(expr.name)) return { kind: 'int', value: this.leftOutValue }
     }
 
     // Handle member access: .len and .wid on pointer-to-array types
@@ -2916,6 +3299,104 @@ class CheckContext {
     this.recordDefinition(name, decl.pattern.span.start)
   }
 
+  // Whether an expression is a refused value, which a declaration that
+  // wants a constant says nothing more of: one inferred to have its error
+  // already (a type's name where a value is wanted, 'Point' is a type or
+  // 'u32' is a type; a refused operator, -true; a use of a def of one), or a
+  // type's name not inferred yet.
+  private refusedValue(expr: AST.Expr): boolean {
+    let e = ungrouped(expr)
+    while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+    // A value read when the program runs (a global, a parameter, a
+    // variable) is no constant whatever its type: that is its own error.
+    if ((this.exprTypes.get(e) === RECOVERY && !this.readsRunTime(e)) || this.refusedDefUse(e)) return true
+    if (e.kind !== 'IdentExpr' || this.variants.has(e)) return false
+    const kind = this.lookup(e.name)?.kind
+    return kind === 'type' || kind === 'typefunc' || (!kind && PRIMITIVE_NAMES.has(e.name))
+  }
+
+  // Whether an expression is no constant whatever its type: it reads a value
+  // known only when the program runs (a global, a parameter or a variable,
+  // whether or not its type resolved), or holds an if or a match, which are
+  // never constants (3.1). The .len or .wid of one that is no slice reads
+  // nothing of it: an array's length is known when it is compiled (`p.len`
+  // for p: *[N]T, 1.5), and where the array's type did not resolve, that
+  // length is refused with it.
+  private readsRunTime(expr: AST.Expr): boolean {
+    if (holdsNode(expr, (node) => node.kind === 'IfExpr' || node.kind === 'MatchExpr')) return true
+    const lengthOnly = (node: { kind?: string }) => {
+      if (node.kind !== 'MemberExpr') return false
+      const member = (node as AST.MemberExpr)
+      if (member.member.kind !== 'field' || (member.member.name !== 'len' && member.member.name !== 'wid')) return false
+      const object = this.exprTypes.get(member.object)
+      return !object || unwrap(object).kind !== 'slice'
+    }
+    return unknownNames(expr, [], lengthOnly).some((name) => {
+      const kind = this.lookup(name.name)?.kind
+      return kind === 'global' || kind === 'local' || kind === 'param'
+    })
+  }
+
+  // Whether an expression names a variant of an enum left out (declared
+  // second under a name another declaration has) that names nothing else:
+  // a refused value, the clash its one error (2.9), also where a constant is
+  // wanted (an array length, a comptime argument).
+  private namesLeftOut(expr: AST.Expr | AST.Type): boolean {
+    const names = expr.kind === 'TypeRef' ? [expr.name] : unknownNames(expr).map((n) => n.name)
+    return names.some((name) => this.isLeftOut(name))
+  }
+
+  // Whether a name is a variant of an enum left out, and names nothing else
+  private isLeftOut(name: string): boolean {
+    return this.leftOutVariants.has(name) && !this.lookup(name)
+  }
+
+  // Whether an expression that names a variant of an enum left out is a
+  // constant whatever number the variant stands for: then the variant is its
+  // one error; otherwise what else is wrong with it is said as it would be
+  // (`B + nofunc()`, `B + x` for a parameter x).
+  private constantBesidesLeftOut(expr: AST.Expr): boolean {
+    const outer = this.leftOutValue
+    try {
+      for (const stand of [1n, 2n]) {
+        this.leftOutValue = stand
+        if (this.evalComptimeExpr(expr) !== null) return true
+      }
+      return false
+    } finally {
+      this.leftOutValue = outer
+    }
+  }
+
+  // The number a variant of an enum left out stands for while
+  // constantBesidesLeftOut evaluates around it
+  private leftOutValue: bigint | null = null
+
+  // What else is wrong with a value that names a variant of an enum left
+  // out, worked out as it is for a constant in its place: its inference says
+  // the errors of the rest (`B + true`, as `1 + true`), and dividesByZero sees
+  // `B / 0`. The variant itself keeps the refused type.
+  private besidesLeftOut<T>(expr: AST.Expr, work: () => T): T {
+    if (!this.namesLeftOut(expr)) return work()
+    const outer = this.leftOutValue
+    this.leftOutValue = 1n
+    try {
+      return work()
+    } finally {
+      this.leftOutValue = outer
+      for (const name of unknownNames(expr)) if (this.isLeftOut(name.name) && this.exprTypes.has(name)) this.exprTypes.set(name, RECOVERY)
+    }
+  }
+
+  // Whether an expression is the value of a refused def, put in by the
+  // parser where the def's name is written: a refused value, its error said
+  // at the def (`def unit: u32 = Point`), and nothing said where it is used.
+  private refusedDefUse(expr: AST.Expr | AST.Type): boolean {
+    const at = expr.span.start % INSTANCE_STRIDE
+    const decl = this.defUseAt.get(at)
+    return decl !== undefined && this.refusedDefs.get(decl) === expr.span.end - expr.span.start
+  }
+
   // A wasm global starts as a constant, so its initializer has to be one: a
   // number or bool the compiler can work out, the address of data or of a
   // function, or a tuple, struct or array of those, which is one wasm global
@@ -2923,11 +3404,19 @@ class CheckContext {
   // expression as written would need an instruction (1 + 1, a literal that
   // widens, a cast that narrows).
   private isConstantInitializer(expr: AST.Expr): boolean {
+    // Parentheses are their value, which widens either inside them
+    // (`(sizeof(u32))` for a u64) or as a whole (`(sizeof(u32) + 1)`): it is
+    // recorded on both, and codegen takes the first that is constants.
+    const inner = groupedExpr(expr)
+    if (inner && !this.isConstantInitializer(inner)) return false
+    // A refused value has its error
+    if (!inner && this.refusedValue(expr)) return true
     const value = this.evalComptimeExpr(expr, true)
     if (value) {
       this.constants.set(expr, value)
       return true
     }
+    if (inner) return true
     // An address cast to another pointer type or to a 32-bit integer is the
     // same i32, so the same constant.
     const castee = castOperand(expr)
@@ -2942,6 +3431,10 @@ class CheckContext {
       case 'TupleExpr':
         return expr.elements.every(e => e.value !== null && this.isConstantInitializer(e.value))
       case 'CallExpr': {
+        // A variant's constructor of constants: each of its values, as codegen
+        // puts each in its slot (a payload of one value is no value of its own)
+        const payload = this.payloads.get(expr)
+        if (payload) return payload.elements.every(e => e.value !== null && this.isConstantInitializer(e.value))
         // A struct constructor of constants.
         const built = this.calls.get(expr)
         if (built?.kind === 'TupleExpr') return this.isConstantInitializer(built)
@@ -2949,7 +3442,8 @@ class CheckContext {
           && expr.args.every(a => a.value !== null && this.isConstantInitializer(a.value))
       }
       case 'IdentExpr':
-        return this.lookup(expr.name)?.kind === 'func'
+        // A function's index, or a unit variant
+        return this.lookup(expr.name)?.kind === 'func' || this.variants.has(expr)
       case 'ArrayExpr':
       case 'RepeatExpr':
         // An array behind a pointer or a slice lives in the data section,
@@ -3076,6 +3570,11 @@ class CheckContext {
   // A many-pointer is refused where it's written through; memcpy may read from one.
   private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false, written = false): ResolvedType {
     const type = this.inferExpr(expr)
+    // A refused value has its error, and so has a pointer to a type that
+    // did not resolve, which may or may not be an array. A pointer to an
+    // array of one, or a slice of one, is still checked as a pointer: its
+    // bounds and whether it is mutable do not depend on what it holds.
+    if (type === RECOVERY || pointsToRefused(type)) return type
     const u = unwrap(type)
     const arr = pointeeArray(u)
     if (arr) {
@@ -3105,7 +3604,8 @@ class CheckContext {
     if (srcExpr.kind === 'MemberExpr' && srcExpr.member.kind === 'type') srcExpr = srcExpr.object
 
     const srcType = this.exprTypes.get(srcExpr)
-    if (!srcType) return
+    // Elements of a type that did not resolve have no size.
+    if (!srcType || unresolved(srcType)) return
 
     const arrType = pointeeArray(srcType)
     if (!arrType?.sizes || !arrType.sizes.every(s => typeof s === 'number')) return
@@ -3212,7 +3712,7 @@ class CheckContext {
       // are no named locals to return when it falls off the end.
       const resultType = this.currentReturnType
       const hasResult = resultType.kind !== 'void' && !(resultType.kind === 'tuple' && resultType.fields.length === 0)
-      if (!named && hasResult && !blockTerminates(decl.body.stmts)) {
+      if (!named && hasResult && !blockTerminates(decl.body.stmts, this.exhaustive)) {
         // The name the user wrote, not max<u32>: the message is followed by
         // the instance anyway.
         const name = this.currentInstance?.decl === decl ? this.currentInstance.of.ident : decl.ident
@@ -3393,9 +3893,15 @@ class CheckContext {
         // so there is no place behind it to store to. The place is p.u32[0].
         if (stmt.target.kind === 'MemberExpr' && stmt.target.member.kind === 'type') {
           const pun = typeToString(this.resolveType(stmt.target.member.type))
-          const pointer = targetType && unwrap(targetType).kind === 'pointer'
-          this.error(stmt.span.start, pointer
-            ? `cannot assign to .${pun}: it is the pointer as ${typeToString(targetType as ResolvedType)}, not the ${pun} it points at — write .${pun}[0] = value to store one`
+          // A pointer to a type that did not resolve is a pointer all the
+          // same: the pun is it as a many-pointer, as on any other.
+          const object = this.exprTypes.get(stmt.target.object)
+          const of = object && unwrap(object)
+          const shown = targetType && unwrap(targetType).kind === 'pointer' ? typeToString(targetType)
+            : of?.kind === 'pointer' && unresolved(of) ? `[*]${of.mutable ? 'mut ' : ''}${pun}`
+            : null
+          this.error(stmt.span.start, shown
+            ? `cannot assign to .${pun}: it is the pointer as ${shown}, not the ${pun} it points at — write .${pun}[0] = value to store one`
             : `cannot assign to .${pun}: a type pun is not a place a value can be stored to`)
           this.writingTo = null
           this.inferExpr(stmt.value)
@@ -3453,7 +3959,7 @@ class CheckContext {
           const element = iterableType.kind === 'array' || iterableType.kind === 'comptime_array' ? iterableType.element : null
           this.error(stmt.iterable.span.start, element && hostIn(element)
             ? `cannot iterate over ${typeToString(iterableType)}: an array held in registers is not looped over, and a host reference is never in memory: reach each element by a constant index`
-            : `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
+            : `cannot iterate over ${typeToString(iterableType.kind === 'enum' ? iterated : iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
           elemType = element && hostIn(element) ? element : RECOVERY
         } else if (!isInteger(iterableType) || (byteSize(iterableType) ?? 8) > 4) {
           // The loop variable is a u32 compared with the count.
@@ -4245,6 +4751,11 @@ class CheckContext {
           sizes.push(spec.kind === 'null' ? '!' : '?')
         }
 
+        // A null-terminated array ends at its first element whose bytes are
+        // all zero, and a value that holds an enum can be its zero without
+        // its bytes being zero (an enum's padding is never written).
+        if (sizes.includes('!')) this.noEnumIn(element, type.span.start)
+
         // If only specifiers and no size, that's valid: [!]T, [?]T
         const result = array(element, sizes.length > 0 ? sizes : null)
         // An array of one length is held in registers; any other is held
@@ -4293,6 +4804,12 @@ class CheckContext {
           if (problem) this.error(type.span.start, problem)
           return RECOVERY
         }
+        // A variant is a value of its enum, which is the type
+        const variantOf = sym?.kind === 'variant' ? typeToString(sym.type) : this.variantNames.get(type.name)
+        if (variantOf !== undefined) {
+          this.error(type.span.start, `'${type.name}' is a variant of ${variantOf}, not a type: write ${variantOf}`)
+          return RECOVERY
+        }
         // Check if this is a forward reference to a type being defined
         if (this.pendingTypeNames.has(type.name)) {
           const ref = forwardRef(type.name)
@@ -4301,8 +4818,9 @@ class CheckContext {
         }
         const similar = this.findSimilar(type.name)
         const hint = similar ? ` — did you mean '${similar}'?` : ''
+        // A refused type: what its values are used for says nothing more
         this.error(type.span.start, `unknown type '${type.name}'${hint}`)
-        return primitive('i32')
+        return RECOVERY
       }
 
       case 'FuncType': {
@@ -4367,10 +4885,13 @@ class CheckContext {
   // computed exactly, as no type (a u32's `/` and `>>` would take wrapped
   // operands). Null, with the error reported, for anything else.
   private typeNumber(expr: AST.Expr, what: 'array length' | 'range bound'): bigint | null {
+    // The value of a refused def has its error at the def.
+    if (this.refusedDefUse(ungrouped(expr))) return null
     this.collectDefsIn(expr)
     // A typed constant is what it is in any expression: 300:u8 is an error,
     // and ~0:u8 is 255 (see comptimeValue).
     const before = this.errorsReported
+    this.inferFloatAnnotations(expr)
     for (const annotated of annotationsIn(expr)) if (this.evalComptimeExpr(annotated)) this.inferExpr(annotated)
     if (this.errorsReported > before) return null
     const value = this.evalComptimeExpr(expr)
@@ -4383,14 +4904,17 @@ class CheckContext {
     // A name nothing declares is the error of any expression, said once: a
     // signature is resolved where it is collected and again where its
     // function is checked.
-    // A name the module declares further down is no unknown one.
-    const unknown = unknownNames(expr).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name) && !this.valueNames.has(name.name))
+    // A name the module declares further down is no unknown one. A variant
+    // of an enum left out is a refused value: the clash is its one error,
+    // and what else is wrong is said.
+    if (this.namesLeftOut(expr) && this.constantBesidesLeftOut(expr)) return null
+    const unknown = unknownNames(expr).find((name) => !this.lookup(name.name) && !this.isLeftOut(name.name) && !this.signatureNames?.has(name.name) && !this.valueNames.has(name.name))
     if (unknown) {
       if (!this.unknownInTypes.has(unknown.span.start)) this.error(unknown.span.start, this.unknownIdentifier(unknown.name, true))
       this.unknownInTypes.add(unknown.span.start)
       return null
     }
-    if (this.dividesByZero(expr)) {
+    if (this.besidesLeftOut(expr, () => this.dividesByZero(expr))) {
       this.error(expr.span.start, `${what} divides by zero`)
       return null
     }
@@ -4402,6 +4926,17 @@ class CheckContext {
   }
 
   private unknownInTypes = new Set<number>()
+
+  // A number written with a float type that is no integer constant (a def's
+  // value put in where its name is written, `(1 / 0):f64` for `def m: f64 =
+  // 1 / 0`) is its value in that type, as at the def (collectDef): it is
+  // inferred, so that it is evaluated as that float (infinity).
+  private inferFloatAnnotations(expr: AST.Expr): void {
+    for (const annotated of annotationsIn(expr)) {
+      if (this.exprTypes.has(annotated) || this.evalComptimeExpr(annotated) !== null) continue
+      if (this.attempt(null, () => isFloat(unwrap(this.resolveType(annotated.type))))) this.attempt(null, () => this.inferExpr(annotated))
+    }
+  }
 
   // The type a pointer being resolved points to (see the D9 size of a table)
   private pointee: AST.Type | null = null
@@ -4606,6 +5141,24 @@ class CheckContext {
     return { call, callee }
   }
 
+  // Whether an assignment's target is a place in memory, not registers
+  private inMemory(target: AST.Expr | AST.LValue): boolean {
+    if (target.kind === 'IdentPattern' || target.kind === 'TuplePattern') return false
+    const t = ungrouped(target as AST.Expr)
+    if (t.kind === 'SliceExpr') return true
+    if (t.kind === 'MemberExpr') {
+      if (t.member.kind === 'deref') return true
+      const object = this.exprTypes.get(t.object)
+      return (object !== undefined && unwrap(object).kind === 'pointer') || this.inMemory(t.object)
+    }
+    if (t.kind === 'IndexExpr') {
+      const object = this.exprTypes.get(t.object)
+      const u = object && unwrap(object)
+      return u?.kind === 'pointer' || u?.kind === 'slice' || this.inMemory(t.object)
+    }
+    return false
+  }
+
   // A function is one wasm function, and an engine takes one of at most
   // 50000 locals and a body of at most 7654321 bytes (MAX_FUNCTION_REGISTERS).
   // What a function holds and computes is counted in registers, the wasm
@@ -4630,14 +5183,16 @@ class CheckContext {
     const memo = new Map<ResolvedType, number>()
     const registers = (type: ResolvedType | undefined) => (type ? typeRegisters(type, memo) : 1)
     // What adds to the count, where, and what to say of it if it goes over there
-    // `host`: of those, the registers of host references, which no memory holds
-    type Use = { at: number; n: number; shown: () => string | null; host?: number }
+    // `host`: of those, the registers of host references, which no memory holds;
+    // `holdsEnum`: whether the value holds an enum, which is held whole in
+    // registers wherever it is used, also where it is copied in memory
+    type Use = { at: number; n: number; shown: () => string | null; host?: number; holdsEnum?: boolean }
     const uses: Use[] = []
     // A signature over its own limits has its error (checkSignatureSize).
     const signature = { param: 0, return: 0 }
     for (const [at, { name, type, of }] of this.variables ?? []) {
       const n = registers(type)
-      uses.push({ at, n, shown: () => (n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null), host: hostRegisters(type) })
+      uses.push({ at, n, shown: () => (n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null), host: hostRegisters(type), holdsEnum: enumIn(type) !== null })
       if (of) signature[of] = Math.min(signature[of] + n, Number.MAX_SAFE_INTEGER)
     }
     const times = (a: number, b: number) => Math.min(a * b, Number.MAX_SAFE_INTEGER)
@@ -4651,7 +5206,7 @@ class CheckContext {
       const type = this.exprTypes.get(expr)
       const own = times(n, copies)
       const shown = () => ((n > 1 || copies > 1) && type ? `${typeToString(type)}${copies > 1 ? `, written out ${copies} times,` : ''} is ${own}` : null)
-      uses.push({ at: site, n: own, shown, host: type ? times(hostRegisters(type), copies) : 0 })
+      uses.push({ at: site, n: own, shown, host: type ? times(hostRegisters(type), copies) : 0, holdsEnum: type !== undefined && enumIn(type) !== null })
     }
     // A block's value, which a wasm block gives back
     const blockValue = (expr: AST.Expr, what: string) => {
@@ -4848,10 +5403,16 @@ class CheckContext {
           case 'SetStmt':
             value(stmt.value, n, false)
             return
-          case 'AssignmentStmt':
+          case 'AssignmentStmt': {
             target(stmt.target, n)
-            value(stmt.value, n, false)
+            // A variant written into memory is stored as the struct of its
+            // tag and fields: it is never held whole.
+            const written = ungrouped(stmt.value)
+            const payload = written.kind === 'CallExpr' && this.inMemory(stmt.target) ? this.payloads.get(written) : undefined
+            if (payload) value(payload, n, false)
+            else if (!(this.variants.has(written) && this.inMemory(stmt.target))) value(stmt.value, n, false)
             return
+          }
           case 'ExpressionStmt':
             value(stmt.expr, n, false)
             return
@@ -4908,6 +5469,7 @@ class CheckContext {
       const shown = use.shown()
       const here = shown ? ` (here ${shown})` : ''
       const fix = total - host <= MAX_FUNCTION_REGISTERS ? HOLD_FEWER
+        : use.holdsEnum ? ENUM_HELD_WHOLE
         : 'keep large values in memory, behind a pointer: copy one with a range copy (p[..] = q[..]) and fill one with a range fill (p[..] = 0)'
       this.error(use.at, `${owner} needs more than ${MAX_FUNCTION_REGISTERS} registers, the most a wasm function has${here} — ${fix}`)
       return
@@ -5061,14 +5623,16 @@ class CheckContext {
 
     // Bidirectional: propagate expected type into match-expression arms
     if (expr.kind === 'MatchExpr') {
-      this.checkMatchSubject(expr)
-      for (const arm of expr.arms) {
-        if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') {
-          this.checkBodyAgainst(arm.body, expected)
-        } else {
-          this.checkExpr(arm.body, expected)
-        }
-      }
+      const bindings = this.checkMatchSubject(expr)
+      expr.arms.forEach((arm, i) => {
+        this.inArm(arm, bindings[i], () => {
+          if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') {
+            this.checkBodyAgainst(arm.body, expected)
+          } else {
+            this.checkExpr(arm.body, expected)
+          }
+        })
+      })
       this.exprTypes.set(expr, expected)
       return expected
     }
@@ -5502,6 +6066,8 @@ class CheckContext {
   private inferExprOf(expr: AST.Expr, typedByContext: boolean): ResolvedType {
     // Inferring afresh: whatever context marked it for widening before is gone.
     this.coercions.delete(expr)
+    // The value of a refused def, where its name is written, has its error at the def.
+    if (this.refusedDefUse(expr)) return RECOVERY
     switch (expr.kind) {
       case 'LiteralExpr':
         return this.inferLiteral(expr, typedByContext)
@@ -5630,8 +6196,14 @@ class CheckContext {
         this.error(expr.span.start, `'${expr.name}' is a type; a type can only be passed for a comptime parameter`)
         return RECOVERY
       }
+      // A variant of an enum left out has the enum's error: its use is a
+      // refused value. Where what is around it is seen as if it were a
+      // constant (besidesLeftOut), it is the number it stands for.
+      if (this.leftOutVariants.has(expr.name)) return this.leftOutValue !== null ? comptimeInt(this.leftOutValue) : RECOVERY
       this.error(expr.span.start, this.unknownIdentifier(expr.name))
-      return primitive('i32')
+      // A capitalised name stands for a variant or a type: called, it is
+      // no function either.
+      return /^[A-Z]/.test(expr.name) ? RECOVERY : primitive('i32')
     }
 
     // Record this as a reference to the symbol
@@ -5664,8 +6236,32 @@ class CheckContext {
         }
         return sym.type
 
+      case 'variant': {
+        // A unit variant is a value of its enum. A payload variant's name
+        // alone is not: its payload is to be given.
+        const e = unwrap(sym.type)
+        if (e.kind !== 'enum') return sym.type
+        const variant = e.variants[sym.index]
+        if (variant.fields !== null) {
+          this.error(expr.span.start, `${variant.name} carries a payload: write ${variantForm(variant)}`)
+          return RECOVERY
+        }
+        this.variants.set(expr, sym.index)
+        return sym.type
+      }
+
       case 'type':
-        // Type used as expression (constructor)
+        // An enum's own name is no value, called or not.
+        if (unwrap(sym.type).kind === 'enum') {
+          this.error(expr.span.start, enumAsValue(expr.name, unwrap(sym.type) as EnumRT))
+          return RECOVERY
+        }
+        // A type's name is a value only as the callee of its constructor,
+        // Point(1, 2). Anywhere else a value is wanted it is the type.
+        if (!this.callees.has(expr)) {
+          this.error(expr.span.start, `'${expr.name}' is a type; a type can only be passed for a comptime parameter`)
+          return RECOVERY
+        }
         return sym.type
 
       case 'typefunc':
@@ -5734,6 +6330,13 @@ class CheckContext {
       const sym = this.lookup(name)
       if (sym?.kind === 'generic') return this.inferGenericCall(expr, sym, name)
       if (sym?.kind === 'typefunc') return this.typeAsValue(expr, sym)
+      if (sym?.kind === 'variant') return this.inferVariantCall(expr, sym)
+      if (sym?.kind === 'type' && unwrap(sym.type).kind === 'enum') {
+        this.recordReference(name, expr.callee.span.start)
+        this.error(expr.span.start, enumAsValue(name, unwrap(sym.type) as EnumRT))
+        this.inferArgsOfRefused(expr)
+        return RECOVERY
+      }
       // In an instance a call that the generic's own module has no function
       // for is looked up in the module that started the instance's chain.
       const atSite = (sym === undefined || (sym.kind === 'func' && !sym.alias && sym === this.moduleScope.symbols.get(name))) ? this.callAtSite(expr, name) : null
@@ -5810,6 +6413,7 @@ class CheckContext {
       }
     }
 
+    if (expr.callee.kind === 'IdentExpr') this.callees.add(expr.callee)
     const calleeType = named ? named.type : this.inferExpr(expr.callee)
     if (named) this.exprTypes.set(expr.callee, calleeType)
 
@@ -5904,6 +6508,44 @@ class CheckContext {
     }
     this.error(expr.span.start, `cannot call non-function type: ${typeToString(calleeType)}`)
     return primitive('i32')
+  }
+
+  // A variant's constructor, Rgb(1, 2, 3): its payload's fields given as a
+  // struct constructor's are, by position or by name. It compiles as the
+  // tag, then the tuple of its arguments (TypeCheckResult.payloads), each
+  // value going to its field.
+  private inferVariantCall(expr: AST.CallExpr, sym: Symbol & { kind: 'variant' }): ResolvedType {
+    const name = (expr.callee as AST.IdentExpr).name
+    this.recordReference(name, expr.callee.span.start)
+    const e = unwrap(sym.type)
+    if (e.kind !== 'enum') {
+      this.inferArgsOfRefused(expr)
+      return RECOVERY
+    }
+    const variant = e.variants[sym.index]
+    if (variant.fields === null) {
+      this.error(expr.span.start, `${name} is a unit variant: write ${name}, without parentheses`)
+      this.inferArgsOfRefused(expr)
+      return RECOVERY
+    }
+    const payload = tuple(variant.fields)
+    const given = this.checkFieldArgs(expr.args, expr.span.start, payload, name)
+    const args: AST.TupleExpr = { kind: 'TupleExpr', elements: expr.args, span: expr.span }
+    this.payloads.set(expr, args)
+    this.exprTypes.set(args, payload)
+    if (given.every((a) => a.length === 1)) this.recordFieldOrder(args, given)
+    this.variants.set(expr, sym.index)
+    return sym.type
+  }
+
+  // The arguments of a call that is refused, inferred for what they name
+  // (rename finds them) and for their own errors: a type among them is part
+  // of the same mistake.
+  private inferArgsOfRefused(expr: AST.CallExpr): void {
+    for (const arg of expr.args) {
+      const value = argValue(arg)
+      if (value && !this.typeApplied(value)) this.inferExpr(value)
+    }
   }
 
   // The values of a (ptr, len) literal that is a slice, pointer first: by
@@ -6021,6 +6663,7 @@ class CheckContext {
     const type = this.resolveType(built)
     if (type === RECOVERY || this.errorsReported > before) return fail()
     const struct = unwrap(type)
+    if (struct.kind === 'enum') return fail(enumAsValue(typeToString(type), struct))
     if (struct.kind !== 'tuple') {
       return fail(`${typeToString(type)} is not a struct or tuple type: it has no constructor; to convert a number write x as T`)
     }
@@ -6637,8 +7280,9 @@ class CheckContext {
   ): ResolvedType {
     const accepts = kind === 'float' ? isFloat : kind === 'integer' ? isInteger : isNumeric
     const wanted = kind === 'float' ? 'a float type' : kind === 'integer' ? 'an integer type' : 'a numeric type'
-    // What checking goes on with after an operand of the wrong kind.
-    const fallback = primitive(kind === 'float' ? 'f64' : 'i32')
+    // What checking goes on with after an operand of the wrong kind: a refused
+    // value, which what the call is used for says nothing more of
+    const fallback = RECOVERY
     const types = args.map((arg) => this.inferExpr(arg.value))
     // Inference types an `if` or a `match` from all of its arms, and leaves it
     // without a type when one of them has no value. Checking it against the
@@ -6704,6 +7348,11 @@ class CheckContext {
     const leftType = this.inferExpr(expr.left)
     const rightType = this.inferExpr(expr.right)
     if (leftType === RECOVERY || rightType === RECOVERY) {
+      // The other operand of && or || is still a condition of its own.
+      if (expr.op === '&&' || expr.op === '||') {
+        if (leftType !== RECOVERY) this.requireBool(expr.left, leftType, `operand of '${expr.op}'`)
+        if (rightType !== RECOVERY) this.requireBool(expr.right, rightType, `operand of '${expr.op}'`)
+      }
       return ['==', '!=', '<', '>', '<=', '>=', '&&', '||'].includes(expr.op) ? primitive('bool') : RECOVERY
     }
     const op = expr.op
@@ -6737,7 +7386,7 @@ class CheckContext {
     if (lone?.value.kind === 'string') {
       const shown = (operand: AST.Expr, type: ResolvedType) => (string(operand) === lone ? 'a string' : typeToString(type))
       this.error(expr.span.start, `'${op}' cannot be applied to ${shown(expr.left, leftType)} and ${shown(expr.right, rightType)} — ${notACharacter(lone.value.bytes)}`)
-      return comparison ? primitive('bool') : this.concretize(stripMax(lone === string(expr.left) ? rightType : leftType))
+      return comparison ? primitive('bool') : RECOVERY
     }
     // ...and a single-quoted literal is codepoints, never a string: compared
     // with an address it would be taken for one.
@@ -6750,15 +7399,28 @@ class CheckContext {
       return primitive('bool')
     }
 
-    if (!isScalar(left) || !isScalar(right)) {
-      this.checkAddressOperands(expr, leftType, rightType)
-      return fallback
+    // Two values of one enum whose every variant is a unit variant are
+    // compared by their tags, for equality only.
+    if ((op === '==' || op === '!=') && left.kind === 'enum' && right.kind === 'enum' && typeEquals(left, right)) {
+      if (left.variants.every((v) => v.fields === null)) return primitive('bool')
+      this.error(expr.span.start, `${noOperator(op, leftType, rightType)}: an enum with a payload is compared with match or if let`)
+      return primitive('bool')
     }
 
+    if (!isScalar(left) || !isScalar(right)) {
+      // An operator refused on a struct, an enum or an address is a refused
+      // value: what it is used for says nothing more. A comparison is a bool.
+      const before = this.errorsReported
+      this.checkAddressOperands(expr, leftType, rightType)
+      return this.errorsReported > before && !comparison ? RECOVERY : fallback
+    }
+
+    // An arithmetic, bitwise or shift operator refused on a bool or a float
+    // is a refused value too; a comparison is a bool whatever it compares.
     const problem = operandProblem(op, leftType) ?? operandProblem(op, rightType)
     if (problem) {
       this.error(expr.span.start, problem)
-      return fallback
+      return comparison ? fallback : RECOVERY
     }
 
     // Arithmetic with a comptime constant propagates ranges:
@@ -7000,10 +7662,10 @@ class CheckContext {
       case 'IfExpr': {
         if (!e.else_) return false
         const bodies = [e.thenBranch, ...e.elifs.map((elif) => elif.thenBranch), e.else_]
-        return bodies.every((body) => bodyExits(body) || this.branchZero(body))
+        return bodies.every((body) => bodyExits(body, this.exhaustive) || this.branchZero(body))
       }
       case 'MatchExpr':
-        return e.arms.every((arm) => bodyExits(arm.body) || this.branchZero(arm.body))
+        return e.arms.every((arm) => bodyExits(arm.body, this.exhaustive) || this.branchZero(arm.body))
       default:
         return false
     }
@@ -7017,6 +7679,8 @@ class CheckContext {
   // What is wrong with a cast, if anything. A function's name cast to a
   // number or an address (f as u32) has no value to cast.
   private castProblemOf(operand: AST.Expr, from: ResolvedType, to: ResolvedType): string | null {
+    // A refused value, or a type that did not resolve, has its error.
+    if (from === RECOVERY || to === RECOVERY) return null
     // A host reference is no number and no address: nothing converts to or
     // from one, and one host type is not another. 0 is an optional one's
     // none, and a plain one widens to its optional.
@@ -7040,7 +7704,15 @@ class CheckContext {
     if (named && unwrap(to).kind !== 'func') {
       return `cannot cast ${typeToString(from)} to ${typeToString(to)}: '${named}' is a function, which has no run-time value yet`
     }
-    const problem = castProblem(from, to)
+    // A pointer, a slice or an array of a type that did not resolve is one
+    // all the same: what is wrong whatever it holds is said (a pointer is no
+    // struct, a slice no number, a slice is not cast to a pointer), and what
+    // depends on what it holds is not. Its refused parts are taken to be what
+    // the other side has there (fillRefused).
+    const filled = fillRefused(from, to)
+    const found = castProblem(filled, fillRefused(to, filled))
+    // Said of the types as they are
+    const problem = found && (castProblem(from, to) ?? found)
     const none = problem && !problem.includes(': ') ? unresolvedOptional(from, to) : null
     return none ? `${problem}: ${none}` : problem
   }
@@ -7065,6 +7737,8 @@ class CheckContext {
     // Its error is already reported: what it is used for says nothing more.
     // Nor does what is assigned to something of a type that did not resolve.
     if (actual === RECOVERY || unresolved(expected)) return
+    // A value that holds a refused part fits where the rest of it does.
+    const fitting = fillRefused(actual, expected)
     const from = unwrap(actual)
     const to = unwrap(expected)
     // An array literal's own type is a guess from its elements ([0.5, x] an
@@ -7079,7 +7753,7 @@ class CheckContext {
       this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}: ${noneIsWritten(to)}`)
       return
     }
-    if (!elementwise && !typeAssignable(expected, actual)) {
+    if (!elementwise && !typeAssignable(expected, fitting)) {
       // 0 is none of a plain host reference, which is never null.
       const why = to.kind === 'host' && !to.optional && from.kind === 'comptime_int' && from.value === 0n ? `: ${neverNull(to)}`
         : unresolvedOptional(actual, expected) ? `: ${unresolvedOptional(actual, expected)}`
@@ -7145,7 +7819,7 @@ class CheckContext {
           if (!done || !typeEquals(done, elementType)) this.coerce(element, type, elementType, prefix)
         }
       }
-    } else if (!sameRepresentation(from, to)) {
+    } else if (!sameRepresentation(unwrap(fitting), to)) {
       // Any other struct or tuple value is several wasm values already on
       // the stack: its fields can't be widened in place.
       this.error(expr.span.start, `${prefix}cannot convert ${typeToString(actual)} to ${typeToString(expected)} implicitly: convert its fields`)
@@ -7332,7 +8006,9 @@ class CheckContext {
         if (operand.kind === 'comptime_int') return comptimeInt(-operand.value)
         if (operand.kind === 'comptime_float') return comptimeFloat(-operand.value)
         if (!isNumeric(operand)) {
+          // A refused value: what it is used for says nothing more
           this.error(expr.span.start, `'-' needs a number, not ${typeToString(operandType)}`)
+          return RECOVERY
         }
         // The operand's range doesn't survive: -x of a u32#8 isn't below 8.
         return stripMax(operandType)
@@ -7341,6 +8017,7 @@ class CheckContext {
         if (operand.kind === 'comptime_int') return comptimeInt(~operand.value, true)
         if (!isInteger(operand)) {
           this.error(expr.span.start, `'~' needs an integer, not ${typeToString(operandType)}`)
+          return RECOVERY
         }
         return stripMax(operandType)
       case '&': {
@@ -7352,6 +8029,8 @@ class CheckContext {
         // generic, a method's receiver), a place & gave the address of has
         // that address as its type already: it is not taken twice.
         if (this.addressed.has(expr.operand)) return operandType
+        // A refused value (a type's name) has no address to say anything of
+        if (operandType === RECOVERY) return RECOVERY
         // `&x as T` is `&(x as T)`: where the cast was refused and its
         // message said what was meant (see castPrecedence), the & is taken
         // as meant, its value the cast's type, and nothing more is said.
@@ -7628,6 +8307,10 @@ class CheckContext {
             return primitive('u32')
           }
         }
+        if (unwrappedType.kind === 'enum') {
+          this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}: take a variant apart with match or if let`)
+          return RECOVERY
+        }
         this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}${this.subtractionHint(expr.object, expr.member.name, objType)}`)
         return primitive('i32')
       }
@@ -7749,6 +8432,10 @@ class CheckContext {
     }
     const start = bound(expr.start)
     const end = bound(expr.end)
+    // A refused value has its error: it has no range to say anything of.
+    // Nor has a pointer to a type that did not resolve, which may or may not
+    // be an array; a pointer to an array of one, or a slice of one, has.
+    if (ranged === RECOVERY || pointsToRefused(ranged)) return RECOVERY
 
     let elem: ResolvedType
     let mutable: boolean
@@ -7787,6 +8474,9 @@ class CheckContext {
         : `cannot take a range of ${typeToString(objType)}: use a slice or a pointer to an array`)
       return RECOVERY
     }
+    // A refused bound (a type's name) has its error: whether the range fits
+    // is not asked as well.
+    if ([expr.start, expr.end].some((e) => e !== null && this.exprTypes.get(e) === RECOVERY)) return RECOVERY
     return slice(elem, mutable, !proven)
   }
 
@@ -7865,8 +8555,10 @@ class CheckContext {
       : valueType.kind === 'array' ? valueType.element
       : null
     // (Its type says it where it is an array of elements: looking at it as
-    // an element would leave its type taken for one.)
-    const elements = !!srcElem && typeEquals(unwrap(srcElem), unwrap(elem))
+    // an element would leave its type taken for one.) Elements whose type
+    // did not resolve are taken for the range's: a copy of them is checked
+    // as a copy (its lengths), and says nothing of what they are.
+    const elements = !!srcElem && (unresolved(srcElem) || typeEquals(unwrap(srcElem), unwrap(elem)))
     if (!srcElem || (elements ? typeAssignable(cell, valueType) : this.fits(value, cell))) {
       // A value that is no array is said to be no element.
       fill()
@@ -8102,8 +8794,11 @@ class CheckContext {
     let indexed = this.inferExpr(expr.object)
     this.insideIfLetCondition = resolvable
     const index = this.inferIndexValue(expr.index)
-    // An index whose type has the error says nothing more.
-    if (unresolved(indexed) || unresolved(index)) return RECOVERY
+    // An index whose type has the error says nothing more, nor does one of
+    // a value whose kind did not resolve. An array, or a pointer to one, of
+    // elements whose type did not resolve is checked as an array: its length
+    // and how it is held are known.
+    if (unresolvedKind(indexed) || unresolved(index)) return RECOVERY
     // A fixed array that lies in memory is indexed at run time through its
     // address, as the *[N]T it is there. A constant index picks the element
     // where it is, as in an array held in registers.
@@ -8120,13 +8815,17 @@ class CheckContext {
     // when it can be one, checked when it is read; otherwise if let or ??
     // has to resolve the index where it is taken.
     const unproven = (elem: ResolvedType, problem: string, why = ''): ResolvedType => {
+      // An element whose own type did not resolve may be one that has an
+      // optional (a pointer): read, it is refused, and says nothing more. A
+      // pointer or a slice to such a type is one, whatever that type is.
+      if (!row && unwrap(elem) === RECOVERY && this.writingTo !== expr) return RECOVERY
       if (!row && (unwrap(elem).kind === 'pointer' || unwrap(elem).kind === 'slice')) {
         if (this.looking && !this.unproven.has(expr)) this.lookUnproven.push(expr)
         this.unproven.add(expr)
         return optionalOf(elem)
       }
       if (this.writingTo === expr) this.unprovenWrite(expr)
-      else if (!this.insideIfLetCondition) {
+      else if (!this.insideIfLetCondition && this.runTimeArgument === 0) {
         this.error(expr.index.span.start, `${problem} requires 'if let' or '??'${why} (${noOptional(elem)})`)
       }
       return row ?? elem
@@ -8212,7 +8911,7 @@ class CheckContext {
         const elem = packed ? pointer(array(arrayType.element, sizes.slice(1)), false, objType.mutable) : arrayType.element
         const shown = packed ? typeToString(pointer(arrayType)) : `*[${sizes?.[0]}]${typeToString(elem)}`
         const notOptional = (problem: string): ResolvedType => {
-          if (!this.insideIfLetCondition) this.error(expr.index.span.start, `${problem} requires 'if let' or '??' (rows are not optional)`)
+          if (!this.insideIfLetCondition && this.runTimeArgument === 0) this.error(expr.index.span.start, `${problem} requires 'if let' or '??' (rows are not optional)`)
           return elem
         }
         // Fixed-size pointer array *[N]T: check bounds
@@ -8353,7 +9052,9 @@ class CheckContext {
   // numbers. A constant among them meets the others' type: [0, c] is a
   // [2]?Canvas for c: ?Canvas, and [0, s] no [2]i32 holding a slice.
   private settleMixed(elements: AST.Expr[], types: ResolvedType[]): ResolvedType {
-    const type = this.unifyTypes(types)
+    // A refused value fits whatever the others are.
+    const own = types.filter((t) => !holdsRefused(t))
+    const type = this.unifyTypes(own.length > 0 ? own : types)
     const literal = (t: ResolvedType) => t.kind === 'comptime_array' || t.kind === 'comptime_list'
     if (!types.some((t) => isComptimeNumber(unwrap(t))) && types.every((t) => literal(unwrap(t)) || typeAssignable(type, t))) return type
     // Elements with no one type are that one error, and nothing more is
@@ -8378,7 +9079,7 @@ class CheckContext {
       this.error(at.span.start, `elements have different types: ${typeToString(odd)} and ${typeToString(type)} (cast one explicitly)`)
       return type
     }
-    for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
+    for (const [i, element] of elements.entries()) if (!unresolved(types[i])) this.coerce(element, types[i], type)
     return type
   }
 
@@ -8395,20 +9096,23 @@ class CheckContext {
   private settleTuples(elements: AST.Expr[], types: ResolvedType[]): ResolvedType {
     const settled = arraysOfOtherLengthsAsSlices(types)
     const { type, odd } = this.commonType(settled)
-    if (odd) return this.unifyTypes(settled)
-    for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
+    // The tuples met are the first one's that holds no refused value: one
+    // that does fits wherever it is used, and says nothing of the others.
+    const own = settled.filter((t) => !holdsRefused(t))
+    if (odd) return this.unifyTypes(own.length > 0 ? own : settled)
+    for (const [i, element] of elements.entries()) if (!unresolved(types[i])) this.coerce(element, types[i], type)
     return type
   }
 
   inferRepeat(expr: AST.RepeatExpr): ResolvedType {
     // [value; count] - repeat value count times
     const valueType = this.inferExpr(expr.value)
-    this.inferExpr(expr.count) // Type check the count expression
+    const countType = this.inferExpr(expr.count) // Type check the count expression
 
-    // Count should be a compile-time integer
+    // Count should be a compile-time integer; a refused one has its error
     const countValue = this.evalComptimeExpr(expr.count)
     if (!countValue || countValue.kind !== 'int') {
-      this.error(expr.count.span.start, 'repeat count must be a compile-time integer')
+      if (countType !== RECOVERY || !this.refusedValue(expr.count)) this.error(expr.count.span.start, 'repeat count must be a compile-time integer')
       return comptimeArray(valueType)
     }
 
@@ -8442,7 +9146,7 @@ class CheckContext {
   // don't agree are an error where the value is used; in a statement they
   // just leave the expression without one.
   private unifyBranches(branches: Branch[], valueUsed: boolean): ResolvedType {
-    const valued = branches.filter(b => !bodyExits(b.body))
+    const valued = branches.filter(b => !bodyExits(b.body, this.exhaustive))
     if (valued.length === 0 || valued.some(b => b.type.kind === 'void')) return VOID
     let type = valued[0].type
     if (valued.every(b => isComptimeNumber(b.type))) {
@@ -8475,6 +9179,9 @@ class CheckContext {
     for (const b of valued) {
       const value = bodyValue(b.body)
       if (!value) continue
+      // A refused value fits wherever it is used (coerce takes its refused
+      // parts to be what the type has there).
+      if (unresolved(b.type)) continue
       // An array literal next to a pointer or a slice is laid out as one, as
       // it is wherever it meets that type: `if c { xs } else { [] }`.
       if (laidOutLiteral(value, b.type, type)) this.checkExpr(value, type)
@@ -8486,20 +9193,42 @@ class CheckContext {
   // The one type several values, not all of them constants, widen to: the
   // widest of them. `odd` is one that doesn't widen to it, when they have no
   // such type.
-  private commonType(types: ResolvedType[]): { type: ResolvedType; odd?: ResolvedType } {
+  private commonType(all: ResolvedType[]): { type: ResolvedType; odd?: ResolvedType } {
+    // A refused value fits wherever it is used: the others say what the
+    // type is, and it is never the odd one. Constants alone say nothing of
+    // it (they have no type of their own): with them the whole is refused,
+    // or a tuple or array of refused parts where they are one (refusedShape).
+    // A tuple or array literal that holds one meets the others where its
+    // other parts are: its arity, its names, and the type of each other part.
+    const types = all.filter((t) => !unresolved(t))
+    if (types.length === 0) return { type: all[0] }
+    if (types.length < all.length && types.every(onlyConstants)) {
+      const shape = refusedShape(types)
+      if (shape) return { type: shape }
+    }
+    const fits = (to: ResolvedType, t: ResolvedType) => typeAssignable(to, fillRefused(t, to))
     // Tuples with constants in them agree field by field, as their fields
     // would as values by themselves: (1, 0) and (0, n) are an (i32, i32).
     // A field that is a constant in each takes the default that holds them.
+    // So do tuples that hold a refused value: (-true, 1) and (a, 2) are
+    // whatever a is, and an i32.
     const tuples = types.filter((t): t is TupleRT => t.kind === 'tuple')
     const [first] = tuples
     const alike = tuples.length === types.length && tuples.every(t =>
       t.fields.length === first.fields.length && t.fields.every((f, i) => f.name === first.fields[i].name))
-    if (alike && tuples.some(holdsConstant)) {
+    if (alike && tuples.some((t) => holdsConstant(t) || holdsRefused(t))) {
       const tupleType = tuple(first.fields.map((f, i) => {
         const of = tuples.map(t => t.fields[i].type)
         return { ...f, type: of.every(isComptimeNumber) ? this.concretize(standIn(of)) : this.commonType(of).type }
       }))
-      return { type: tupleType, odd: types.find(t => !typeAssignable(tupleType, t)) }
+      return { type: tupleType, odd: types.find(t => !fits(tupleType, t)) }
+    }
+    // A tuple that holds a refused value next to one of another shape is
+    // the odd one, whichever comes first.
+    const whole = types.filter((t) => !holdsRefused(t))
+    if (whole.length > 0 && whole.length < types.length) {
+      const { type, odd } = this.commonType(whole)
+      return { type, odd: odd ?? types.find((t) => !fits(type, t)) }
     }
     let type = types[0]
     for (const t of types) {
@@ -8558,8 +9287,9 @@ class CheckContext {
   // when the pattern is not one name.
   private ifLetArm(arm: AST.IfExpr | AST.ElifBranch, branch: () => void): boolean {
     const pattern = arm.pattern
+    if (pattern && (pattern.kind === 'variant' || pattern.kind === 'constructor')) return this.ifLetVariant(arm, pattern, branch)
     if (!pattern || pattern.kind !== 'binding') {
-      this.error(arm.span.start, 'if let only supports simple bindings')
+      this.error(arm.span.start, 'if let takes a name, or a variant pattern of an enum')
       return false
     }
     // Infer the value — allow runtime indexing for primitive elements
@@ -8576,7 +9306,11 @@ class CheckContext {
       // Primitive element: condType is already the unwrapped element type
       elemType = condType
     } else {
-      this.error(arm.span.start, `if let requires an optional expression or bounds-checked index${nullQuestion(condType)}`)
+      // An enum is taken apart by its variants: a name alone binds no one.
+      const hint = unwrap(condType).kind === 'enum'
+        ? `: ${typeToString(condType)} is an enum, taken apart with a variant pattern, if let ${(unwrap(condType) as EnumRT).variants[0].name} = ${arm.condition.kind === 'IdentExpr' ? arm.condition.name : '...'}`
+        : nullQuestion(condType)
+      this.error(arm.span.start, `if let requires an optional expression or bounds-checked index${hint}`)
       elemType = condType
     }
     const unwrapped = elemType
@@ -8599,6 +9333,42 @@ class CheckContext {
     return true
   }
 
+  // `if let Grey(b) = c` or `elif let Red = c`: the branch runs where the
+  // value, an enum, is that variant, with the names bound to its fields.
+  // The value is a value like any other: an index into it is checked as
+  // any index is, and a variant pattern tests one thing, its variant.
+  private ifLetVariant(arm: AST.IfExpr | AST.ElifBranch, pattern: AST.MatchPattern & { kind: 'variant' | 'constructor' }, branch: () => void): boolean {
+    const valueType = this.inferExpr(arm.condition)
+    const said = this.declared.has(arm)
+    const error = (message: string) => {
+      if (!said) this.error(arm.span.start, message)
+      else this.errorsReported++
+    }
+    // The clash of a name with one in scope is said first, and the name is
+    // still declared, as a name an if let binds is: its uses in the branch
+    // are its own, and say nothing more.
+    const prevScope = this.currentScope
+    const then: Scope = { parent: prevScope, symbols: new Map() }
+    const clashes = new Set<string>()
+    for (const { name, at } of patternBindings(pattern)) {
+      const reported = this.errorsReported
+      this.bindName(then, name, null, arm.span.start, 'if let', arm, at)
+      if (this.errorsReported > reported) clashes.add(name)
+    }
+    const found = this.variantPattern(pattern, valueType, arm.condition, 'if let', error)
+    const twice = found.bindings ? boundTwice(pattern, 'if let', clashes, error, (at) => this.firstDeclared(at)) : []
+    this.declare(arm)
+    const bindings = onceEach(found.bindings ?? patternBindings(pattern).map((b) => ({ ...b, type: RECOVERY })), twice)
+    for (const b of bindings) this.bindName(then, b.name, b.type, arm.span.start, 'if let', arm, b.at)
+    this.currentScope = then
+    try {
+      branch()
+    } finally {
+      this.currentScope = prevScope
+    }
+    return true
+  }
+
   private checkBodyAgainst(body: AST.FuncBody, expected: ResolvedType): void {
     if (body.kind === 'Block') {
       for (let i = 0; i < body.stmts.length - 1; i++) {
@@ -8612,7 +9382,7 @@ class CheckContext {
       }
       if (last) this.checkStmt(last)
       const wanted = expected.kind !== 'void' && !(expected.kind === 'tuple' && expected.fields.length === 0)
-      if (wanted && !bodyExits(body)) {
+      if (wanted && !bodyExits(body, this.exhaustive)) {
         this.error(last?.span.start ?? body.span.start, `this branch has no value: expected ${typeToString(expected)}`)
       }
     } else {
@@ -8640,9 +9410,11 @@ class CheckContext {
   }
 
   // A literal pattern is compared with the subject, so it has to be a value
-  // of the subject's type. The names a pattern binds are its arm's own, and
-  // no more free to take than those of a `for`.
-  private checkMatchSubject(expr: AST.MatchExpr): void {
+  // of the subject's type; a variant pattern names a variant of the
+  // subject's enum, and takes its payload apart. The names a pattern binds
+  // are its arm's own, and no more free to take than those of a `for`.
+  // Gives each arm's bindings, which its body is checked with (inArm).
+  private checkMatchSubject(expr: AST.MatchExpr): Binding[][] {
     let subjectType = this.inferExpr(expr.subject)
     // A constant subject (1, a def, a fixed array's len) has no type for the
     // patterns to be compared in: it takes its default one, as the
@@ -8653,20 +9425,65 @@ class CheckContext {
       subjectType = type
     }
     const subject = unwrap(stripMax(subjectType))
-    for (const arm of expr.arms) {
-      for (const name of arm.patterns.flatMap(patternNames)) this.bindName(this.currentScope, name, null, arm.span.start, 'match', arm)
+    const covered = new Set<number>()
+    let catchAll = false
+    // An unknown variant or a name as the whole pattern leaves what the
+    // arms cover unknown: no coverage error is added to it.
+    let unknownCover = false
+    const armBindings = expr.arms.map((arm) => {
+      const bindings: Binding[] = []
+      // A name that clashes is that one error, and is still declared: its
+      // uses in the arm are its own, and say nothing more.
+      const clashes = new Set<string>()
+      const before = this.errorsReported
+      for (const { name } of arm.patterns.flatMap(patternBindings)) {
+        const reported = this.errorsReported
+        this.bindName(this.currentScope, name, null, arm.span.start, 'match', arm)
+        if (this.errorsReported > reported) clashes.add(name)
+      }
+      // A name an accepted pattern binds twice
+      const twice: string[] = []
+      const clashed = this.errorsReported > before
+      const said = this.declared.has(arm)
       this.declare(arm)
+      const error = (message: string) => {
+        if (!said) this.error(arm.span.start, message)
+        else this.errorsReported++
+      }
+      let refused = false
       for (const pattern of arm.patterns) {
+        if (pattern.kind === 'wildcard') {
+          catchAll = true
+          continue
+        }
         // Only a number, a bool or _ is compared: a tuple pattern would
         // never match.
         if (pattern.kind === 'tuple') {
           const what = pattern.quoted
             ? `${spellCodepoints(pattern.elements.map((e) => e.kind === 'positional' && e.pattern.kind === 'literal' && e.pattern.value.kind === 'int' ? Number(e.pattern.value.value) : 0), "'")} is a tuple of codepoints, and `
             : ''
-          this.error(arm.span.start, `${what}match cannot compare a tuple pattern yet: compare one field at a time`)
+          error(`${what}match cannot compare a tuple pattern yet: compare one field at a time`)
+          refused = true
           continue
         }
-        if (pattern.kind !== 'literal') continue
+        if (pattern.kind === 'binding') {
+          // Said where the name does not clash: a clash is the one error.
+          if (!clashed) error('a name as the whole pattern is not implemented: write _ and use the subject')
+          refused = true
+          unknownCover = true
+          continue
+        }
+        if (pattern.kind === 'variant' || pattern.kind === 'constructor') {
+          const found = this.variantPattern(pattern, subjectType, expr.subject, 'match', error)
+          if (found.unknown) unknownCover = true
+          if (found.index !== null) covered.add(found.index)
+          if (found.bindings === null) refused = true
+          else {
+            twice.push(...boundTwice(pattern, 'match', clashes, error, (at) => this.firstDeclared(at)))
+            bindings.push(...found.bindings)
+          }
+          continue
+        }
         const value = pattern.value
         const type = value.kind === 'int' ? comptimeInt(value.value)
           : value.kind === 'float' ? comptimeFloat(value.value)
@@ -8676,16 +9493,166 @@ class CheckContext {
         if (!type || !comparable || !typeAssignable(subject, type)) {
           const shown = type ? typeToString(type) : 'a string'
           const hint = value.kind === 'string' && isInteger(subject) ? ` — ${notACharacter(value.bytes)}` : ''
-          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}${hint}${nullQuestion(subjectType)}`)
+          error(`cannot match ${typeToString(subjectType)} against ${shown}${hint}${nullQuestion(subjectType)}`)
         }
       }
+      // An arm of several patterns matches where any of them does, and
+      // binds nothing: which pattern matched is not known in its body.
+      if (arm.patterns.length > 1 && bindings.length > 0 && !refused) {
+        const binding = arm.patterns.find((p) => patternBindings(p).length > 0)
+        error(`an arm of several patterns binds no names: give ${binding ? patternText(binding) : 'it'} an arm of its own`)
+        refused = true
+      }
+      // A refused pattern still declares the names it would bind, as refused
+      // values: their uses say nothing more.
+      if (refused) {
+        return onceEach(arm.patterns.flatMap(patternBindings).map((b) => ({ ...b, type: RECOVERY })), twice)
+      }
+      return onceEach(bindings, twice)
+    })
+    // A match on an enum handles every variant, or has a _ arm.
+    if (subject.kind === 'enum') {
+      const missing = subject.variants.filter((_, k) => !covered.has(k)).map((v) => v.name)
+      if (catchAll || missing.length === 0) this.exhaustive.add(expr)
+      else if (!unknownCover && !this.declared.has(expr)) {
+        this.error(expr.span.start, `match on ${typeToString(subjectType)} does not handle ${spoken(missing)}: add an arm for each, or a _ arm`)
+      }
+      this.declare(expr)
+    }
+    return armBindings
+  }
+
+  // A variant pattern, Red or Rgb(r, g, b), on a value of `valueType`: the
+  // variant it names, by its tag, and the names it binds with their fields'
+  // types, null where the pattern is refused (said through `error`).
+  // `unknown`: it names no variant of the enum.
+  private variantPattern(
+    pattern: AST.MatchPattern & { kind: 'variant' | 'constructor' }, valueType: ResolvedType, value: AST.Expr,
+    context: 'match' | 'if let', error: (message: string) => void,
+  ): { index: number | null; bindings: Binding[] | null; unknown?: true } {
+    const e = unwrap(stripMax(valueType))
+    if (valueType === RECOVERY) return { index: null, bindings: null }
+    if (e.kind !== 'enum') {
+      // A type whose name is declared twice (a type and an enum) has that
+      // error: which one the pattern meant is not known.
+      if (valueType.kind === 'named' && this.contested.has(valueType.name)) return { index: null, bindings: null, unknown: true }
+      // A struct's constructor pattern compares fields, which nothing does yet.
+      const sym = this.lookup(pattern.type)
+      if (pattern.kind === 'constructor' && sym?.kind === 'type' && unwrap(sym.type).kind === 'tuple') {
+        this.recordReference(pattern.type, pattern.span.start)
+        error(context === 'match'
+          ? 'match cannot compare a struct pattern yet: compare one field at a time'
+          : `if let cannot compare a struct pattern yet: take it apart with let ${structPatternHint(pattern)} = ${exprText(value) ?? '...'}`)
+        return { index: null, bindings: null }
+      }
+      const pointee = e.kind === 'pointer' ? unwrap(e.pointee) : null
+      if (pointee?.kind === 'enum') {
+        error(`cannot match ${typeToString(valueType)} against the variant pattern ${pattern.type}: match what it points to, ${exprText(value) ?? '...'}.*`)
+        return { index: null, bindings: null }
+      }
+      error(`cannot match ${typeToString(valueType)} against the variant pattern ${pattern.type}: only an enum has variants`)
+      return { index: null, bindings: null }
+    }
+    const index = e.variants.findIndex((v) => v.name === pattern.type)
+    // An enum whose name is declared twice is the first declaration: a
+    // variant of the one left out has that error.
+    if (index < 0 && e.name !== undefined && this.contested.has(e.name) && this.leftOutVariants.has(pattern.type)) return { index: null, bindings: null, unknown: true }
+    if (index < 0) {
+      error(`${typeToString(valueType)} has no variant '${pattern.type}': its variants are ${spoken(e.variants.map((v) => v.name))}`)
+      return { index: null, bindings: null, unknown: true }
+    }
+    this.patternVariants.set(pattern, index)
+    this.patternEnums.set(pattern.span.start, stripMax(valueType))
+    this.recordVariantUse(e, index, pattern.span.start)
+    const variant = e.variants[index]
+    if (pattern.kind === 'variant') return { index, bindings: [] }
+    if (variant.fields === null) {
+      error(`${variant.name} is a unit variant: its pattern is ${variant.name}, without parentheses`)
+      return { index, bindings: null }
+    }
+    const fields = variant.fields
+    const parts = pattern.elements
+    // A part is a name or _, nothing else.
+    const inner = (part: AST.MatchPatternElement) => (part.kind === 'namedShort' ? null : part.pattern)
+    if (parts.some((part) => {
+      const p = inner(part)
+      return p !== null && p.kind !== 'binding' && p.kind !== 'wildcard'
+    })) {
+      error('a part of a variant pattern is a name or _: compare the value in the arm')
+      return { index, bindings: null }
+    }
+    const byName = parts.filter((part) => part.kind !== 'positional').length
+    if (byName > 0 && byName < parts.length) {
+      error('a variant pattern takes its parts all by position or all by name')
+      return { index, bindings: null }
+    }
+    const bindings: Binding[] = []
+    if (byName === 0) {
+      if (parts.length !== fields.length) {
+        error(`${variant.name} has ${fields.length} field${fields.length === 1 ? '' : 's'}, but the pattern has ${parts.length}: give each a name or _`)
+        return { index, bindings: null }
+      }
+      parts.forEach((part, j) => {
+        const p = inner(part)
+        if (p?.kind === 'binding') bindings.push({ name: p.name, type: fields[j].type, at: p.span.start })
+      })
+      return { index, bindings }
+    }
+    const taken = new Set<number>()
+    for (const part of parts) {
+      if (part.kind === 'positional') continue
+      const j = fields.findIndex((f) => f.name === part.field)
+      if (j < 0) {
+        const names = fields.map((f) => f.name)
+        const hint = names.every((n) => n === null) ? ', whose fields have no names: give the parts by position'
+          : names.length === 1 ? `, whose only field is ${names[0]}`
+          : `, whose fields are ${spoken(names.map((n) => n ?? '_'))}`
+        error(`field '${part.field}' not found in ${variant.name}${hint}`)
+        return { index, bindings: null }
+      }
+      if (taken.has(j)) {
+        error(`${variant.name}: field '${part.field}' is given twice`)
+        return { index, bindings: null }
+      }
+      taken.add(j)
+      this.usedField(fields[j], part.span.start)
+      const p = inner(part)
+      if (part.kind === 'namedShort') bindings.push({ name: part.field, type: fields[j].type, at: part.span.start })
+      else if (p?.kind === 'binding') bindings.push({ name: p.name, type: fields[j].type, at: p.span.start })
+    }
+    return { index, bindings }
+  }
+
+  // A use of a variant in a pattern: of the module's variant where the
+  // subject's enum is the module's own (rename and references find it).
+  private recordVariantUse(e: EnumRT, index: number, at: number): void {
+    const name = e.variants[index].name
+    const sym = this.moduleScope.symbols.get(name)
+    // The module's enum, or one alike (a module restates an enum it takes
+    // from another, which is the same type: identity is structural)
+    if (sym?.kind === 'variant' && sym.index === index && typeEquals(unwrap(sym.type), e)) this.recordReference(name, at)
+  }
+
+  // Runs `check` with an arm's bindings in a scope of its own, which its
+  // body alone sees. A `let` in the body is declared around it, as a let in
+  // the body of a `for` is (letScope).
+  private inArm<T>(arm: AST.MatchArm, bindings: Binding[], check: () => T): T {
+    if (bindings.length === 0) return check()
+    const prevScope = this.currentScope
+    const scope: Scope = { parent: prevScope, symbols: new Map(), bindings: true }
+    for (const b of bindings) this.bindName(scope, b.name, b.type, arm.span.start, 'match', arm, b.at)
+    this.currentScope = scope
+    try {
+      return check()
+    } finally {
+      this.currentScope = prevScope
     }
   }
 
   inferMatch(expr: AST.MatchExpr): ResolvedType {
     const valueUsed = !this.statementExprs.has(expr)
-    this.checkMatchSubject(expr)
-    const branches: Branch[] = expr.arms.map(arm => ({ body: arm.body, type: this.inferBody(arm.body, valueUsed) }))
+    const bindings = this.checkMatchSubject(expr)
+    const branches: Branch[] = expr.arms.map((arm, i) => this.inArm(arm, bindings[i], () => ({ body: arm.body, type: this.inferBody(arm.body, valueUsed) })))
     return this.unifyBranches(branches, valueUsed)
   }
 
@@ -8819,6 +9786,8 @@ class CheckContext {
         reject(at, `type parameter '${p.ident}' is declared twice`)
       } else if (this.isTypeName(p.ident)) {
         reject(at, `type parameter '${p.ident}' has the name of a type declared in this module`)
+      } else if (this.variantNames.has(p.ident)) {
+        reject(at, `type parameter '${p.ident}' has the name of a variant declared in this module`)
       } else {
         typeParams.add(p.ident)
       }
@@ -8881,10 +9850,7 @@ class CheckContext {
       this.references.set(declared, uses)
       for (const use of uses) this.symbolRefs.set(use, declared)
     }
-    if (this.moduleScope.symbols.has(decl.ident)) {
-      this.error(decl.span.start, `'${decl.ident}' is already declared: a generic type's name is unique in its module`)
-      return
-    }
+    if (this.declaredSecond.has(decl) || this.moduleScope.symbols.has(decl.ident)) return
     const sym: Symbol & { kind: 'typefunc' } = { kind: 'typefunc', decl, owner: this, cache: new Map(), valid: true }
     this.moduleScope.symbols.set(decl.ident, sym)
     this.typeFuncs.push(sym)
@@ -8900,8 +9866,6 @@ class CheckContext {
         sym.valid = false
         this.error(offset, message)
       }
-      // A `type` declaration of the same name is refused where it stands.
-      if (this.pendingTypeNames.has(decl.ident)) this.contested.add(decl.ident)
       // A parameter is a type or a number: comptime T: type, comptime n: u32.
       const kindOf = (p: AST.Field) =>
         isTypeParam(p) ? (/^[A-Z]/.test(p.ident ?? '') ? 'type' : null)
@@ -8919,6 +9883,7 @@ class CheckContext {
           if (problem) reject(p.span.start, problem)
         } else if (names.has(name)) reject(p.span.start, `type parameter '${name}' is declared twice`)
         else if (this.isTypeName(name)) reject(p.span.start, `type parameter '${name}' has the name of a type declared in this module`)
+        else if (this.variantNames.has(name)) reject(p.span.start, `type parameter '${name}' has the name of a variant declared in this module`)
         names.add(name)
       }
       const applied = typeApplications(decl.body).find((t) => names.has(t.name))
@@ -8974,6 +9939,9 @@ class CheckContext {
       return bare ? `'${name}' is a generic type: write ${typeFuncForm(sym.decl)}` : null
     }
     if (sym?.kind !== 'typefunc') {
+      // A name declared twice is the first declaration's, which has the error:
+      // whether it was meant as a generic type is not known.
+      if (this.contested.has(name)) return null
       if (sym?.kind === 'type' || this.pendingTypeNames.has(name)) return `'${name}' is not a generic type`
       const similar = this.findSimilar(name)
       return `unknown generic type '${name}'${similar ? ` — did you mean '${similar}'?` : ''}`
@@ -9018,14 +9986,26 @@ class CheckContext {
       this.error(arg.span.start, message)
       return null
     }
+    // The value of a refused def has its one error, at the def, and a
+    // variant of an enum left out the clash.
+    if (this.refusedDefUse(arg.kind === 'ValueArg' ? ungrouped(arg.value) : arg)) return null
+    if (arg.kind === 'ValueArg' ? this.namesLeftOut(arg.value) && this.constantBesidesLeftOut(arg.value) : this.namesLeftOut(arg)) return null
     if (arg.kind !== 'ValueArg') return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
     // As in a length: a def declared further down is a number here too
     this.collectDefsIn(arg.value)
+    this.inferFloatAnnotations(arg.value)
     const value = this.evalComptimeExpr(arg.value)
     if (value === null) {
-      const unknown = unknownNames(arg.value).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name))
+      const unknown = unknownNames(arg.value).find((name) => !this.lookup(name.name) && !this.isLeftOut(name.name) && !this.signatureNames?.has(name.name))
       if (unknown) return fail(this.unknownIdentifier(unknown.name, true))
-      if (this.dividesByZero(arg.value)) return fail(`${place} divides by zero`)
+      const given = arg.value
+      if (this.besidesLeftOut(given, () => this.dividesByZero(given))) return fail(`${place} divides by zero`)
+      // A refused value (a refused operator) has its one error. (A name of
+      // the signature's, a parameter, is no value here.)
+      if (unknownNames(given).every((name) => this.lookup(name.name) || this.isLeftOut(name.name))) {
+        this.besidesLeftOut(given, () => this.inferExpr(given))
+        if (this.refusedValue(given)) return null
+      }
       return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
     }
     const wanted = owner.resolveType(param.type)
@@ -9663,7 +10643,7 @@ class CheckContext {
   // its 8 given to a value parameter. Any other call with value arguments is
   // a value, as Cell(1, 2) is. Null where it is no type.
   typeApplied(expr: AST.Expr): AST.Type | null {
-    return typeOfArg(expr, (call) => this.applicationOf(call))
+    return typeOfArg(expr, (call) => this.applicationOf(call), (name) => this.lookup(name)?.kind === 'variant')
   }
 
   private applicationOf(call: AST.CallExpr): AST.Type | null | undefined {
@@ -9695,14 +10675,33 @@ class CheckContext {
       // module, and checked against the parameter's type as any argument
       // is. The instance gets the value it has in that type: ~0 for a
       // `comptime m: u8` is 255.
+      if (!this.typeApplied(arg)) this.inferFloatAnnotations(arg)
       const constant = this.typeApplied(arg) ? null : this.evalComptimeExpr(arg)
       if (constant === null || constant.kind === 'data_ptr' || constant.kind === 'type' || constant.kind === 'func') {
-        const unknown = constant === null ? unknownNames(arg).find((n) => !this.lookup(n.name)) : undefined
+        // A refused value (a refused operator, a use of a refused def, a
+        // variant of an enum left out) has its one error: that it is no
+        // constant is not said as well.
+        if (this.refusedDefUse(ungrouped(arg)) || (this.namesLeftOut(arg) && this.constantBesidesLeftOut(arg))) return null
+        // Its value is inferred to tell which it is. Its code's own errors
+        // are said (a refused operator, `ct(-b)` for b a bool parameter, a
+        // field it has not, a call of the wrong arity), and a value read at
+        // run time is the one error below as well; an index in it is not
+        // told it needs an if let (`d[i]`), as it is no constant either way.
+        if (constant === null && !this.typeApplied(arg) && unknownNames(arg).every((n) => this.lookup(n.name) || this.isLeftOut(n.name))) {
+          this.runTimeArgument++
+          try {
+            this.besidesLeftOut(arg, () => this.inferExpr(arg))
+          } finally {
+            this.runTimeArgument--
+          }
+          if (this.refusedValue(arg)) return null
+        }
+        const unknown = constant === null ? unknownNames(arg).find((n) => !this.lookup(n.name) && !this.isLeftOut(n.name)) : undefined
         if (unknown && !this.typeApplied(arg)) {
           this.error(unknown.span.start, this.unknownIdentifier(unknown.name, true))
           return null
         }
-        if (constant === null && this.dividesByZero(arg)) {
+        if (constant === null && this.besidesLeftOut(arg, () => this.dividesByZero(arg))) {
           this.error(arg.span.start, `${place} of '${callee}' divides by zero`)
           return null
         }
@@ -10680,11 +11679,18 @@ function lengthText(expr: AST.Expr): string {
   }
 }
 
-function typeOfArg(expr: AST.Expr, apply?: ApplyOf): AST.Type | null {
+// A capitalised name is read as a type unless it is a variant (`isVariant`,
+// looked up where the argument is written): a type's, an enum's, a host
+// type's, a type parameter's, or one that names nothing, which is then an
+// unknown type where it is resolved.
+function typeOfArg(expr: AST.Expr, apply?: ApplyOf, isVariant?: (name: string) => boolean): AST.Type | null {
   switch (expr.kind) {
     case 'TypeExpr':
       return expr.type
     case 'IdentExpr':
+      if (/^[A-Z]/.test(expr.name)) {
+        return isVariant?.(expr.name) ? null : { kind: 'TypeRef', name: expr.name, span: expr.span }
+      }
       return PRIMITIVE_NAMES.has(expr.name)
         ? { kind: 'PrimitiveType', name: expr.name as AST.PrimitiveType['name'], span: expr.span }
         : null
@@ -10692,10 +11698,10 @@ function typeOfArg(expr: AST.Expr, apply?: ApplyOf): AST.Type | null {
       if (expr.elements.length === 0) return null
       // (u32) is u32, as a type in parentheses is anywhere.
       const only = expr.elements[0]
-      if (expr.elements.length === 1 && !only.name) return only.value ? typeOfArg(only.value, apply) : null
+      if (expr.elements.length === 1 && !only.name) return only.value ? typeOfArg(only.value, apply, isVariant) : null
       const fields: AST.Field[] = []
       for (const el of expr.elements) {
-        const type = el.value ? typeOfArg(el.value, apply) : null
+        const type = el.value ? typeOfArg(el.value, apply, isVariant) : null
         if (!type) return null
         fields.push({ kind: 'Field', ident: el.name, type, span: el.span })
       }
@@ -10704,11 +11710,13 @@ function typeOfArg(expr: AST.Expr, apply?: ApplyOf): AST.Type | null {
     case 'CallExpr': {
       const applied = apply?.(expr)
       if (applied !== undefined) return applied
-      // Vec(u32): a generic type applied, when every argument is a type
+      // Vec(u32): a generic type applied, when every argument is a type.
+      // A variant's constructor, Solid(Red), is a value.
       if (expr.callee.kind !== 'IdentExpr' || !/^[A-Z]/.test(expr.callee.name) || expr.args.length === 0) return null
+      if (isVariant?.(expr.callee.name)) return null
       const args: AST.Type[] = []
       for (const arg of expr.args) {
-        const type = arg.value && !arg.name ? typeOfArg(arg.value, apply) : null
+        const type = arg.value && !arg.name ? typeOfArg(arg.value, apply, isVariant) : null
         if (!type) return null
         args.push(type)
       }
@@ -10886,6 +11894,106 @@ function unresolved(type: ResolvedType): boolean {
   return (type.kind === 'slice' || type.kind === 'array') && unresolved(type.element)
 }
 
+// Whether a type's own kind did not resolve: the recovery type, a name for
+// it, or a pointer straight to one. An array, or a pointer to an array,
+// whose element did not resolve is still one: its length and how it is held
+// are known.
+function unresolvedKind(type: ResolvedType): boolean {
+  if (type === RECOVERY) return true
+  if (type.kind === 'named') return unresolvedKind(type.type)
+  if (type.kind === 'pointer') return unwrap(type.pointee).kind !== 'array' && unresolved(type.pointee)
+  // A slice of them says nothing more where it is indexed (its length is a
+  // run-time value either way).
+  return type.kind === 'slice' && unresolved(type)
+}
+
+// A type that holds a refused part, with each such part taken to be what
+// the type it meets has in that place: a refused value fits wherever it is
+// used, and the rest of what holds it still has to fit ((-true, 1) meets
+// (u8, bool) as (u8, int(1)), which does not; a []Nope meets a []u8 as one).
+function fillRefused(from: ResolvedType, to: ResolvedType): ResolvedType {
+  if (from === RECOVERY) return to
+  if (!holdsRefused(from)) return from
+  const f = unwrap(from)
+  const t = unwrap(to)
+  if (f.kind === 'tuple') {
+    if (t.kind !== 'tuple' || t.fields.length !== f.fields.length) return from
+    return tuple(f.fields.map((field, i) => ({ ...field, type: fillRefused(field.type, t.fields[i].type) })))
+  }
+  if (f.kind === 'pointer') {
+    if (t.kind === 'pointer') return { ...f, pointee: fillRefused(f.pointee, t.pointee) }
+    // *[N]T meets a []T as the slice it is
+    const array = unwrap(f.pointee)
+    if (t.kind === 'slice' && array.kind === 'array') return { ...f, pointee: { ...array, element: fillRefused(array.element, t.element) } }
+    return from
+  }
+  if (f.kind === 'slice' || f.kind === 'array') {
+    return t.kind === 'slice' || t.kind === 'array' ? { ...f, element: fillRefused(f.element, t.element) } : from
+  }
+  if (f.kind === 'comptime_array') {
+    return t.kind === 'array' || t.kind === 'comptime_array' ? { ...f, element: fillRefused(f.element, t.element) } : from
+  }
+  if (f.kind === 'comptime_list' && (t.kind === 'array' || t.kind === 'comptime_array')) {
+    return { ...f, elements: f.elements.map((e) => fillRefused(e, t.element)) }
+  }
+  return from
+}
+
+// What constants next to a refused value are, as one: a constant number
+// says nothing of the type (the refused value could be any number), so it is
+// refused too; a tuple or an array literal of them is still a tuple or an
+// array of that many, whose parts are refused. Null where they do not all
+// have one shape, which is then their own mismatch.
+function refusedShape(types: ResolvedType[]): ResolvedType | null {
+  const [first] = types
+  if (types.every(isComptimeNumber)) return RECOVERY
+  if (first.kind === 'tuple') {
+    const tuples = types.filter((t): t is TupleRT => t.kind === 'tuple' && t.fields.length === first.fields.length && t.fields.every((f, i) => f.name === first.fields[i].name))
+    if (tuples.length !== types.length) return null
+    const fields = first.fields.map((f, i) => ({ ...f, type: refusedShape(tuples.map((t) => t.fields[i].type)) }))
+    return fields.every((f) => f.type) ? tuple(fields as typeof first.fields) : null
+  }
+  if (first.kind === 'comptime_array') {
+    const arrays = types.filter((t) => t.kind === 'comptime_array' && t.count === first.count) as (typeof first)[]
+    if (arrays.length !== types.length) return null
+    const element = refusedShape(arrays.map((a) => a.element))
+    return element ? { ...first, element } : null
+  }
+  return null
+}
+
+// Whether a type is f32, a name for it too
+function isF32(type: ResolvedType | undefined): boolean {
+  const t = type && unwrap(type)
+  return t?.kind === 'primitive' && t.name === 'f32'
+}
+
+// Whether a type is a pointer to a type that did not resolve, itself: what
+// it points to may or may not be an array.
+function pointsToRefused(type: ResolvedType): boolean {
+  const u = unwrap(type)
+  return u.kind === 'pointer' && unwrap(u.pointee) === RECOVERY
+}
+
+// Whether a value's type is a refused value's, or holds one: a tuple or an
+// array literal with one among its fields or elements, as (-true, 1) and
+// [-true, 1] are. Next to other values, it fits whatever they are.
+function holdsRefused(type: ResolvedType): boolean {
+  if (unresolved(type)) return true
+  if (type.kind === 'tuple') return type.fields.some((f) => holdsRefused(f.type))
+  if (type.kind === 'comptime_array') return holdsRefused(type.element)
+  return type.kind === 'comptime_list' && type.elements.some(holdsRefused)
+}
+
+// Whether a type is a constant's, or a tuple's or array literal's of
+// constants alone: it has no type of its own, nor any part of it.
+function onlyConstants(type: ResolvedType): boolean {
+  if (isComptimeNumber(type)) return true
+  if (type.kind === 'tuple') return type.fields.every((f) => onlyConstants(f.type))
+  if (type.kind === 'comptime_array') return onlyConstants(type.element)
+  return type.kind === 'comptime_list' && type.elements.every(onlyConstants)
+}
+
 // Whether a value of this type can decide a type parameter. An untyped literal
 // (7, 0.5, [1, 2, 3]) has no type of its own: it takes the one it is used as.
 function hasOwnType(type: ResolvedType): boolean {
@@ -11008,6 +12116,8 @@ function containsByValue(type: ResolvedType, refs: readonly ResolvedType[], seen
       return type.fields.some((f) => containsByValue(f.type, refs, seen))
     case 'array':
       return containsByValue(type.element, refs, seen)
+    case 'enum':
+      return type.variants.some((v) => (v.fields ?? []).some((f) => containsByValue(f.type, refs, seen)))
     default:
       return false
   }
@@ -11510,6 +12620,10 @@ function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number; c
       case 'TypeApply':
         if (n.span) names.push({ name: n.name as string, offset: n.span.start, called: callees.has(n) })
         break
+      case 'Arg':
+        // A shorthand `n:` reads the variable n
+        if (n.span && typeof n.name === 'string' && n.value === null) names.push({ name: n.name, offset: n.span.start, called: false })
+        break
       case 'CallExpr': {
         // x.f(a) may be a call of the function f.
         const callee = n.callee as AST.Expr
@@ -11597,7 +12711,7 @@ function negatedNumber(expr: AST.UnaryExpr): AST.Expr | null {
   const inner = expr.operand
   const lit = inner.kind === 'AnnotationExpr' || inner.kind === 'CastExpr' ? inner.expr : inner
   if (lit.kind !== 'LiteralExpr' || lit.param === undefined || (lit.value.kind !== 'int' && lit.value.kind !== 'float')) return null
-  const negated: AST.LiteralExpr = { ...lit, value: { ...lit.value, value: -lit.value.value } as AST.LiteralValue, span: { start: expr.span.start, end: lit.span.end } }
+  const negated: AST.LiteralExpr = { ...lit, value: negatedLiteral(lit.value), span: { start: expr.span.start, end: lit.span.end } }
   if (inner === lit) return { ...negated, span: expr.span }
   return { ...inner, expr: negated, span: expr.span } as AST.Expr
 }
@@ -11760,15 +12874,25 @@ function annotationsIn(expr: unknown, found: AST.AnnotationExpr[] = []): AST.Ann
 }
 
 // The names an expression reads, for the one it cannot be computed without
-function unknownNames(expr: unknown, found: AST.IdentExpr[] = []): AST.IdentExpr[] {
+// Whether an expression, or any part of it, is a node `is` says it is.
+function holdsNode(expr: unknown, is: (node: { kind?: string }) => boolean): boolean {
+  if (Array.isArray(expr)) return expr.some((e) => holdsNode(e, is))
+  if (expr === null || typeof expr !== 'object' || expr instanceof Uint8Array) return false
+  if (is(expr as { kind?: string })) return true
+  return Object.entries(expr).some(([key, value]) => key !== 'span' && holdsNode(value, is))
+}
+
+// The names an expression reads, but none inside a node `skip` says to leave.
+function unknownNames(expr: unknown, found: AST.IdentExpr[] = [], skip?: (node: { kind?: string }) => boolean): AST.IdentExpr[] {
   if (Array.isArray(expr)) {
-    for (const e of expr) unknownNames(e, found)
+    for (const e of expr) unknownNames(e, found, skip)
   } else if (expr !== null && typeof expr === 'object' && !(expr instanceof Uint8Array)) {
     const n = expr as { kind?: string }
+    if (skip?.(n)) return found
     if (n.kind === 'IdentExpr') found.push(n as AST.IdentExpr)
     // A member's name and a type's are no names of values.
     if (n.kind === 'SizeofExpr') return found
-    for (const [key, value] of Object.entries(n)) if (key !== 'span' && key !== 'member') unknownNames(value, found)
+    for (const [key, value] of Object.entries(n)) if (key !== 'span' && key !== 'member') unknownNames(value, found, skip)
   }
   return found
 }
@@ -11874,6 +12998,12 @@ function castProblem(from: ResolvedType, to: ResolvedType): string | null {
   const t = unwrap(to)
   const single = (x: ResolvedType) => x.kind === 'primitive' || x.kind === 'pointer' || x.kind === 'func' || isComptimeNumber(x)
   const cannot = `cannot cast ${typeToString(from)} to ${typeToString(to)}`
+  // An enum is cast to its own type alone: it is no number, and no number
+  // is one of its values.
+  if (f.kind === 'enum' || t.kind === 'enum') {
+    if (f.kind === 'enum' && t.kind === 'enum' && typeEquals(f, t)) return null
+    return f.kind === 'enum' ? `${cannot}: an enum is no number; match on it` : `${cannot}: an enum value is made by naming its variant`
+  }
   // 0 is none for an optional slice, as it is for an optional pointer.
   if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'slice' && t.optional) return null
   // And 0 is none for an optional host reference.
@@ -11906,7 +13036,7 @@ function constantIn(value: ComptimeValue, type: ResolvedType): ComptimeValue {
   if (t.kind !== 'primitive' || isBool(t) || (value.kind !== 'int' && value.kind !== 'float')) return value
   if (isFloat(t)) {
     if (t.name === 'f64') return { kind: 'float', value: Number(value.value) }
-    return { kind: 'float', value: value.kind === 'int' ? nearestF32(value.value) : Math.fround(value.value) }
+    return { kind: 'float', value: value.kind === 'int' ? nearestF32(value.value) : f32Of(value) }
   }
   if (value.kind === 'float') return value
   const bits = (byteSize(t) ?? 4) * 8
@@ -11931,7 +13061,11 @@ function castConstant(value: ComptimeValue, to: ResolvedType): ComptimeValue | n
   const t = unwrap(to)
   if (value.kind === 'data_ptr') return null
   if (isBool(t)) return value.kind === 'bool' ? value : null
-  const number: ComptimeValue = value.kind === 'bool' ? { kind: 'int', value: value.value ? 1n : 0n } : value
+  // A float operand of no type of its own (a literal, an untyped def) is an
+  // f64 at run time, which the cast rounds: its f32 is that of the f64, not
+  // the one nearest its decimals (decimalF32). One typed f32 is already
+  // that f32.
+  const number: ComptimeValue = value.kind === 'bool' ? { kind: 'int', value: value.value ? 1n : 0n } : value.kind === 'float' ? { kind: 'float', value: value.value } : value
   if (number.kind === 'float' && !isFloat(t)) {
     // Toward zero, into the i32 or i64 the type is held in, then cut to the type.
     const whole = Math.trunc(number.value)
@@ -12010,6 +13144,14 @@ function unsignedLimit(t: ResolvedType): bigint | null {
 
 // One branch of an if or match, with the type of its value.
 type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
+
+// A name a pattern binds: its type, and where it is written
+type Binding = { name: string; type: ResolvedType; at: number }
+
+// The matches on an enum that handle every variant, or have a _ arm: no
+// value falls through one (exprTerminates). A check keeps its own
+// (CheckContext.exhaustive).
+type Exhaustive = { has(match: AST.MatchExpr): boolean }
 
 // Whether a branch's value is an array literal with no type of its own that
 // is to be laid out in memory as the pointer or slice the branches are.
@@ -12136,6 +13278,77 @@ function takenName(sym: Symbol): string | null {
   }
 }
 
+// The names a match pattern binds, wherever they are in it, with where each
+// is written
+function patternBindings(pattern: AST.MatchPattern): { name: string; at: number }[] {
+  switch (pattern.kind) {
+    case 'binding':
+      return [{ name: pattern.name, at: pattern.span.start }]
+    case 'constructor':
+    case 'tuple':
+      return pattern.elements.flatMap((e) => (e.kind === 'namedShort' ? [{ name: e.field, at: e.span.start }] : patternBindings(e.pattern)))
+    default:
+      return []
+  }
+}
+
+// A name a pattern binds twice, `Rgb(r, r, _)`, is refused as a name that
+// clashes is, said through `error`; the names given back are declared once,
+// as refused values (onceEach).
+function boundTwice(pattern: AST.MatchPattern, kind: BindingKind, clashes: Set<string>, error: (message: string) => void, where: (at: number) => string): string[] {
+  const first = new Map<string, number>()
+  const twice: string[] = []
+  for (const { name, at } of patternBindings(pattern)) {
+    const seen = first.get(name)
+    if (seen === undefined) {
+      first.set(name, at)
+      continue
+    }
+    if (clashes.has(name) || twice.includes(name)) continue
+    twice.push(name)
+    const what = kind === 'if let' ? 'an if let binding' : 'a match binding'
+    error(`'${name}' is already declared: ${what} cannot reuse the name of another in its pattern${where(seen)}`)
+  }
+  return twice
+}
+
+// The bindings of a pattern with each name once: a name bound twice
+// (`twice`) is declared once, as a refused value.
+function onceEach<B extends { name: string; type: ResolvedType }>(bindings: B[], twice: Set<string> | string[]): B[] {
+  const repeated = new Set(twice)
+  const seen = new Set<string>()
+  return bindings.flatMap((b) => {
+    if (!repeated.has(b.name)) return [b]
+    if (seen.has(b.name)) return []
+    seen.add(b.name)
+    return [{ ...b, type: RECOVERY }]
+  })
+}
+
+// A pattern as it is written, for a message
+function patternText(pattern: AST.MatchPattern): string {
+  const part = (e: AST.MatchPatternElement) => (e.kind === 'namedShort' ? `${e.field}:` : e.kind === 'named' ? `${e.field}: ${patternText(e.pattern)}` : patternText(e.pattern))
+  switch (pattern.kind) {
+    case 'binding':
+      return pattern.name
+    case 'variant':
+      return pattern.type
+    case 'constructor':
+      return `${pattern.type}(${pattern.elements.map(part).join(', ')})`
+    case 'tuple':
+      return `(${pattern.elements.map(part).join(', ')})`
+    case 'wildcard':
+      return '_'
+    case 'literal':
+      return pattern.value.kind === 'int' ? String(pattern.value.value) : pattern.value.kind === 'float' ? String(pattern.value.value) : pattern.value.kind === 'bool' ? String(pattern.value.value) : '...'
+  }
+}
+
+// The let pattern that takes apart what a struct pattern names: (x, y)
+function structPatternHint(pattern: AST.MatchPattern & { kind: 'constructor' }): string {
+  return `(${pattern.elements.map((e, i) => (e.kind === 'positional' ? (e.pattern.kind === 'binding' ? e.pattern.name : `_${i}`) : `${e.field}:`)).join(', ')})`
+}
+
 // The names a match pattern binds, wherever they are in it.
 function patternNames(pattern: AST.MatchPattern): string[] {
   switch (pattern.kind) {
@@ -12168,6 +13381,14 @@ function ungrouped(expr: AST.Expr): AST.Expr {
   return inner ? ungrouped(inner) : expr
 }
 
+// Whether an expression is a number as written, with its type written
+// (0:f32) or not
+function isNumberLiteral(expr: AST.Expr): boolean {
+  let e = ungrouped(expr)
+  while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+  return e.kind === 'LiteralExpr' && (e.value.kind === 'int' || e.value.kind === 'float')
+}
+
 // What to say of a struct value whose fields are those of the struct
 // wanted, in another order: only a literal gives fields by name.
 function reordered(from: ResolvedType, to: ResolvedType, shown: string): string {
@@ -12180,8 +13401,20 @@ function reordered(from: ResolvedType, to: ResolvedType, shown: string): string 
 }
 
 // Names as a list is said: `x`, `x and y`, `x, y and z`.
-function spoken(names: string[]): string {
-  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names.join('')
+function spoken(names: string[], last = 'and'): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} ${last} ${names.at(-1)}` : names.join('')
+}
+
+// What an enum's own name, written as a value, is told: it is no value, and
+// its values are its variants.
+function enumAsValue(name: string, e: EnumRT): string {
+  return `'${name}' is an enum: a value of it is one of its variants (${spoken(e.variants.map((v) => v.name), 'or')})`
+}
+
+// How a payload variant is written with its payload: its fields by name, or
+// by type where they have none (Rgb(r, g, b), Number(f64))
+function variantForm(v: EnumVariantRT): string {
+  return `${v.name}(${(v.fields ?? []).map((f) => f.name ?? typeToString(f.type)).join(', ')})`
 }
 
 // A tuple literal with names among its elements, in parentheses or not: it
@@ -12422,8 +13655,8 @@ function bodyValue(body: AST.FuncBody | AST.Expr): AST.Expr | null {
 }
 
 // Whether control never reaches the end of a branch, so it needs no value.
-function bodyExits(body: AST.FuncBody | AST.Expr): boolean {
-  return bodyTerminates(body) || (body.kind === 'Block' && alwaysExits(body))
+function bodyExits(body: AST.FuncBody | AST.Expr, exhaustive: Exhaustive): boolean {
+  return bodyTerminates(body, exhaustive) || (body.kind === 'Block' && alwaysExits(body))
 }
 
 // Whether a body ends in an unconditional return, break or continue.
@@ -12487,7 +13720,7 @@ function writtenMut(expr: AST.Expr): boolean {
 // Whether control can never fall off the end of these statements: they end in
 // an unconditional return, a loop with no break out of it, or an if/else whose
 // every branch terminates.
-export function blockTerminates(stmts: AST.Statement[]): boolean {
+export function blockTerminates(stmts: AST.Statement[], exhaustive: Exhaustive): boolean {
   const last = stmts.at(-1)
   if (!last) return false
   switch (last.kind) {
@@ -12496,28 +13729,29 @@ export function blockTerminates(stmts: AST.Statement[]): boolean {
     case 'LoopStmt':
       return !breaksOut(last.body)
     case 'ExpressionStmt':
-      return exprTerminates(last.expr)
+      return exprTerminates(last.expr, exhaustive)
     default:
       return false
   }
 }
 
-function bodyTerminates(body: AST.FuncBody | AST.Expr): boolean {
-  if (body.kind === 'Block') return blockTerminates(body.stmts)
-  if (body.kind === 'ArrowBody') return exprTerminates(body.expr)
-  return exprTerminates(body)
+function bodyTerminates(body: AST.FuncBody | AST.Expr, exhaustive: Exhaustive): boolean {
+  if (body.kind === 'Block') return blockTerminates(body.stmts, exhaustive)
+  if (body.kind === 'ArrowBody') return exprTerminates(body.expr, exhaustive)
+  return exprTerminates(body, exhaustive)
 }
 
-function exprTerminates(expr: AST.Expr): boolean {
+function exprTerminates(expr: AST.Expr, exhaustive: Exhaustive): boolean {
   if (expr.kind === 'IfExpr') {
-    return !!expr.else_ && bodyTerminates(expr.thenBranch) &&
-      expr.elifs.every(e => bodyTerminates(e.thenBranch)) && bodyTerminates(expr.else_)
+    return !!expr.else_ && bodyTerminates(expr.thenBranch, exhaustive) &&
+      expr.elifs.every(e => bodyTerminates(e.thenBranch, exhaustive)) && bodyTerminates(expr.else_, exhaustive)
   }
   if (expr.kind === 'MatchExpr') {
     // Every arm returns, and some arm catches everything (a wildcard or a bare
     // binding), so no value falls through.
-    const catchAll = expr.arms.some(arm => arm.patterns.some(p => p.kind === 'wildcard' || p.kind === 'binding'))
-    return catchAll && expr.arms.every(arm => bodyTerminates(arm.body))
+    // A match on an enum that handles every variant does too (exhaustive).
+    const catchAll = exhaustive.has(expr) || expr.arms.some(arm => arm.patterns.some(p => p.kind === 'wildcard' || p.kind === 'binding'))
+    return catchAll && expr.arms.every(arm => bodyTerminates(arm.body, exhaustive))
   }
   return false
 }

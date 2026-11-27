@@ -79,16 +79,18 @@ export function refusedName(old: string, name: string): string | null {
 // and the variable of its name (`let (count:, clipped:) = f()`,
 // `Point(x:, y:)`), is written out where one of them is renamed and the other
 // keeps its name: the field, `let (count: total, clipped:)`, or the variable,
-// `let (total: count, clipped:)`.
-export function applyRename(text: string, plan: RenamePlan, name: string): { text: string; edits: { start: number; end: number; newText: string }[]; places: number[] } {
+// `let (total: count, clipped:)`. Such an edit's `from` is where the
+// shorthand starts: all it writes stands for the shorthand, the field and its
+// value, which an error of either is said at.
+export function applyRename(text: string, plan: RenamePlan, name: string): { text: string; edits: { start: number; end: number; newText: string; from?: number }[]; places: number[] } {
   const fields = new Set(plan.fields);
   const renames = plan.places.map((start) => {
     const after = start + plan.name.length;
     const shorthand = /^:\s*(?=[,)])/.test(text.slice(after));
     if (!shorthand) return { start, end: after, newText: name, place: 0 };
     return fields.has(start)
-      ? { start, end: after + 1, newText: `${name}: ${plan.name}`, place: 0 }
-      : { start: after + 1, end: after + 1, newText: ` ${name}`, place: 1 };
+      ? { start, end: after + 1, newText: `${name}: ${plan.name}`, place: 0, from: start }
+      : { start: after + 1, end: after + 1, newText: ` ${name}`, place: 1, from: start };
   });
   const edits = [...renames, ...plan.exports.map((start) => ({ start, end: start, newText: `"${plan.name}" `, place: -1 }))].sort(
     (a, b) => a.start - b.start || a.end - b.end,
@@ -103,5 +105,5 @@ export function applyRename(text: string, plan: RenamePlan, name: string): { tex
     at = edit.end;
   }
   out += text.slice(at);
-  return { text: out, edits: edits.map(({ start, end, newText }) => ({ start, end, newText })), places };
+  return { text: out, edits: edits.map(({ place: _, ...edit }) => edit), places };
 }

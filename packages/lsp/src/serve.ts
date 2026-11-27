@@ -24,6 +24,7 @@ import {
   type SymbolInformation,
   type WorkspaceSymbolParams,
   type Position,
+  type Range,
   SymbolKind,
   type DocumentHighlight,
   type InlayHint,
@@ -48,8 +49,8 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
-import type { ExportDecl, ImportDecl, ImportItem, Module, Span } from '@encantis/compiler/ast';
-import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, type ProgramCheckResult, type TypeCheckResult, typecheck, typecheckProgram } from '@encantis/compiler/checker';
+import { type ExportDecl, type ImportDecl, type ImportItem, type Module, type Pattern, type Span, walkModule } from '@encantis/compiler/ast';
+import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, namedPartAt, type ProgramCheckResult, type TypeCheckResult, typecheck, typecheckProgram } from '@encantis/compiler/checker';
 import { getSourceImports, isSourceImport, loadModule, resolveModulePath } from '@encantis/compiler/loader';
 import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
@@ -60,8 +61,9 @@ import { BUILTIN_DOCS, BUILTIN_SIGNATURES, TYPE_DOCS } from './words';
 import { complete, signatureHelp } from './complete';
 import { inlayHints } from './hints';
 import { applyRename, planRename, type RenamePlan, refusedName } from './rename';
-import { rename } from '@encantis/compiler/queries';
+import { payloadFieldNamed, rename, leftOutNameAt, clashingVariantAt, hover as queryHover } from '@encantis/compiler/queries';
 import { literalAt, nameAfter, pieces } from './scan';
+import { typeToString } from '@encantis/compiler/types';
 
 
 // Convert symbol kind to display prefix
@@ -77,11 +79,47 @@ function kindToPrefix(kind: MetaSymbol['kind']): string {
     case 'type': return 'type';
     case 'typeparam':
     case 'comptime': return 'comptime';
+    case 'variant': return 'variant';
     default: return '';
   }
 }
 
+// Where each name a set statement assigns is written
+function setTargets(module: Module): Set<number> {
+  const found = new Set<number>();
+  const add = (pattern: Pattern): void => {
+    if (pattern.kind === 'IdentPattern') {
+      found.add(pattern.span.start);
+      return;
+    }
+    for (const element of pattern.elements) {
+      if (element.kind === 'named') found.add(namedPartAt(element));
+      else add(element.pattern);
+    }
+  };
+  walkModule(module, { visitSetStmt: (stmt) => add(stmt.pattern) });
+  return found;
+}
+
+// The offset of a position of a text
+function offsetAt(text: string, position: { line: number; character: number }): number {
+  let offset = 0;
+  for (let line = 0; line < position.line; line++) {
+    const next = text.indexOf('\n', offset);
+    if (next < 0) return text.length;
+    offset = next + 1;
+  }
+  return offset + position.character;
+}
+
 // Format symbol display using proper Encantis syntax
+// A parameter or local that is a refused value has no type to show: what it
+// is and its name (MetaSymbol.refused)
+function refusedDisplay(symbol: MetaSymbol): string {
+  const kind = symbol.kind === 'param' ? 'input' : symbol.kind === 'return' ? 'output' : symbol.kind === 'def' || symbol.kind === 'global' || symbol.kind === 'data' ? symbol.kind : 'let';
+  return `${kind} ${symbol.name}`;
+}
+
 function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
   switch (symbol.kind) {
     case 'global':
@@ -125,6 +163,9 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
     case 'typeparam':
     case 'comptime':
       return `comptime ${symbol.name}: ${typeStr}`;
+    // A variant, with its tag
+    case 'variant':
+      return `variant ${symbol.name}: ${typeStr}${symbol.value !== undefined ? ` = ${symbol.value}` : ''}`;
     default:
       return `${symbol.name}: ${typeStr}`;
   }
@@ -243,7 +284,8 @@ function symbolKindToTokenType(kind: MetaSymbol['kind']): number {
     case 'data':
       return 7; // macro (data section allocation)
     case 'def':
-      return 7; // macro (compile-time constant)
+    case 'variant':
+      return 7; // macro (compile-time constant; a variant is a constant of its enum)
     default:
       return 3; // variable
   }
@@ -396,6 +438,28 @@ export function uriOf(path: string, paths: Paths = nodePath): string {
     return `file://${host}/${encode(rest)}`;
   }
   return `file://${slashed.startsWith('/') ? '' : '/'}${encode(slashed.split('/'))}`;
+}
+
+// An error message with the places it says (`first declared at 1:15`, `at
+// lib.ents:2:3`) left out: a rename moves them, and the error is the same.
+function withoutPlaces(message: string): string {
+  return message.replace(/\b\d+:\d+\b/g, 'L:C');
+}
+
+// A place in a text that edits made, in the text they were made to: one in
+// what an edit wrote is in what it replaced, or, for a shorthand written out
+// (`x: z`, `w: x`), where the shorthand starts (`from`). The edits are in
+// order.
+type TextEdit = { start: number; end: number; newText: string; from?: number };
+function offsetBeforeEdits(edits: TextEdit[], offset: number): number {
+  let shift = 0;
+  for (const edit of edits) {
+    const start = edit.start + shift;
+    if (offset < start) break;
+    if (offset < start + edit.newText.length) return edit.from ?? edit.start + Math.min(offset - start, edit.end - edit.start);
+    shift += edit.newText.length - (edit.end - edit.start);
+  }
+  return offset - shift;
 }
 
 export function startServer(connection: Connection, options: ServerOptions = {}): void {
@@ -766,7 +830,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
 
         if (symbol) {
           if (!answersFor(cached, document, symbol)) return null;
-          const display = formatLine(formatSymbolDisplay(shownValue(cached, symbol), typeStr));
+          // A refused value (a name of a refused pattern, a variable given a
+          // refused operator's result) has no type to show: its name alone.
+          const display = symbol.refused ? refusedDisplay(symbol) : formatLine(formatSymbolDisplay(shownValue(cached, symbol), typeStr));
           let value = `\`\`\`encantis\n${display}\n\`\`\``;
           value += hintDetails(hint, meta);
           if (symbol.doc) {
@@ -820,10 +886,29 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       // by name it would be shown as a global, a type or a builtin.
       if (genericDeclaring(cached.module, wordInfo.start, word)) return null;
 
+      // A field of an enum's payload, where it is declared or named (a named
+      // argument of a constructor, a part of a pattern by name), is shown
+      // with its type.
+      const payload = payloadFieldAt(params);
+      if (payload) {
+        const value = `\`\`\`encantis\n${formatLine(`${word}: ${typeToString(payload.found.field.type)}`)}\n\`\`\``;
+        return { contents: { kind: MarkupKind.Markdown, value }, range: makeHoverRange(wordStartPos, word.length) };
+      }
+
       // A field's name (`type Pt = (x: i32)`, `Pt(x: 1)`) is no name of the
       // module either, and by name it would be shown as a global spelled
       // like it. After a point it has a hint of its own.
       if (fieldNamedAt(cached.module, wordInfo.start)) return null;
+
+      // A name of an enum left out declares nothing, and a variant whose
+      // name an earlier declaration has is its own enum's, not the earlier
+      // one's that has the name (see clashingVariantAt).
+      if (leftOutNameAt(cached.module, cached.check, wordInfo.start)) return null;
+      const clash = clashingVariantAt(cached.module, cached.check, wordInfo.start) && queryHover(text, cached.module, cached.check, wordInfo.start);
+      if (clash) {
+        const value = `\`\`\`encantis\n${formatLine(`variant ${clash.name}: ${clash.type} = ${clash.value}`)}\n\`\`\``;
+        return { contents: { kind: MarkupKind.Markdown, value }, range: makeHoverRange(wordStartPos, word.length) };
+      }
 
       // Fallback: look up by name in symbols. Only a name of the module is
       // found that way: a parameter or local is what the hint at its own
@@ -928,11 +1013,49 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return { uri: open?.uri ?? uriFor(target, params.textDocument.uri), range: { start, end: { line: start.line, character: start.character + at.length } } };
   }
 
+  // The field of an enum's payload a name at a position declares or names,
+  // where it is declared and where it is named (see payloadFieldNamed). It
+  // is no symbol of the module: a struct's fields, which have no such
+  // answer, are not either.
+  function payloadFieldAt(params: TextDocumentPositionParams): { found: NonNullable<ReturnType<typeof payloadFieldNamed>>; length: number; uri: string; analysis: Analysis } | null {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return null;
+    const text = document.getText();
+    const cached = analysisOf(params.textDocument.uri, text);
+    const word = getWordAtOffset(text, document.offsetAt(params.position));
+    if (!cached || !word || !answersAt(cached, word.start)) return null;
+    const found = payloadFieldNamed(cached.module, cached.check, word.start);
+    if (!found || !answersAt(cached, found.declared)) return null;
+    return { found, length: word.end - word.start, uri: params.textDocument.uri, analysis: cached };
+  }
+
+  // A variant of the document's own enum whose name an earlier declaration
+  // has, at its declaration or a pattern that names it (see
+  // clashingVariantAt): no symbol of the module, as its name is the earlier
+  // one's, but a variant of its enum all the same.
+  function clashAt(params: TextDocumentPositionParams): { found: { declared: number; uses: number[] }; length: number; uri: string; analysis: Analysis } | null {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return null;
+    const text = document.getText();
+    const cached = analysisOf(params.textDocument.uri, text);
+    const word = getWordAtOffset(text, document.offsetAt(params.position));
+    if (!cached || !word || !answersAt(cached, word.start)) return null;
+    const found = clashingVariantAt(cached.module, cached.check, word.start);
+    if (!found || !answersAt(cached, found.declared)) return null;
+    return { found: { declared: found.declared, uses: [found.declared, ...found.uses] }, length: word.end - word.start, uri: params.textDocument.uri, analysis: cached };
+  }
+
+  function rangeAt(text: string, offset: number, length: number): Range {
+    return { start: offsetToPosition(text, offset), end: offsetToPosition(text, offset + length) };
+  }
+
   connection.onDefinition((params: TextDocumentPositionParams): Location | null => {
     const exported = exportAt(params);
     if (exported) return exported;
     const found = symbolAt(params);
-    return found ? locationOf(found.uri, found.symbol, found.symbol.def) : null;
+    if (found) return locationOf(found.uri, found.symbol, found.symbol.def);
+    const field = payloadFieldAt(params) ?? clashAt(params);
+    return field ? { uri: field.uri, range: rangeAt(field.analysis.text, field.found.declared, field.length) } : null;
   });
 
   // ---------------------------------------------------------------------------
@@ -989,15 +1112,31 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // Why the renamed text would not mean what the text does, or null: it adds
   // an error, or the new name is not, at each place, what the old one was
   // (another name of that spelling is seen there instead, or hides it).
-  async function renameProblem(uri: string, analysis: Analysis, renamed: { text: string; places: number[] }, name: string): Promise<string | null> {
+  async function renameProblem(uri: string, analysis: Analysis, renamed: { text: string; places: number[]; edits: TextEdit[] }, name: string, oldName: string): Promise<string | null> {
     const parsed = parse(renamed.text);
     let module = parsed.module ?? recoverParse(renamed.text, parse, parsed)?.module;
     if (!module) return 'the renamed text does not parse';
     const program = parsed.module && getSourceImports(module, true).length > 0 ? await programOf(uri, renamed.text) : null;
     if (program) module = program.module;
     const check = program?.checkResult ?? typecheck(module, { source: renamed.text });
-    const before = new Set(analysis.check.errors.map((e) => e.message));
-    const added = check.errors.filter((e) => !before.has(e.message));
+    // An error the program has already may say where something is (`first
+    // declared at 1:15`), which the rename moves, or name what is renamed:
+    // it is the same error where it is said at the same place, the rename's
+    // edits taken back. One said at another place is new, though its message
+    // with the old name is one the program has (`'total' is already
+    // declared` at another declaration, for the one renamed to `total`).
+    // The names are put back either way: the new name may be another's in
+    // the message as well (`argument 1 of 'n' ...: n is a comptime value
+    // parameter`, for `idf` renamed to its parameter's name).
+    const named = (n: string) => new RegExp(`(?<![\\w-])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`, 'g');
+    const renamedName = named(name);
+    const oldNamed = named(oldName);
+    const said = (offset: number, message: string) => `${offset} ${withoutPlaces(message)}`;
+    const before = new Set(analysis.check.errors.flatMap((e) => [said(e.offset, e.message), said(e.offset, e.message.replace(oldNamed, name))]));
+    const added = check.errors.filter((e) => {
+      const at = offsetBeforeEdits(renamed.edits, e.offset);
+      return !before.has(said(at, e.message)) && !before.has(said(at, e.message.replace(renamedName, oldName)));
+    });
     if (check.errors.length > analysis.check.errors.length || added.length > 0) {
       return `renamed to '${name}', the program would not check: ${added[0]?.message ?? check.errors[0]?.message}`;
     }
@@ -1068,9 +1207,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       if (!now.sources?.has(own)) continue;
       const then = await programOf(other, text, new Map([[own, renamed]]));
       const errors = (program: ProgramCheckResult) => [...program.results.values()].flatMap((r) => r.errors.map((e) => e.message));
-      const before = errors(now.program);
+      const before = errors(now.program).map(withoutPlaces);
       const after = then ? errors(then.program) : ['the renamed program does not load'];
-      const added = after.filter((message) => !before.includes(message));
+      const added = after.filter((message) => !before.includes(withoutPlaces(message)));
       if (after.length > before.length || added.length > 0) {
         return `renamed to '${name}', ${file(path)}, which uses this module, would not check: ${added[0] ?? after[0]}`;
       }
@@ -1101,10 +1240,14 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     const renamed = applyRename(analysis.text, plan, params.newName);
     const at = (offset: number) => offsetToPosition(analysis.text, offset);
     const edits = renamed.edits.map((e) => ({ range: { start: at(e.start), end: at(e.end) }, newText: e.newText }));
-    const problem = await renameProblem(uri, analysis, renamed, params.newName);
+    const problem = await renameProblem(uri, analysis, renamed, params.newName, plan.name);
     if (problem) throw refuse(problem);
-    // A field is named by other modules, which rename does not edit
-    if (plan.field !== null) {
+    // A field is named by other modules, which rename does not edit, and so
+    // is a variant, by a pattern on a value of its enum that another module
+    // takes apart: also one whose name an earlier declaration has, which is
+    // no symbol of the module (clashingVariantAt)
+    const variant = analysis.check.symbols.get(plan.name)?.kind === 'variant' || clashingVariantAt(analysis.module, analysis.check, found.start) !== null;
+    if (plan.field !== null || variant) {
       const elsewhere = await dependentProblem(uri, renamed.text, params.newName).catch((e: unknown) => {
         throw refuse(`the workspace's files could not all be listed, so the modules that use this one could not be checked: ${(e as Error)?.message ?? e}`);
       });
@@ -1128,6 +1271,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       if (!analysis || !answersAt(analysis, offset)) return undefined;
       const at = offsetToPosition(text, offset);
       const hint = analysis.meta.hints[`${at.line}:${at.character}`];
+      // A refused value has no type to show (MetaSymbol.refused), as its
+      // hover shows none
+      if (hint?.symbol !== undefined && analysis.meta.symbols[hint.symbol]?.refused) return undefined;
       const type = hint && analysis.meta.types[hint.type]?.type;
       return type ? formatLine(type) : undefined;
     };
@@ -1241,15 +1387,25 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // Answered as references are (see onReferences).
   connection.onDocumentHighlight((params: DocumentHighlightParams): DocumentHighlight[] | null => {
     const found = symbolAt(params);
-    if (!found) return null;
+    if (!found) {
+      const field = payloadFieldAt(params) ?? clashAt(params);
+      if (!field) return null;
+      const { declared, uses } = field.found;
+      return uses.map((at) => ({ range: rangeAt(field.analysis.text, at, field.length), kind: at === declared ? DocumentHighlightKind.Write : DocumentHighlightKind.Read }));
+    }
     const { symbol, uri, analysis } = found;
     if (analysis.recovered?.unseenNames.has(symbol.name)) return null;
-    const assigned = /^\s*(?:[-+*/%&|^]\|?|<<<?|>>>?)?=(?!=)/;
+    // An assignment's =, not == or a match arm's =>, and each name a set
+    // assigns. Only a variable is assigned: a type's name before an = is in
+    // an annotation (let p: Point = ...).
+    const assigned = /^\s*(?:[-+*/%&|^]\|?|<<<?|>>>?)?=(?![=>])/;
+    const variable = symbol.kind === 'local' || symbol.kind === 'param' || symbol.kind === 'return' || symbol.kind === 'global';
+    const set = variable ? setTargets(analysis.module) : new Set<number>();
     const lines = analysis.text.split('\n');
     return [symbol.def, ...symbol.refs].map((key, i) => {
       const { range } = locationOf(uri, symbol, key);
       const after = lines[range.end.line]?.slice(range.end.character) ?? '';
-      const write = i === 0 || assigned.test(after);
+      const write = i === 0 || (variable && (assigned.test(after) || set.has(offsetAt(analysis.text, range.start))));
       return { range, kind: write ? DocumentHighlightKind.Write : DocumentHighlightKind.Read };
     });
   });
@@ -1279,7 +1435,13 @@ export function startServer(connection: Connection, options: ServerOptions = {})
 
   connection.onReferences((params: ReferenceParams): Location[] | null => {
     const found = symbolAt(params);
-    if (!found) return null;
+    if (!found) {
+      const field = payloadFieldAt(params) ?? clashAt(params);
+      if (!field) return null;
+      const { declared, uses } = field.found;
+      const keys = params.context?.includeDeclaration ? uses : uses.filter((at) => at !== declared);
+      return keys.map((at) => ({ uri: field.uri, range: rangeAt(field.analysis.text, at, field.length) }));
+    }
     const { symbol, uri, analysis } = found;
     // A use in what was left out, or in a declaration that can differ once
     // that is written again, may not be listed.
@@ -1324,6 +1486,11 @@ export function startServer(connection: Connection, options: ServerOptions = {})
             tokenType = 2; // parameter
             // 'param' symbols get 'input' modifier, 'return' symbols get 'output' modifier
             modifiers = symbolKindToModifiers(symbol.kind, isDef, symbol.kind === 'param');
+          } else if (symbol.kind === 'comptime' && !meta.types[symbol.type]?.type.includes('->')) {
+            // A comptime value parameter (comptime n: u32) is a parameter; a
+            // comptime function parameter stands for a function
+            tokenType = 2;
+            modifiers = symbolKindToModifiers('param', isDef, true);
           } else {
             tokenType = symbolKindToTokenType(symbol.kind);
             modifiers = symbolKindToModifiers(symbol.kind, isDef);
@@ -1331,6 +1498,11 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         } else {
           continue;
         }
+      } else if (hint.parentKind === 'variant') {
+        // A variant of an enum the module does not declare, which has no
+        // symbol here, is a variant all the same
+        tokenType = symbolKindToTokenType('variant');
+        modifiers = symbolKindToModifiers('variant', hint.declares === true);
       } else {
         // No symbol - check the type to determine token type
         const typeStr = meta.types[hint.type]?.type ?? '';

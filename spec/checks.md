@@ -2482,7 +2482,6 @@ func g(b: bool) -> bool => max(b, b)
 ```errors
 sqrt requires a float type, got i32
 max requires a numeric type, got bool
-cannot assign i32 to bool
 ```
 
 `clz`, `ctz` and `popcnt` take an `i32`, `u32`, `i64` or `u64` and return a `u8`, which widens to any integer type.

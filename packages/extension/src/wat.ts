@@ -7,7 +7,7 @@
 // =============================================================================
 
 import { typecheckProgram } from '@encantis/compiler/checker';
-import { programToWat, programToWatWithTests } from '@encantis/compiler/codegen';
+import { NestingLimitError, programToWat, programToWatWithTests } from '@encantis/compiler/codegen';
 import { loadModule } from '@encantis/compiler/loader';
 import wabt from 'wabt';
 
@@ -44,10 +44,17 @@ export async function compileToWat(path: string, readFile: ReadFile, withTests: 
     }
     return { error: `;; Type errors:\n${errors.join('\n')}` };
   }
-  const wat = withTests
-    ? programToWatWithTests(load.modules, check.results, load.entry.path).wat
-    : programToWat(load.modules, check.results, load.entry.path);
-  return { wat };
+  // A function nested deeper than wabt reads is an error of its own (2.12):
+  // the WAT is not handed to wabt, which could fail or never finish on it.
+  try {
+    const wat = withTests
+      ? programToWatWithTests(load.modules, check.results, load.entry.path).wat
+      : programToWat(load.modules, check.results, load.entry.path);
+    return { wat };
+  } catch (e) {
+    if (e instanceof NestingLimitError) return { error: `;; ${firstLine(e.message)}` };
+    throw e;
+  }
 }
 
 function firstLine(message: string): string {

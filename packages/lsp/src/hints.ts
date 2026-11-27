@@ -9,7 +9,7 @@
 // =============================================================================
 
 import type { CallExpr, Expr, Module, Pattern } from '@encantis/compiler/ast';
-import type { TypeCheckResult } from '@encantis/compiler/checker';
+import { isRefusedType, type TypeCheckResult } from '@encantis/compiler/checker';
 import { bindingTypeAt } from '@encantis/compiler/instances';
 import { type ResolvedType, typeToString, unwrap } from '@encantis/compiler/types';
 import { formatLine } from '@encantis/compiler/formatter';
@@ -39,6 +39,8 @@ export function inlayHints(source: HintSource, from: number, to: number, positio
   // which keeps the names of types (Vec(Cell)), or else as the meta has it
   const typeAt = (offset: number): string | null => {
     const resolved = bindingTypeAt(check, offset);
+    // A refused value has no type to show.
+    if (isRefusedType(resolved)) return null;
     let shown: string | null = resolved ? written(resolved) : null;
     if (!shown) {
       const at = positionAt(offset);

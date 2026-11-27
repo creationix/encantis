@@ -2,7 +2,7 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { argValue, ungroupedType } from './ast'
+import { argValue, partBinding, ungroupedType } from './ast'
 import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, testsToRun, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
@@ -16,10 +16,12 @@ import {
   primitiveByteSize,
   byteSize,
   totalElements,
+  wasmTypes,
 } from './types'
 import * as RT from './types'
 import { dataToWat, buildDataSection, buildProgramDataSection, literalLength, type DataRef, type DataSectionBuilder } from './data-pack'
 import { wideCall, wideHelperName, wideHelpersFor, type WideBinaryOp } from './wide-int'
+import { f32Of } from './utils'
 
 // === Context ===
 
@@ -84,6 +86,19 @@ export interface CodegenContext {
   addressed: Set<AST.Expr>
   // Range assignments that fill (see TypeCheckResult.fills)
   fills: Set<AST.SliceExpr>
+  // The variant each variant value and constructor is, its payload, and the
+  // variant each variant pattern names (see TypeCheckResult.variants,
+  // payloads and patternVariants)
+  variants?: Map<AST.Expr, number>
+  payloads?: Map<AST.CallExpr, AST.TupleExpr>
+  patternVariants?: Map<AST.MatchPattern, number>
+  // The locals of each name a variant pattern binds, by where it is written
+  // (see collectLocals)
+  patternLocals?: Map<number, string[]>
+  // Set while a function whose code, as written first, nests more than
+  // MAX_NESTED_DEPTH deep is written again: each chain of tests then takes
+  // the form that nests less (see testChain, funcToWat).
+  shallow?: boolean
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -106,6 +121,9 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     unproven: checkResult.unproven,
     addressed: checkResult.addressed,
     fills: checkResult.fills,
+    variants: checkResult.variants,
+    payloads: checkResult.payloads,
+    patternVariants: checkResult.patternVariants,
   }
 }
 
@@ -125,76 +143,7 @@ const scratchId = (offset: number): number => offset % INSTANCE_STRIDE
  * Comptime types should have been concretized before calling this.
  */
 export function typeToWasm(t: ResolvedType): string[] {
-  const u = unwrap(t)
-
-  switch (u.kind) {
-    case 'primitive': {
-      // i8, i16, u8, u16, i32, u32, bool → i32
-      // i64, u64 → i64
-      // f32 → f32, f64 → f64
-      if (['i8', 'i16', 'u8', 'u16', 'i32', 'u32', 'bool'].includes(u.name)) {
-        return ['i32']
-      }
-      if (['i64', 'u64'].includes(u.name)) {
-        return ['i64']
-      }
-      if (u.name === 'f32') return ['f32']
-      if (u.name === 'f64') return ['f64']
-      // Large integers: flatten to multiple i64 values
-      const size = primitiveByteSize(u)
-      if (size !== null && size >= 16) {
-        return Array(size / 8).fill('i64')
-      }
-      throw new Error(`Unknown primitive type: ${u.name}`)
-    }
-
-    case 'pointer':
-      return ['i32'] // Pointers are i32 indices
-
-    case 'slice':
-      // Slices are fat pointers: (ptr, len)
-      return ['i32', 'i32']
-
-    case 'array':
-      if (u.sizes && u.sizes.length === 1 && typeof u.sizes[0] === 'number') {
-        const elemTypes = typeToWasm(u.element)
-        return Array(u.sizes[0]).fill(elemTypes).flat()
-      }
-      // Non-value arrays (many-pointer, framed) are pointers
-      return ['i32']
-
-    case 'comptime_array': {
-      const elemTypes = typeToWasm(u.element)
-      return Array(u.count).fill(elemTypes).flat()
-    }
-
-    case 'tuple':
-      // Flatten all fields
-      return u.fields.flatMap((f) => typeToWasm(f.type))
-
-    case 'func':
-      // Function references are table indices
-      return ['i32']
-
-    case 'void':
-      return []
-
-    case 'host':
-      // A host reference is wasm's opaque reference to a host value.
-      return ['externref']
-
-    case 'comptime_int':
-      throw new Error('comptime_int should be concretized before codegen')
-
-    case 'comptime_float':
-      throw new Error('comptime_float should be concretized before codegen')
-
-    case 'comptime_list':
-      throw new Error('comptime_list should be concretized before codegen')
-
-    default:
-      throw new Error(`Unknown type kind: ${(u as ResolvedType).kind}`)
-  }
+  return wasmTypes(t)
 }
 
 /**
@@ -282,6 +231,14 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
         }))
       })
 
+    case 'enum': {
+      // Its tag, then its slots by number; one of unit variants only is its
+      // tag alone, named as the variable is.
+      const slots = RT.enumSlots(u)
+      if (slots.length === 0) return [{ suffix: '', wasmType: 'i32' }]
+      return [{ suffix: 'tag', wasmType: 'i32' }, ...slots.map((wt, i) => ({ suffix: String(i), wasmType: wt }))]
+    }
+
     default: {
       const types = typeToWasm(t)
       if (types.length === 1) {
@@ -296,15 +253,19 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
 
 export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
   const wat = wideningOf(expr, ctx)(exprValueToWat(expr, ctx))
-  // A constant in a global's initializer has to be a constant instruction.
-  // Where it isn't one as written (1 + 1, an integer widened to a float),
-  // the checker has worked out its value.
+  // A constant in a global's initializer has to be constant instructions.
+  // Where it isn't as written (1 + 1, an integer widened to a float), the
+  // checker has worked out its value. Parentheses have the value of what is
+  // inside them, which gives it already where that is where it widens.
   const constant = ctx.constants.get(expr)
-  const type = constant && !CONSTANT.test(wat) && valueType(expr, ctx)
+  const type = constant && !CONSTANTS.test(wat) && valueType(expr, ctx)
   return (constant && type && constantToWat(constant, type)) || wat
 }
 
 const CONSTANT = /^\((?:[if](?:32|64)\.const|ref\.func) [^\s()]+\)$/
+// One constant instruction, or several: the parts of a value that takes more
+// than one wasm value (a u128 is two i64)
+const CONSTANTS = /^\((?:[if](?:32|64)\.const|ref\.func) [^\s()]+\)(?:\s+\((?:[if](?:32|64)\.const|ref\.func) [^\s()]+\))*$/
 
 // Every implicit widening happens here: the checker says which expressions
 // meet a wider type (as an operand, an argument, an initializer, a branch).
@@ -409,7 +370,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
         throw new Error(`Missing type for float literal at offset ${expr.span.start}`)
       }
       const wt = typeToWasmSingle(type)
-      return `(${wt}.const ${numberText(lit.value)})`
+      return `(${wt}.const ${floatConstText(wt, lit)})`
     }
 
     case 'bool':
@@ -435,13 +396,151 @@ function numberText(value: number | bigint): string {
   return Object.is(value, -0) ? '-0' : `${value}`
 }
 
+// A float constant of a wasm type as WAT writes it. An f32 is the f32 the
+// compiler holds, as data lays it out (the f32 nearest the decimals written,
+// ties to even), in text that reads back as exactly that f32: an f64's
+// shortest text may lie on the other side of the midpoint of two f32s, and
+// wabt would round it to the other (1.000000059604644775390625, halfway
+// between 1 and the next f32, is 1, and the f64's text 1.0000000596046448
+// would be the next).
+function floatConstText(wt: string, value: { value: number; f32?: number }): string {
+  return numberText(wt === 'f32' ? f32Of(value) : value.value)
+}
+
 // A literal that lies in the data section, as the slice over all of it.
 function literalSliceToWat(ref: DataRef, type: RT.SliceRT): string {
   return `(i32.const ${ref.ptr}) (i32.const ${literalLength(ref, type.element)})`
 }
 
+// === Enums in registers ===
+
+// The enum a value of an enum type is
+function enumOf(type: ResolvedType | undefined): RT.EnumRT {
+  const e = type && unwrap(type)
+  if (e?.kind !== 'enum') throw new Error(`not an enum: ${type ? RT.typeToString(type) : 'no type'}`)
+  return e
+}
+
+// A value of wasm type `from` put into a slot of type `to` (into) or taken
+// out of it (out), bit for bit (reference 2.9). A constant is converted when
+// the program is compiled, to the bits the conversion gives at run time: a
+// global's initializer is a constant instruction.
+function toSlot(wat: string, from: string, to: string, way: 'into' | 'out'): string {
+  const ops = RT.slotConversion(from, to)[way]
+  if (ops.length === 0) return wat
+  const folded = foldConversion(wat, ops)
+  if (folded) return folded
+  return ops.reduce((inner, op) => `(${op} ${inner})`, wat)
+}
+
+// A constant instruction with the conversions applied, or null where `wat`
+// is no constant
+function foldConversion(wat: string, ops: string[]): string | null {
+  const m = /^\(([if](?:32|64))\.const ([^\s()]+)\)$/.exec(wat)
+  if (!m) return null
+  const view = new DataView(new ArrayBuffer(8))
+  let type = m[1]
+  let bits: bigint
+  if (type === 'i32' || type === 'i64') bits = BigInt.asUintN(type === 'i32' ? 32 : 64, BigInt(m[2]))
+  else {
+    const text = m[2]
+    const v = text === 'nan' ? Number.NaN : text === 'inf' ? Infinity : text === '-inf' ? -Infinity : Number(text)
+    if (type === 'f32') {
+      view.setFloat32(0, v, true)
+      bits = BigInt(view.getUint32(0, true))
+    } else {
+      view.setFloat64(0, v, true)
+      bits = view.getBigUint64(0, true)
+    }
+  }
+  for (const op of ops) {
+    switch (op) {
+      case 'i64.extend_i32_u':
+        type = 'i64'
+        break
+      case 'i32.wrap_i64':
+        bits = BigInt.asUintN(32, bits)
+        type = 'i32'
+        break
+      case 'i64.reinterpret_f64':
+      case 'i32.reinterpret_f32':
+        type = op.slice(0, 3)
+        break
+      case 'f64.reinterpret_i64':
+      case 'f32.reinterpret_i32':
+        type = op.slice(0, 3)
+        break
+      default:
+        return null
+    }
+  }
+  if (type === 'i32') return `(i32.const ${BigInt.asIntN(32, bits)})`
+  if (type === 'i64') return `(i64.const ${BigInt.asIntN(64, bits)})`
+  if (type === 'f32') {
+    view.setUint32(0, Number(bits), true)
+    return `(f32.const ${floatText(view.getFloat32(0, true))})`
+  }
+  view.setBigUint64(0, bits, true)
+  return `(f64.const ${floatText(view.getFloat64(0, true))})`
+}
+
+const floatText = (v: number) => (Number.isNaN(v) ? 'nan' : !Number.isFinite(v) ? (v > 0 ? 'inf' : '-inf') : Object.is(v, -0) ? '-0' : `${v}`)
+
+// Values on the stack in wasm types `from`, put each into its slot `to`
+// (3.4 of the reference): where the value is written so that its parts are
+// separate expressions, each part with its conversion; where it is one whole
+// (a call, an if, a load), as it is if no part needs converting, and else
+// through scratch locals, one per value, last value first.
+function intoSlots(wat: string, from: string[], to: string[], ctx: CodegenContext): string {
+  if (from.length === 1) return toSlot(wat, from[0], to[0], 'into')
+  const parts = trySplitMultiValue(wat, from.length)
+  if (parts) return parts.map((part, i) => toSlot(part, from[i], to[i], 'into')).join(' ')
+  if (from.every((w, i) => w === to[i])) return wat
+  const temps = from.map((w) => scratchLocal(ctx, w))
+  return [
+    wat,
+    ...[...temps].reverse().map((t) => `(local.set ${t})`),
+    temps.map((t, i) => toSlot(`(local.get ${t})`, from[i], to[i], 'into')).join(' '),
+  ].join('\n')
+}
+
+// A variant as a value in registers: its tag constant, then its payload's
+// values, in the order written, each put in its slot, then a zero for each
+// slot its payload does not reach.
+function variantToWat(expr: AST.Expr, k: number, payload: AST.TupleExpr | null, ctx: CodegenContext): string {
+  const e = enumOf(lookupExprType(expr, ctx))
+  const slots = RT.enumSlots(e)
+  const out = [`(i32.const ${k})`]
+  let at = 0
+  const fields = e.variants[k].fields ?? []
+  if (payload && fields.length > 0) {
+    if (ctx.fieldOrder.has(payload)) {
+      // Given by name in another order: computed as written, each value then
+      // going to its field (the tuple of the payload), as one whole.
+      const from = fields.flatMap((f) => typeToWasm(f.type))
+      out.push(intoSlots(tupleToWat(payload, ctx), from, slots.slice(0, from.length), ctx))
+      at = from.length
+    } else {
+      fields.forEach((f, j) => {
+        const value = argValue(payload.elements[j])
+        if (!value) throw new Error(`Missing value for field ${j} of ${e.variants[k].name}`)
+        const from = typeToWasm(f.type)
+        if (from.length === 0) return
+        out.push(intoSlots(exprToWat(value, ctx), from, slots.slice(at, at + from.length), ctx))
+        at += from.length
+      })
+    }
+  }
+  for (const slot of slots.slice(at)) out.push(zeroOf(slot))
+  return out.join(' ')
+}
+
 function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
   const name = expr.name
+
+  // A unit variant: its tag, and a zero for each slot
+  const variant = ctx.variants?.get(expr)
+  if (variant !== undefined) return variantToWat(expr, variant, null, ctx)
 
   // Check locals first (includes params)
   const localNames = ctx.locals.get(name) ?? ctx.params.get(name)
@@ -472,7 +571,7 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
       }
       if (val.kind === 'float') {
         const wt = typeToWasmSingle(sym.type)
-        return `(${wt}.const ${numberText(val.value)})`
+        return `(${wt}.const ${floatConstText(wt, val)})`
       }
       if (val.kind === 'bool') {
         return `(i32.const ${val.value ? 1 : 0})`
@@ -557,6 +656,193 @@ function scratchLocal(ctx: CodegenContext, wasmType: string): string {
   return `$${name}`
 }
 
+// Tests tried in turn, as a load of an enum, a store of one and a match try
+// them, are ifs each in the else of the one before, up to this many. Text
+// tools read nested code to a depth of only about 150 (wabt, which the
+// command line assembles with, reads about 150 ifs or blocks one inside
+// another), so a longer chain is written flat: in one block, each if leaving
+// it with its value.
+const MAX_NESTED_TESTS = 64
+// So is a chain that, nested, would put what it holds deeper than this, and a
+// function whose code would nest deeper than this is written again with each
+// chain in the form that nests less (see funcToWat).
+const MAX_NESTED_DEPTH = 100
+
+// How many ifs, blocks and loops of some WAT are inside one another, at most.
+function controlDepth(wat: string): number {
+  if (!/\((?:if|block|loop)\b/.test(wat)) return 0
+  const open: boolean[] = []
+  let depth = 0
+  let max = 0
+  for (let i = 0; i < wat.length; i++) {
+    const c = wat[i]
+    if (c === '"') {
+      // A string's bytes are no code
+      for (i++; i < wat.length && wat[i] !== '"'; i++) if (wat[i] === '\\') i++
+    } else if (c === ';' && wat[i + 1] === ';') {
+      while (i < wat.length && wat[i] !== '\n') i++
+    } else if (c === '(') {
+      const control = /^(?:if|block|loop)\b/.test(wat.slice(i + 1, i + 7))
+      open.push(control)
+      if (control && ++depth > max) max = depth
+    } else if (c === ')') {
+      if (open.pop()) depth--
+    }
+  }
+  return max
+}
+
+// The deepest a function's code can nest. wabt, which the command line
+// assembles with, reads nested code on a stack of its own, and code nested
+// deeper than it holds makes wabt fail, or never finish. Each instruction on
+// the way to the deepest one counts what wabt's stack was seen to take for it
+// at most, with a little to spare: a block or a loop 50, an if 46 (wabt
+// reads one if inside another 154 deep, a block 141 deep where its label is
+// used), any other instruction 30 (243 deep), and so does a block or a loop
+// that is the condition of an if; an if that is the condition of an if counts
+// 28 (an `a || b || c` chain: wabt reads 255 of them one inside another). A
+// float constant written in decimals counts 1200: wabt reads it with the C
+// library's strtod, whose stack frame is large (an f64.const in each of 208
+// additions one inside another is as deep as wabt reads, where a local is
+// read 243 deep); `nan`, `inf` and hex floats are read by wabt itself and
+// count 30. A function nested deeper is one error (NestingLimitError): 151
+// ifs, 139 blocks or loops or 233 other instructions, or a mix of them.
+export const MAX_NESTING = 7000
+
+// How deep some WAT nests, as MAX_NESTING counts it.
+export function nestingOf(wat: string): number {
+  // Each open instruction's weight, and for an if whether its condition is
+  // still being read (it has had no `then` yet)
+  const open: { weight: number; condition: boolean }[] = []
+  let depth = 0
+  let max = 0
+  for (let i = 0; i < wat.length; i++) {
+    const c = wat[i]
+    if (c === '"') {
+      for (i++; i < wat.length && wat[i] !== '"'; i++) if (wat[i] === '\\') i++
+    } else if (c === ';' && wat[i + 1] === ';') {
+      while (i < wat.length && wat[i] !== '\n') i++
+    } else if (c === '(') {
+      const word = /^[\w.]*/.exec(wat.slice(i + 1, i + 24))?.[0] ?? ''
+      const parent = open[open.length - 1]
+      if (parent && (word === 'then' || word === 'else')) parent.condition = false
+      const inCondition = parent?.condition === true && !/^(?:result|param|type)$/.test(word)
+      let weight = word === 'block' || word === 'loop' ? 50 : word === 'if' ? 46 : /^(?:func|then|else|result|param|local|type)$/.test(word) ? 0 : 30
+      if (inCondition && weight > 30) weight = word === 'if' ? 28 : 30
+      if ((word === 'f32.const' || word === 'f64.const') && decimalFloat(wat, i + 1 + word.length)) weight = 1200
+      open.push({ weight, condition: word === 'if' })
+      depth += weight
+      if (depth > max) max = depth
+    } else if (c === ')') {
+      depth -= open.pop()?.weight ?? 0
+    }
+  }
+  return max
+}
+
+// Whether the float constant written at `at` (after its instruction's name)
+// is in decimals, which wabt reads with strtod: not nan, inf or a hex float.
+function decimalFloat(wat: string, at: number): boolean {
+  const text = /^\s*([^\s()]*)/.exec(wat.slice(at, at + 64))?.[1] ?? ''
+  return !/^[+-]?(?:nan|inf|0x)/.test(text)
+}
+
+// A function, or a test, whose code nests deeper than MAX_NESTING: at the
+// function's name (or the test's), in the module at `path`.
+export class NestingLimitError extends Error {
+  path?: string
+  constructor(message: string, readonly offset: number) {
+    super(message)
+  }
+}
+
+function checkNesting(wat: string, what: string, offset: number): void {
+  const nesting = nestingOf(wat)
+  if (nesting <= MAX_NESTING) return
+  throw new NestingLimitError(
+    `${what} nests its code ${nesting} deep in wasm, more than the ${MAX_NESTING} that wasm text tools read (a block or a loop counts 50 and an if 46, 30 and 28 in the condition of an if, a float constant 1200, any other instruction 30): keep fewer loops, ifs and matches one inside another`,
+    offset,
+  )
+}
+
+// Codegen of the module at `path`, which a NestingLimitError says it is in.
+function inModule<T>(path: string, write: () => T): T {
+  try {
+    return write()
+  } catch (e) {
+    if (e instanceof NestingLimitError && e.path === undefined) e.path = path
+    throw e
+  }
+}
+
+// Where the last instruction of some WAT starts, at its top level, when the
+// WAT ends with it; -1 when it ends with no instruction of its own.
+function lastInstructionAt(wat: string): number {
+  let depth = 0
+  let start = -1
+  let end = -1
+  for (let i = 0; i < wat.length; i++) {
+    const c = wat[i]
+    if (c === '"') {
+      for (i++; i < wat.length && wat[i] !== '"'; i++) if (wat[i] === '\\') i++
+    } else if (c === ';' && wat[i + 1] === ';') {
+      while (i < wat.length && wat[i] !== '\n') i++
+    } else if (c === '(') {
+      if (depth++ === 0) start = i
+    } else if (c === ')') {
+      if (--depth === 0) end = i
+    } else if (depth === 0 && !/\s/.test(c)) {
+      return -1
+    }
+  }
+  return depth === 0 && end === wat.trimEnd().length - 1 ? start : -1
+}
+
+// A flat chain that is the last thing `otherwise` does, as a match in the `_`
+// arm of a match is: its block's instructions, which can go in the block of
+// the chain it is the otherwise of, after what comes before it. Its ifs then
+// leave that block, with the same values, at the same place, so a match in
+// the `_` arm of a match in the `_` arm of another is no deeper than one.
+function flatTail(otherwise: string, resultStr: string): { before: string; inside: string } | null {
+  const at = lastInstructionAt(otherwise)
+  if (at < 0) return null
+  const head = `(block $__tests ${resultStr}\n`
+  if (!otherwise.startsWith(head, at)) return null
+  return { before: otherwise.slice(0, at).trim(), inside: otherwise.trimEnd().slice(at + head.length, -1) }
+}
+
+// Tests tried in turn, each `[test, then]` in order, the first that holds
+// giving its `then`, and `otherwise` where none does; `nested` writes the
+// chain as ifs each in the else of the one before. More than
+// MAX_NESTED_TESTS, or a chain that nested would hold code deeper than
+// MAX_NESTED_DEPTH, are flat where that nests less: a block of ifs, each
+// `then` followed by a br out of it with its value, then `otherwise` (the
+// instructions of a flat chain it ends with put in the block itself). A
+// label inside a `then` is its own block's (a label shadows the one outside
+// it). In a function written again to nest less (ctx.shallow), each chain is
+// in the form that nests less.
+function testChain(
+  tests: [string, string][],
+  otherwise: string,
+  resultStr: string,
+  nested: (test: string, then: string, rest: string) => string,
+  ctx: CodegenContext,
+): string {
+  if (tests.length === 0) return otherwise
+  const holds = tests.map(([test, then]) => Math.max(controlDepth(test), controlDepth(then)))
+  const asNested = Math.max(tests.length + controlDepth(otherwise), ...holds.map((d, k) => k + 1 + d))
+  const tail = flatTail(otherwise, resultStr)
+  const last = tail ? Math.max(controlDepth(tail.before), controlDepth(tail.inside)) : controlDepth(otherwise)
+  const asFlat = 1 + Math.max(last, ...holds.map((d) => 1 + d))
+  const nest = ctx.shallow
+    ? asNested <= asFlat
+    : (tests.length <= MAX_NESTED_TESTS && asNested <= MAX_NESTED_DEPTH) || asNested < asFlat
+  if (nest) return tests.reduceRight((rest, [test, then]) => nested(test, then, rest), otherwise)
+  const ifs = tests.map(([test, then]) => `(if ${test} (then ${then} (br $__tests)))`)
+  const rest = tail ? [tail.before, tail.inside] : [otherwise]
+  return `(block $__tests ${resultStr}\n${[...ifs, ...rest].filter((x) => x !== '').join('\n')})`
+}
+
 // A local or a constant: free to repeat, and nothing that runs in between
 // changes it.
 const isSimple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/.test(wat)
@@ -639,6 +925,9 @@ function aggregateParts(type: ResolvedType): RT.MemoryPart[] | null {
 // parts, so an address that is more than a local or a constant goes into a
 // scratch local with the first load.
 function loadFromMemory(type: ResolvedType, ptr: string, ctx: CodegenContext): string {
+  // What holds an enum has no one list of parts: which bytes it has
+  // depends on its variant.
+  if (RT.enumIn(type)) return loadHolding(type, ptr, ctx)
   const nw = wideIntParts(type)
   const u = unwrap(type)
   if (nw > 0 || u.kind === 'slice') {
@@ -684,7 +973,8 @@ function loadFromMemory(type: ResolvedType, ptr: string, ctx: CodegenContext): s
 // repeated instead, and a slice or wide integer repeats an address that reads
 // no memory, has no effects, and reads no global while the value has effects;
 // but only when the value sets no local the address reads.
-function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: CodegenContext): string {
+function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: CodegenContext, valueExpr?: AST.Expr): string {
+  if (RT.enumIn(type)) return storeHolding(type, ptr, value, valueExpr, ctx)
   const nw = wideIntParts(type)
   const u = unwrap(type)
   const parts = nw > 0 || u.kind === 'slice' ? RT.memoryParts(u) : aggregateParts(type)
@@ -729,6 +1019,248 @@ function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: Code
     store(0, ''),
     ...temps.map((t, i) => store(i + 1, ` ${rest} (local.get ${t})`)),
   ].join('\n')
+}
+
+// === Enums in memory ===
+
+// An address that is used several times: a local's read or a constant as
+// it is, anything else evaluated once, into a scratch local at its first use
+// (the first one evaluated, where the uses are written in the order they run).
+function addressOnce(ptr: string, ctx: CodegenContext): () => string {
+  if (isSimple(ptr)) return () => ptr
+  const tmp = scratchLocal(ctx, 'i32')
+  let used = false
+  return () => {
+    if (used) return `(local.get ${tmp})`
+    used = true
+    return `(local.tee ${tmp} ${ptr})`
+  }
+}
+
+// Reads a value that holds an enum, at any depth, from memory (reference
+// 2.9): part by part, in field order, an enum part by its tag and then the
+// fields of the variant the tag names. The address is evaluated once.
+function loadHolding(type: ResolvedType, ptr: string, ctx: CodegenContext): string {
+  return loadAt(type, addressOnce(ptr, ctx), 0, ctx)
+}
+
+function loadAt(type: ResolvedType, addr: () => string, offset: number, ctx: CodegenContext): string {
+  const u = unwrap(type)
+  if (u.kind === 'enum') return loadEnumAt(u, addr, offset, ctx)
+  if (u.kind === 'tuple') {
+    let at = offset
+    return u.fields.map((f) => {
+      const wat = loadAt(f.type, addr, at, ctx)
+      at += byteSize(f.type) ?? 0
+      return wat
+    }).join(' ')
+  }
+  if (u.kind === 'array' && RT.isValueArray(u)) {
+    const stride = byteSize(u.element) ?? 0
+    return Array.from({ length: u.sizes?.[0] as number }, (_, i) => loadAt(u.element, addr, offset + i * stride, ctx)).join(' ')
+  }
+  const parts = RT.memoryParts(u)
+  if (!parts) throw new Error(`${RT.typeToString(type)} has no fixed size in memory`)
+  return parts.map((p) => `(${loadOp(p.type)}${atOffset(offset + p.offset)} ${addr()})`).join(' ')
+}
+
+// An enum in memory: its tag's load, then one if for each payload variant in
+// declaration order, each nested in the else of the one before (flat for
+// many, testChain), whose result is the slots: that variant's fields, each
+// put in its slot, then zeros. The innermost else, for a unit variant or a
+// tag no variant has, gives zeros.
+function loadEnumAt(e: RT.EnumRT, addr: () => string, offset: number, ctx: CodegenContext): string {
+  const layout = RT.enumLayout(e)
+  if (!layout) throw new Error(`${RT.typeToString(e)} has no fixed size in memory`)
+  const tagLoad = `(${loadOp(layout.tag)}${atOffset(offset)} ${addr()})`
+  const slots = RT.enumSlots(e)
+  if (slots.length === 0) return tagLoad
+  const tag = scratchLocal(ctx, 'i32')
+  const result = `(result ${slots.join(' ')})`
+  const branches: [number, string][] = []
+  e.variants.forEach((v, k) => {
+    if (!v.fields || v.fields.length === 0) return
+    const values: string[] = []
+    let at = 0
+    let fieldOffset = offset + layout.tagBytes
+    for (const f of v.fields) {
+      const from = typeToWasm(f.type)
+      if (from.length > 0) values.push(intoSlots(loadAt(f.type, addr, fieldOffset, ctx), from, slots.slice(at, at + from.length), ctx))
+      at += from.length
+      fieldOffset += byteSize(f.type) ?? 0
+    }
+    for (const slot of slots.slice(at)) values.push(zeroOf(slot))
+    branches.push([k, values.join(' ')])
+  })
+  const tests = branches.map(([k, values]): [string, string] => [`(i32.eq (local.get ${tag}) (i32.const ${k}))`, values])
+  const chain = testChain(tests, slots.map(zeroOf).join(' '), result, (test, then, rest) => `(if ${result} ${test}\n(then ${then})\n(else ${rest}))`, ctx)
+  return `(local.tee ${tag} ${tagLoad})\n${chain}`
+}
+
+// A part of a value as it lies in memory: where it starts, the scalar it is
+// stored as, and its value
+type StoredPart = { offset: number; type: RT.PrimitiveRT | RT.PointerRT; value: string }
+
+// A value that holds an enum, written into memory (reference 2.9). A value
+// written there as variants (Grey(k), Pixel(Grey(k), 9), (Red, 0)) is a struct
+// of fixed parts, its tags constants among them, and is stored as such a
+// struct is. Any other value is computed whole, its registers kept in scratch
+// locals unless they are a variable's (or constants), and its parts stored
+// in field order, an enum part by its tag and then one if for each payload
+// variant (nested, or flat for many: testChain), which stores that variant's
+// fields from its slots. The padding of an enum is never written. The
+// address is computed first.
+function storeHolding(type: ResolvedType, ptr: string, value: string, valueExpr: AST.Expr | undefined, ctx: CodegenContext): string {
+  const fixed = valueExpr ? fixedParts(type, valueExpr, 0, ctx) : null
+  if (fixed) return storeParts(fixed, ptr, ctx)
+  const [setup, regs] = registersHeld(value, typeToWasm(type), ctx)
+  let pre = ''
+  let base = ptr
+  if (!isSimple(ptr) || setsLocalOf(value, ptr)) {
+    const tmp = scratchLocal(ctx, 'i32')
+    pre = `(local.set ${tmp} ${ptr})`
+    base = `(local.get ${tmp})`
+  }
+  const stores = storeRegsAt(type, base, 0, regs, { next: 0 }, ctx)
+  return [pre, setup, stores].filter((x) => x !== '').join('\n')
+}
+
+// The registers of a value, each as an expression that can be read more than
+// once: a variable's reads or constants as they are, anything else into
+// scratch locals, last register first. Gives what sets them, and them.
+function registersHeld(value: string, wasm: string[], ctx: CodegenContext): [string, string[]] {
+  const parts = trySplitMultiValue(value, wasm.length)
+  if (parts && parts.every((p) => /^\((?:local\.get|global\.get|[if](?:32|64)\.const) [^\s()]+\)$/.test(p))) return ['', parts]
+  const temps = wasm.map((w) => scratchLocal(ctx, w))
+  return [[value, ...[...temps].reverse().map((t) => `(local.set ${t})`)].join('\n'), temps.map((t) => `(local.get ${t})`)]
+}
+
+// Stores registers `regs` (from `cursor.next` on) of a value of `type` at
+// `base` + `offset`, part by part in field order
+function storeRegsAt(type: ResolvedType, base: string, offset: number, regs: string[], cursor: { next: number }, ctx: CodegenContext): string {
+  const u = unwrap(type)
+  if (u.kind === 'enum') {
+    const layout = RT.enumLayout(u)
+    if (!layout) throw new Error(`${RT.typeToString(type)} has no fixed size in memory`)
+    const slots = RT.enumSlots(u)
+    const tag = regs[cursor.next++]
+    const slotRegs = regs.slice(cursor.next, cursor.next + slots.length)
+    cursor.next += slots.length
+    // A tag is stored in its width.
+    const out = [`(${storeOp(layout.tag)}${atOffset(offset)} ${base} ${tag})`]
+    const branches: [number, string][] = []
+    u.variants.forEach((v, k) => {
+      if (!v.fields || v.fields.length === 0) return
+      const stores: string[] = []
+      let at = 0
+      let fieldOffset = offset + layout.tagBytes
+      for (const f of v.fields) {
+        const from = typeToWasm(f.type)
+        const values = from.map((w, i) => toSlot(slotRegs[at + i], w, slots[at + i], 'out'))
+        stores.push(storeRegsAt(f.type, base, fieldOffset, values, { next: 0 }, ctx))
+        at += from.length
+        fieldOffset += byteSize(f.type) ?? 0
+      }
+      branches.push([k, stores.filter((x) => x !== '').join(' ')])
+    })
+    const tests = branches.map(([k, stores]): [string, string] => [`(i32.eq ${tag} (i32.const ${k}))`, stores])
+    const chain = testChain(tests, '', '', (test, then, rest) => `(if ${test}\n(then ${then})${rest ? `\n(else ${rest})` : ''})`, ctx)
+    if (chain) out.push(chain)
+    return out.join('\n')
+  }
+  if (u.kind === 'tuple') {
+    let at = offset
+    return u.fields.map((f) => {
+      const wat = storeRegsAt(f.type, base, at, regs, cursor, ctx)
+      at += byteSize(f.type) ?? 0
+      return wat
+    }).filter((x) => x !== '').join('\n')
+  }
+  if (u.kind === 'array' && RT.isValueArray(u)) {
+    const stride = byteSize(u.element) ?? 0
+    return Array.from({ length: u.sizes?.[0] as number }, (_, i) => storeRegsAt(u.element, base, offset + i * stride, regs, cursor, ctx)).filter((x) => x !== '').join('\n')
+  }
+  const parts = RT.memoryParts(u)
+  if (!parts) throw new Error(`${RT.typeToString(type)} has no fixed size in memory`)
+  return parts.map((p) => `(${storeOp(p.type)}${atOffset(offset + p.offset)} ${base} ${regs[cursor.next++]})`).join(' ')
+}
+
+// The parts a value written as variants is stored as, at `offset`: the tag
+// constant and the fields of each variant written there, and the parts of
+// every other field. Null where an enum part of it is no variant written
+// there, or where a part's value is not written as its parts.
+function fixedParts(type: ResolvedType, expr: AST.Expr, offset: number, ctx: CodegenContext): StoredPart[] | null {
+  const value = ungroup(expr)
+  const u = unwrap(type)
+  if (!RT.enumIn(u)) {
+    const parts = RT.memoryParts(u)
+    if (!parts) return null
+    const wat = exprToWat(value, ctx)
+    const values = parts.length === 1 ? [wat] : trySplitMultiValue(wat, parts.length)
+    if (!values) return null
+    return parts.map((p, i) => ({ offset: offset + p.offset, type: p.type, value: values[i] }))
+  }
+  if (u.kind === 'enum') {
+    const k = ctx.variants?.get(value)
+    if (k === undefined) return null
+    const layout = RT.enumLayout(u)
+    if (!layout) return null
+    const parts: StoredPart[] = [{ offset, type: layout.tag, value: `(i32.const ${k})` }]
+    const fields = u.variants[k].fields ?? []
+    const payload = value.kind === 'CallExpr' ? ctx.payloads?.get(value) : undefined
+    if (fields.length > 0) {
+      if (!payload || ctx.fieldOrder.has(payload)) return null
+      let at = offset + layout.tagBytes
+      for (const [j, f] of fields.entries()) {
+        const v = argValue(payload.elements[j])
+        const inner = v && fixedParts(f.type, v, at, ctx)
+        if (!inner) return null
+        parts.push(...inner)
+        at += byteSize(f.type) ?? 0
+      }
+    }
+    return parts
+  }
+  if (u.kind === 'tuple') {
+    // A tuple literal, or a struct's constructor: the tuple of its arguments
+    const lowered = value.kind === 'CallExpr' ? ctx.calls.get(value) : undefined
+    const constructed = value.kind === 'CallExpr' && !lowered && value.callee.kind === 'IdentExpr' && ctx.symbols.get(value.callee.name)?.kind === 'type'
+      ? { kind: 'TupleExpr' as const, elements: value.args, span: value.span }
+      : null
+    const tuple = value.kind === 'TupleExpr' ? value : lowered?.kind === 'TupleExpr' ? lowered : constructed
+    if (!tuple || ctx.fieldOrder.has(tuple) || tuple.elements.length !== u.fields.length || tuple.elements.some((e) => e.name !== null)) return null
+    const parts: StoredPart[] = []
+    let at = offset
+    for (const [j, f] of u.fields.entries()) {
+      const v = argValue(tuple.elements[j])
+      const inner = v && fixedParts(f.type, v, at, ctx)
+      if (!inner) return null
+      parts.push(...inner)
+      at += byteSize(f.type) ?? 0
+    }
+    return parts
+  }
+  return null
+}
+
+// Stores parts of fixed offsets, as a struct's are stored: one after
+// another, or, where a part after the first reads or writes memory, all of
+// them on the stack, each above its address, before the stores run.
+function storeParts(parts: StoredPart[], ptr: string, ctx: CodegenContext): string {
+  const repeat = isSimple(ptr) && !parts.some((p) => setsLocalOf(p.value, ptr))
+  let first = ptr
+  let rest = ptr
+  if (!repeat) {
+    const tmp = scratchLocal(ctx, 'i32')
+    first = `(local.tee ${tmp} ${ptr})`
+    rest = `(local.get ${tmp})`
+  }
+  const at = (i: number) => (i === 0 ? first : rest)
+  const store = (i: number, operands: string) => `(${storeOp(parts[i].type)}${atOffset(parts[i].offset)}${operands})`
+  if (!parts.slice(1).some((p) => readsMemory(p.value) || writesMemory(p.value))) {
+    return parts.map((p, i) => store(i, ` ${at(i)} ${p.value}`)).join('\n')
+  }
+  return [...parts.map((p, i) => `${at(i)} ${p.value}`), ...parts.map((_, i) => store(i, '')).reverse()].join('\n')
 }
 
 function splitMultiValue(wat: string, n: number): string[] {
@@ -1117,6 +1649,10 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
 }
 
 function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
+  // A variant's constructor: its tag, then its payload in its slots
+  const variant = ctx.variants?.get(expr)
+  if (variant !== undefined) return variantToWat(expr, variant, ctx.payloads?.get(expr) ?? null, ctx)
+
   // A call of a generic compiles as the plain call of its instance that the
   // checker recorded: nothing of the comptime arguments is left. This comes
   // before the builtins, so a generic named max is reachable. A type that is
@@ -1791,6 +2327,42 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
     return `${setDst}\n(memory.copy (local.get ${p}) ${srcPtr} ${bytes})`
   }
 
+  // An element that holds an enum is never zeros to a memory.fill: a fill
+  // would write the padding a store leaves. Each element is stored as an
+  // assignment stores it, from what is computed once before the loop: the
+  // values of the parts of a value written as variants (its tags are
+  // constants), or all the registers of any other value.
+  if (RT.enumIn(cell)) {
+    const fixed = fixedParts(cell, value, 0, ctx)
+    let set: string
+    let store: string
+    if (fixed) {
+      const sets: string[] = []
+      const held = fixed.map((part) => {
+        if (CONSTANT.test(part.value)) return part
+        const t = scratchLocal(ctx, typeToWasmSingle(part.type))
+        sets.push(`${part.value}\n(local.set ${t})`)
+        return { ...part, value: `(local.get ${t})` }
+      })
+      set = sets.join('\n')
+      store = storeParts(held, `(local.get ${p})`, ctx)
+    } else {
+      const v = exprToWat(value, ctx)
+      const temps = typeToWasm(cell).map((type) => scratchLocal(ctx, type))
+      set = [v, ...[...temps].reverse().map((t) => `(local.set ${t})`)].join('\n')
+      store = storeRegsAt(cell, `(local.get ${p})`, 0, temps.map((t) => `(local.get ${t})`), { next: 0 }, ctx)
+    }
+    return `${setDst}
+${set}
+(block $__fill_${uid}
+  (loop $__fill_next_${uid}
+    (br_if $__fill_${uid} (i32.eqz (local.get ${n})))
+    ${store}
+    (local.set ${p} (i32.add (local.get ${p}) (i32.const ${stride})))
+    (local.set ${n} (i32.sub (local.get ${n}) (i32.const 1)))
+    (br $__fill_next_${uid})))`
+  }
+
   const v = exprToWat(value, ctx)
   const wasm = typeToWasm(cell)
   // Zeros: every value the element is held in is a constant 0 (a struct, a
@@ -1986,6 +2558,16 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
 // value each branch leaves on the stack.
 function ifLetArmToWat(arm: AST.IfExpr | AST.ElifBranch, ctx: CodegenContext, resultStr: string, otherwise: () => string): string {
   const pattern = arm.pattern
+  // A variant pattern: the value's tag is tested, as a match arm's is.
+  if (pattern && (pattern.kind === 'variant' || pattern.kind === 'constructor')) {
+    const e = enumOf(lookupExprType(arm.condition, ctx))
+    const [setup, regs] = enumRegisters(arm.condition, e, ctx)
+    const sets = patternBindingsToWat(pattern, e, regs, ctx)
+    const thenBody = withPatternBindings(pattern, ctx, () => bodyToWat(arm.thenBranch, ctx, resultStr !== ''))
+    const elseBody = otherwise()
+    const test = `(if ${resultStr} ${variantTest(pattern, regs[0], ctx)} (then ${[...sets, thenBody].join(' ')})${elseBody ? ` (else ${elseBody})` : ''})`
+    return setup ? `${setup}\n${test}` : test
+  }
   if (!pattern || pattern.kind !== 'binding') {
     throw new Error('Invalid if-let expression')
   }
@@ -2380,7 +2962,7 @@ function runtimeStores(expr: AST.ArrayExpr | AST.RepeatExpr, elemType: ResolvedT
           parts.push(`(i32.const ${at})\n${value}\n(local.set $__slot_len)\n(i32.store)\n(i32.store (i32.const ${at + 4}) (local.get $__slot_len))`)
         }
       } else {
-        parts.push(storeToMemory(elemType, `(i32.const ${at})`, value, ctx))
+        parts.push(storeToMemory(elemType, `(i32.const ${at})`, value, ctx, elem))
       }
     }
   }
@@ -2388,6 +2970,8 @@ function runtimeStores(expr: AST.ArrayExpr | AST.RepeatExpr, elemType: ResolvedT
 
 function isRuntimeExpr(expr: AST.Expr, ctx: CodegenContext): boolean {
   if (expr.kind === 'LiteralExpr') return false
+  // A unit variant is its tag, laid out with the literal
+  if (expr.kind === 'IdentExpr' && ctx.variants?.has(expr)) return false
   if (expr.kind === 'ArrayExpr') return false
   if (expr.kind === 'RepeatExpr') return false
   if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr, ctx)
@@ -2443,6 +3027,8 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
 }
 
 function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
+  const enumType = lookupExprType(expr.subject, ctx)
+  if (enumType && unwrap(enumType).kind === 'enum') return matchEnumToWat(expr, enumOf(enumType), ctx)
   let subject = exprToWat(expr.subject, ctx)
   const subjectType = lookupExprType(expr.subject, ctx)
   const subjectTypes = subjectType ? typeToWasm(subjectType) : ['i32']
@@ -2467,9 +3053,10 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
 
-  // For now, generate nested if/else for each arm
+  // One if for each arm, nested (or, for many, flat: testChain)
   // Could optimize to br_table for consecutive integers
-  let result = '(unreachable)'
+  let otherwise = '(unreachable)'
+  let tested: [string, string][] = []
 
   for (let i = expr.arms.length - 1; i >= 0; i--) {
     const arm = expr.arms[i]
@@ -2483,14 +3070,16 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
         : resultTypes.length > 0 ? exprToWat(arm.body, ctx) : discardedExprToWat(arm.body, ctx)
 
     if (isWildcard) {
-      result = body
+      // The arms after it are never reached.
+      otherwise = body
+      tested = []
     } else {
       // Generate condition for patterns
       const conditions = arm.patterns.map((p) => {
         if (p.kind === 'literal') {
           const litValue =
             p.value.kind === 'int' || p.value.kind === 'float'
-              ? `(${wt}.const ${numberText(p.value.value)})`
+              ? `(${wt}.const ${p.value.kind === 'float' ? floatConstText(wt, p.value) : numberText(p.value.value)})`
               : p.value.kind === 'bool'
                 ? `(i32.const ${p.value.value ? 1 : 0})`
                 : '(i32.const 0)'
@@ -2505,11 +3094,121 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
           ? conditions[0]
           : conditions.reduce((acc, c) => `(i32.or ${acc} ${c})`)
 
-      result = `(if ${resultStr} ${cond} (then ${body}) (else ${result}))`
+      tested.unshift([cond, body])
     }
   }
 
-  return setup + result
+  return setup + testChain(tested, otherwise, resultStr, (test, then, rest) => `(if ${resultStr} ${test} (then ${then}) (else ${rest}))`, ctx)
+}
+
+// A value of an enum as registers that can be read more than once (a
+// variable's, a global's, a field of one held by value, as they are; anything
+// else, a subject in memory among them, evaluated once into scratch locals,
+// last register first), and what sets those
+function enumRegisters(value: AST.Expr, e: RT.EnumRT, ctx: CodegenContext): [string, string[]] {
+  const wat = exprToWat(value, ctx)
+  const wasm = typeToWasm(e)
+  const parts = trySplitMultiValue(wat, wasm.length)
+  if (parts?.every((p) => /^\((?:local\.get|global\.get) [^\s()]+\)$/.test(p))) return ['', parts]
+  const temps = wasm.map((w) => scratchLocal(ctx, w))
+  return [[wat, ...[...temps].reverse().map((t) => `(local.set ${t})`)].join('\n'), temps.map((t) => `(local.get ${t})`)]
+}
+
+// The test that a value is the variant a pattern names
+function variantTest(pattern: AST.MatchPattern, tag: string, ctx: CodegenContext): string {
+  const k = ctx.patternVariants?.get(pattern)
+  if (k === undefined) throw new Error('a variant pattern the checker did not resolve')
+  return `(i32.eq ${tag} (i32.const ${k}))`
+}
+
+// The sets of the names a variant pattern binds, each from its slots
+function patternBindingsToWat(pattern: AST.MatchPattern, e: RT.EnumRT, regs: string[], ctx: CodegenContext): string[] {
+  if (pattern.kind !== 'constructor') return []
+  const k = ctx.patternVariants?.get(pattern)
+  if (k === undefined) return []
+  const fields = e.variants[k].fields ?? []
+  const slots = RT.enumSlots(e)
+  // Where each field's values start among the slots
+  const starts: number[] = []
+  let at = 0
+  for (const f of fields) {
+    starts.push(at)
+    at += typeToWasm(f.type).length
+  }
+  const sets: string[] = []
+  const bind = (j: number, offset: number) => {
+    const names = ctx.patternLocals?.get(offset)
+    if (!names) throw new Error(`Missing locals for the binding at offset ${offset}`)
+    const from = typeToWasm(fields[j].type)
+    names.forEach((name, i) => {
+      const slot = starts[j] + i
+      sets.push(`(local.set $${name} ${toSlot(regs[1 + slot], from[i], slots[slot], 'out')})`)
+    })
+  }
+  pattern.elements.forEach((part, position) => {
+    if (part.kind === 'positional') {
+      if (part.pattern.kind === 'binding') bind(position, part.pattern.span.start)
+      return
+    }
+    const j = fields.findIndex((f) => f.name === part.field)
+    if (part.kind === 'namedShort') bind(j, part.span.start)
+    else if (part.pattern.kind === 'binding') bind(j, part.pattern.span.start)
+  })
+  return sets
+}
+
+// Runs `emit` with the names a pattern binds standing for their locals
+function withPatternBindings<T>(pattern: AST.MatchPattern, ctx: CodegenContext, emit: () => T): T {
+  const bound: [string, string[]][] = []
+  const visit = (p: AST.MatchPattern) => {
+    if (p.kind !== 'constructor') return
+    for (const part of p.elements) {
+      const binding = partBinding(part)
+      const names = binding && ctx.patternLocals?.get(binding.at)
+      if (binding && names) bound.push([binding.name, names])
+    }
+  }
+  visit(pattern)
+  const run = (i: number): T => (i >= bound.length ? emit() : withBinding(ctx, bound[i][0], bound[i][1], () => run(i + 1)))
+  return run(0)
+}
+
+// A match on an enum (reference 5.4): the subject is evaluated once; the arms
+// are nested ifs (flat for many, testChain), the first outermost, each
+// testing the tag for the variants its patterns name (or-ed for several), its
+// then setting its bindings from their slots and then running its body. The
+// first arm that lists _ is the else of the arm before it, and the arms after
+// it are not compiled; with none, the innermost else is (unreachable): a tag
+// no variant has traps.
+function matchEnumToWat(expr: AST.MatchExpr, e: RT.EnumRT, ctx: CodegenContext): string {
+  const [setup, regs] = enumRegisters(expr.subject, e, ctx)
+  const tag = regs[0]
+  const type = lookupExprType(expr, ctx)
+  const resultTypes = type ? typeToWasm(type) : []
+  const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
+  const bodyOf = (arm: AST.MatchArm) =>
+    arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody'
+      ? bodyToWat(arm.body, ctx, resultTypes.length > 0)
+      : resultTypes.length > 0 ? exprToWat(arm.body, ctx) : discardedExprToWat(arm.body, ctx)
+  const last = expr.arms.findIndex((arm) => arm.patterns.some((p) => p.kind === 'wildcard'))
+  const arms = last < 0 ? expr.arms : expr.arms.slice(0, last + 1)
+  let otherwise = '(unreachable)'
+  const tested: [string, string][] = []
+  for (let i = arms.length - 1; i >= 0; i--) {
+    const arm = arms[i]
+    if (i === last) {
+      otherwise = bodyOf(arm)
+      continue
+    }
+    const tests = arm.patterns.map((p) => variantTest(p, tag, ctx))
+    const cond = tests.reduce((acc, c) => `(i32.or ${acc} ${c})`)
+    const only = arm.patterns.length === 1 ? arm.patterns[0] : null
+    const sets = only ? patternBindingsToWat(only, e, regs, ctx) : []
+    const body = only ? withPatternBindings(only, ctx, () => bodyOf(arm)) : bodyOf(arm)
+    tested.unshift([cond, [...sets, body].join(' ')])
+  }
+  const result = testChain(tested, otherwise, resultStr, (test, then, rest) => `(if ${resultStr} ${test}\n(then ${then})\n(else ${rest}))`, ctx)
+  return setup ? `${setup}\n${result}` : result
 }
 
 function sizeofToWat(expr: AST.SizeofExpr, ctx: CodegenContext): string {
@@ -2767,7 +3466,7 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
     return assign(result)
   }
 
-  return assignLvalue(stmt.target, value, ctx)
+  return assignLvalue(stmt.target, value, ctx, stmt.value)
 }
 
 function lvalueToWat(target: AST.LValue, ctx: CodegenContext): string {
@@ -2785,7 +3484,7 @@ function lvalueToWat(target: AST.LValue, ctx: CodegenContext): string {
 
 // Assigns a value to a place: the registers of a variable or of a member of
 // one, or memory.
-function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): string {
+function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext, valueExpr?: AST.Expr): string {
   if (target.kind !== 'IdentExpr' && target.kind !== 'MemberExpr' && target.kind !== 'IndexExpr') return ''
   const regs = registersOf(target, ctx)
   if (regs) return setRegisters(regs, value)
@@ -2795,7 +3494,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
     if (!type) {
       throw new Error(`Missing type for store at offset ${target.span.start}`)
     }
-    return storeToMemory(type, addr, value, ctx)
+    return storeToMemory(type, addr, value, ctx, valueExpr)
   }
   if (target.kind === 'IdentExpr') return `(local.set $${target.name} ${value})`
   throw new Error(`Cannot assign to this expression at offset ${target.span.start}`)
@@ -3070,7 +3769,30 @@ export function funcToWat(
   // checked as it comes in.
   exported = false,
 ): string {
+  const write = (shallow: boolean) => funcToWatOnce(decl, checkResult, literalRefs, nameMap, watName, extraSymbols, dataSectionSize, exported, shallow)
+  // Code nested deeper than MAX_NESTED_DEPTH, as chains of tests in loops
+  // or in one another's arms can be, is written again with each chain in the
+  // form that nests less: the depth that counts is the function's.
+  let wat = write(false)
+  if (controlDepth(wat) > MAX_NESTED_DEPTH || nestingOf(wat) > MAX_NESTING) wat = write(true)
+  const name = checkResult.funcNames.get(decl) ?? decl.ident ?? 'anonymous'
+  checkNesting(wat, `function '${name}'`, scratchId(decl.span.start))
+  return wat
+}
+
+function funcToWatOnce(
+  decl: AST.FuncDecl,
+  checkResult: TypeCheckResult,
+  literalRefs: Map<number, { ptr: number; len: number }>,
+  nameMap: Map<string, string> | undefined,
+  watName: string | undefined,
+  extraSymbols: Map<string, CheckSymbol> | undefined,
+  dataSectionSize: number | undefined,
+  exported: boolean,
+  shallow: boolean,
+): string {
   const ctx = createContext(checkResult, literalRefs, nameMap, dataSectionSize)
+  ctx.shallow = shallow
   if (extraSymbols) {
     for (const [k, v] of extraSymbols) ctx.symbols.set(k, v)
   }
@@ -3481,9 +4203,23 @@ function collectLocals(
     }
   }
 
+  // The locals of the names a variant pattern binds, each of its field's
+  // type: seen in its arm or branch only.
+  function patternLocals(pattern: AST.MatchPattern, kind: string) {
+    if (pattern.kind !== 'constructor') return
+    for (const part of pattern.elements) {
+      const binding = partBinding(part)
+      const type = binding && checkResult.types.get(typeKey(binding.at, 'Binding'))
+      if (!binding || !type) continue
+      ctx.patternLocals ??= new Map()
+      ctx.patternLocals.set(binding.at, claimLocals(ctx, binding.name, type, locals, true, kind))
+    }
+  }
+
   // The locals of an `if let` or `elif let` branch: its binding's, and the
   // scratch locals its test uses.
   function ifLetLocals(arm: AST.IfExpr | AST.ElifBranch) {
+    if (arm.pattern?.kind === 'constructor') patternLocals(arm.pattern, 'if let ')
     if (arm.pattern?.kind !== 'binding') return
     const elemType = checkResult.types.get(typeKey(arm.condition.span.start, 'IfLetBinding'))
     if (!elemType) return
@@ -3583,6 +4319,7 @@ function collectLocals(
       }
       visitExpr(expr.subject)
       for (const arm of expr.arms) {
+        if (arm.patterns.length === 1) patternLocals(arm.patterns[0], 'match ')
         if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') visitBody(arm.body)
         else visitExpr(arm.body)
       }
@@ -3652,8 +4389,17 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
     if (decl.kind === 'DataDecl') {
       const sym = checkResult.symbols.get(decl.ident)
       if (!sym || sym.kind === 'generic' || sym.kind === 'typefunc') continue
+      // A number written with its type is laid out as itself (0.1:f32,
+      // also in parentheses)
+      let value = decl.value
+      for (;;) {
+        const inner = value.kind === 'GroupExpr' ? value.expr
+          : value.kind === 'TupleExpr' && value.elements.length === 1 && !value.elements[0].name ? value.elements[0].value : null
+        if (!inner) break
+        value = inner
+      }
       const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
-      const ref = literalRefs.get(expr.span.start)
+      const ref = literalRefs.get(value.span.start) ?? literalRefs.get(expr.span.start)
       if (ref) dataBuilder.addLabel(ref.ptr, `${decl.ident}: ${RT.typeToString(sym.type)}`)
     }
     if (decl.kind === 'DefDecl') {
@@ -3692,6 +4438,8 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
     calls: checkResult.calls,
     constants: checkResult.constants,
     fieldOrder: checkResult.fieldOrder,
+    variants: checkResult.variants,
+    payloads: checkResult.payloads,
   })
   labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
@@ -3973,11 +4721,19 @@ function emitTestDecl(
     // Collect locals first: codegen looks up how multi-value locals flatten.
     const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const testBody: AST.Block = { kind: 'Block', stmts, span: decl.span }
-    ctx.scratch = []
-    const body = bodyToWat(testBody, ctx)
+    const write = (shallow: boolean) => {
+      ctx.scratch = []
+      ctx.shallow = shallow
+      return bodyToWat(testBody, ctx)
+    }
+    // As funcToWat does: code nested too deep is written again to nest less.
+    let body = write(false)
+    if (controlDepth(body) > MAX_NESTED_DEPTH || nestingOf(body) > MAX_NESTING) body = write(true)
+    ctx.shallow = false
+    checkNesting(body, `test ${JSON.stringify(decl.name)}`, decl.span.start)
     ctx.testMode = false
     const seen = new Set<string>()
-    const locals = [...rawLocals, ...ctx.scratch].filter(l => {
+    const locals = [...rawLocals, ...(ctx.scratch ?? [])].filter(l => {
       if (seen.has(l.name)) return false
       seen.add(l.name)
       return true
@@ -4126,7 +4882,7 @@ function constantToWat(value: ComptimeValue, type: ResolvedType): string | null 
   if (value.kind === 'bool') return `(i32.const ${value.value ? 1 : 0})`
   if (value.kind === 'data_ptr' || value.kind === 'type' || value.kind === 'func') return null
   if (wt === 'f32' || wt === 'f64') {
-    const v = wt === 'f32' ? Math.fround(Number(value.value)) : Number(value.value)
+    const v = wt === 'f32' ? (value.kind === 'float' ? f32Of(value) : Math.fround(Number(value.value))) : Number(value.value)
     const text = Number.isNaN(v) ? 'nan' : !Number.isFinite(v) ? (v > 0 ? 'inf' : '-inf') : Object.is(v, -0) ? '-0' : `${v}`
     return `(${wt}.const ${text})`
   }
@@ -4262,6 +5018,8 @@ export function programToWat(
   const allCalls: TypeCheckResult['calls'] = new Map()
   const allConstants: TypeCheckResult['constants'] = new Map()
   const allFieldOrders: TypeCheckResult['fieldOrder'] = new Map()
+  const allVariants: TypeCheckResult['variants'] = new Map()
+  const allPayloads: TypeCheckResult['payloads'] = new Map()
 
   // One data section for the literals of all modules. A literal is known by
   // its offset in its own module's source, so each module has its own map
@@ -4273,11 +5031,15 @@ export function programToWat(
     for (const [written, compiled] of result.calls) allCalls.set(written, compiled)
     for (const [expr, value] of result.constants) allConstants.set(expr, value)
     for (const [tuple, order] of result.fieldOrder) allFieldOrders.set(tuple, order)
+    for (const [expr, k] of result.variants) allVariants.set(expr, k)
+    for (const [call, payload] of result.payloads) allPayloads.set(call, payload)
   }
   const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), {
     calls: allCalls,
     constants: allConstants,
     fieldOrder: allFieldOrders,
+    variants: allVariants,
+    payloads: allPayloads,
   })
   const literalRefsOf = new Map(sources.map(({ path }, i) => [path, refsOfSource[i]]))
   const refsOf = (path: string) => literalRefsOf.get(path) ?? new Map<number, DataRef>()
@@ -4456,10 +5218,10 @@ export function programToWat(
       const known = result.funcNames.get(fn) ?? fn.ident
       const watName = modNameMap.get(known) ?? known
       if (entryExports.has(fn)) {
-        const entry = hostEntry(fn, result, watName, parts.length, () => funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize))
+        const entry = hostEntry(fn, result, watName, parts.length, () => inModule(path, () => funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize)))
         if (entry) hostEntries.push(entry)
       }
-      parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize, entryExports.has(fn)))
+      parts.push(inModule(path, () => funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize, entryExports.has(fn))))
     }
     globalChecks.push(...hostGlobalChecks(loaded.module, createContext(result, refsOf(path), modNameMap, dataSection.totalSize), tested.has(path) ? testNames.imports : undefined))
   }
@@ -4504,7 +5266,7 @@ export function programToWat(
       const ctx = createContext(testResult, refsOf(testFilePath), buildFullNameMap(testFilePath), dataSection.totalSize)
       for (const decl of testModule.module.decls) {
         if (decl.kind !== 'TestDecl') continue
-        emitTestDecl(decl, ctx, testResult, refsOf(testFilePath), testNames, parts)
+        inModule(testFilePath, () => emitTestDecl(decl, ctx, testResult, refsOf(testFilePath), testNames, parts))
       }
     }
   }

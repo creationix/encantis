@@ -2,7 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import { byteSize, isOptional, isRowArray, isValueArray, manyPointer, primitive, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type SliceRT, type TupleRT } from './types'
+import { byteSize, enumLayout, isOptional, isRowArray, isValueArray, manyPointer, primitive, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type SliceRT, type TupleRT } from './types'
 import {
   bytesToHex,
   concatBytes,
@@ -11,6 +11,7 @@ import {
   serializeI32,
   serializeF64,
   serializeFloat,
+  f32Of,
 } from './utils'
 
 // Helper to extract framing specifiers from sizes array
@@ -188,6 +189,10 @@ export class DataSectionBuilder {
   /** Which element of a tuple gives each field, where that is not the one at
    *  the field's place (see TypeCheckResult.fieldOrder). */
   fieldOrder?: ReadonlyMap<AST.TupleExpr, number[]>
+  /** The variant each variant value and constructor is, and the payload of
+   *  each constructor (see TypeCheckResult.variants and payloads). */
+  variants?: ReadonlyMap<AST.Expr, number>
+  payloads?: ReadonlyMap<AST.CallExpr, AST.TupleExpr>
   private internedMap = new Map<string, DataEntry>()
   /** Mutable entries that skip deduplication */
   private mutEntries: DataEntry[] = []
@@ -649,6 +654,9 @@ function hasRuntimePart(expr: AST.Expr, builder: DataSectionBuilder): boolean {
   switch (e.kind) {
     case 'LiteralExpr':
       return false
+    case 'IdentExpr':
+      // A unit variant is its tag
+      return !builder.variants?.has(e) && !builder.constants?.has(e)
     case 'ArrayExpr':
       return e.elements.some((element) => hasRuntimePart(element, builder))
     case 'RepeatExpr':
@@ -681,7 +689,7 @@ function constantBytes(value: ComptimeValue, type: ResolvedType, builder: DataSe
   if (value.kind === 'bool') return new Uint8Array([value.value ? 1 : 0])
   if (value.kind === 'int' && t.kind === 'primitive') return serializeInt(value.value, t.name) ?? serializeFloat(Number(value.value), t.name)
   if (value.kind === 'int' && t.kind === 'pointer') return serializeInt(value.value, 'u32')
-  if (value.kind === 'float' && t.kind === 'primitive') return serializeFloat(value.value, t.name)
+  if (value.kind === 'float' && t.kind === 'primitive') return serializeFloat(t.name === 'f32' ? f32Of(value) : value.value, t.name)
   return null
 }
 
@@ -725,6 +733,12 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSect
     const rawBytes = bytesOf(literalToBytes(expr, elementType))
     return applyFramings(rawBytes, framings, getElementSize(elementType))
   }
+
+  // A number written with its type, laid out by itself (`data x: f64 =
+  // 0.1:f32`, a def's value): as an element is, its value as the checker
+  // worked it out where it did (the f32 nearest 0.1, widened)
+  // So is a number negated (-z, for a `def z: f32 = 0`, is -0).
+  if (expr.kind === 'AnnotationExpr' || expr.kind === 'UnaryExpr') return buildElementBytes(expr, elementType, framings, builder)
 
   // For array expressions, serialize each element then apply outer framings
   if (expr.kind === 'ArrayExpr') {
@@ -840,8 +854,12 @@ function buildElementBytes(
   framings: ArraySize[],
   builder: DataSectionBuilder,
 ): Bytes {
-  // Unwrap AnnotationExpr (e.g., 0:u32 in [0:u32;12])
+  // Unwrap AnnotationExpr (e.g., 0:u32 in [0:u32;12]), unless the checker
+  // worked out its value: 0.1:f32 is the f32 nearest 0.1, also in an f64.
   if (expr.kind === 'AnnotationExpr') {
+    const constant = builder.constants?.get(expr)
+    const bytes = constant && constantBytes(constant, elementType, builder)
+    if (bytes) return applyFramings(bytesOf(bytes), framings, getElementSize(unwrap(elementType)))
     return buildElementBytes(expr.expr, elementType, framings, builder)
   }
   // A name, or a reference to a type declared further down (also where a
@@ -918,6 +936,31 @@ function buildElementBytes(
 
   // A slice written as its two parts, (ptr, len).
   if (struct.kind === 'slice' && isSlicePair(expr)) return slicePairBytes(expr, struct, builder)
+
+  // A variant: its tag, its payload's fields as a struct's are laid out,
+  // and zeros for the padding (reference 2.9). One only known when the
+  // program runs stays zero here, and is stored when it runs.
+  if (struct.kind === 'enum') {
+    const layout = enumLayout(struct)
+    const k = builder.variants?.get(expr)
+    if (!layout || k === undefined) return zerosOf(byteSize(struct) ?? 0)
+    const tag = new Uint8Array(layout.tagBytes)
+    for (let i = 0; i < layout.tagBytes; i++) tag[i] = (k >> (8 * i)) & 0xff
+    const parts: Bytes[] = [bytesOf(tag)]
+    const fields = struct.variants[k].fields ?? []
+    const payload = expr.kind === 'CallExpr' ? builder.payloads?.get(expr) : undefined
+    let size = layout.tagBytes
+    if (payload) {
+      byField(payload, builder).forEach((arg, i) => {
+        const f = fields[i]
+        if (!f) return
+        parts.push(arg?.value ? buildFieldBytes(arg.value, f.type, builder) : zerosOf(byteSize(f.type) ?? 0))
+        size += byteSize(f.type) ?? 0
+      })
+    }
+    parts.push(zerosOf(layout.size - size))
+    return applyFramings(concat(parts), framings, layout.size)
+  }
 
   // A struct written out, as a tuple or a constructor: its fields one after
   // another, as they lie in memory. A field only known when the program runs
@@ -1132,7 +1175,8 @@ function literalToBytes(expr: AST.LiteralExpr, written: ResolvedType): Uint8Arra
 
   if (lit.kind === 'float') {
     if (elementType.kind === 'primitive') {
-      const bytes = serializeFloat(lit.value, elementType.name)
+      // An f32 is the one nearest the decimals written (f32Of)
+      const bytes = serializeFloat(elementType.name === 'f32' ? f32Of(lit) : lit.value, elementType.name)
       if (bytes) return bytes
     }
     // Default comptime_float to f64
@@ -1434,6 +1478,8 @@ interface DataSectionOptions {
   calls?: ReadonlyMap<AST.CallExpr, AST.Expr>
   constants?: ReadonlyMap<AST.Expr, ComptimeValue>
   fieldOrder?: ReadonlyMap<AST.TupleExpr, number[]>
+  variants?: ReadonlyMap<AST.Expr, number>
+  payloads?: ReadonlyMap<AST.CallExpr, AST.TupleExpr>
 }
 
 /**
@@ -1462,6 +1508,8 @@ export function buildProgramDataSection(
   dataBuilder.built = options.calls
   dataBuilder.constants = options.constants
   dataBuilder.fieldOrder = options.fieldOrder
+  dataBuilder.variants = options.variants
+  dataBuilder.payloads = options.payloads
   // Address 0 means "none" for optional pointers and slices, so program data
   // never starts there: the first 8 bytes stay unused, keeping 8-byte alignment.
   dataBuilder.setAutoDataStart(NULL_PAGE)

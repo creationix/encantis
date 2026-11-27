@@ -159,6 +159,8 @@ export interface TypeDecl extends BaseNode {
 export interface EnumDecl extends BaseNode {
   kind: 'EnumDecl'
   ident: string
+  // Where its name is written, after `enum`
+  identSpan: Span
   variants: EnumVariant[]
 }
 
@@ -513,9 +515,19 @@ export interface LiteralExpr extends BaseNode {
 
 export type LiteralValue =
   | { kind: 'int'; value: bigint; radix: 10 | 16 | 2 | 8 | 12 }
-  | { kind: 'float'; value: number }
+  // f32: the f32 nearest the decimals written, where it is not the f32
+  // nearest `value` (a decimal just past halfway between two f32s)
+  | { kind: 'float'; value: number; f32?: number }
   | { kind: 'string'; bytes: Uint8Array }
   | { kind: 'bool'; value: boolean }
+
+// A number literal's value negated: a new value, its f32 too where it has
+// one of its own (utils' decimalF32)
+export function negatedLiteral(value: LiteralValue): LiteralValue {
+  if (value.kind === 'float') return value.f32 === undefined ? { ...value, value: -value.value } : { ...value, value: -value.value, f32: -value.f32 }
+  if (value.kind === 'int') return { ...value, value: -value.value }
+  return value
+}
 
 // [expr, expr, ...]
 export interface ArrayExpr extends BaseNode {
@@ -567,19 +579,30 @@ export interface MatchArm extends BaseNode {
   body: FuncBody | Expr
 }
 
+// `span` of a constructor or variant pattern is where its name is written
 export type MatchPattern =
-  | { kind: 'constructor'; type: string; elements: MatchPatternElement[] }
+  | { kind: 'constructor'; type: string; elements: MatchPatternElement[]; span: Span }
   | { kind: 'tuple'; elements: MatchPatternElement[]; quoted?: true }
-  | { kind: 'variant'; type: string }
+  | { kind: 'variant'; type: string; span: Span }
   // `span` is where the name stands: an if let defines it there
   | { kind: 'binding'; name: string; span: Span }
   | { kind: 'literal'; value: LiteralValue }
   | { kind: 'wildcard' }
 
+// `span` of a part by name is where the field's name is written
 export type MatchPatternElement =
-  | { kind: 'named'; field: string; pattern: MatchPattern }
-  | { kind: 'namedShort'; field: string }
+  | { kind: 'named'; field: string; pattern: MatchPattern; span: Span }
+  | { kind: 'namedShort'; field: string; span: Span }
   | { kind: 'positional'; pattern: MatchPattern }
+
+// The name a part of a variant pattern binds and where it is bound, the
+// offset its binding's type is recorded at: a shorthand `r:` binds its
+// field's name where it is written, `r: x` and `x` bind `x`. Null for a part
+// that binds nothing (`_`).
+export function partBinding(part: MatchPatternElement): { name: string; at: number } | null {
+  if (part.kind === 'namedShort') return { name: part.field, at: part.span.start }
+  return part.pattern.kind === 'binding' ? { name: part.pattern.name, at: part.pattern.span.start } : null
+}
 
 // (expr, expr) or (name: expr, name: expr)
 export interface TupleExpr extends BaseNode {

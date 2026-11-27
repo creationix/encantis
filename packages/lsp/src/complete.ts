@@ -9,7 +9,7 @@
 // =============================================================================
 
 import type { Field, FuncDecl, Module, Type } from '@encantis/compiler/ast';
-import { BUILTIN_NAMES, declaredName, type TypeCheckResult, typeText } from '@encantis/compiler/checker';
+import { BUILTIN_NAMES, declaredName, isRefusedType, type TypeCheckResult, typeText } from '@encantis/compiler/checker';
 import { formatLine } from '@encantis/compiler/formatter';
 import { bindingTypeAt } from '@encantis/compiler/instances';
 import type { MetaOutput, MetaSymbol } from '@encantis/compiler/meta';
@@ -26,7 +26,7 @@ export interface Source {
   meta: MetaOutput;
 }
 
-const MODULE_KINDS: MetaSymbol['kind'][] = ['func', 'type', 'unique', 'global', 'data', 'def'];
+const MODULE_KINDS: MetaSymbol['kind'][] = ['func', 'type', 'unique', 'global', 'data', 'def', 'variant'];
 const OWN_KINDS: MetaSymbol['kind'][] = ['param', 'local', 'return', 'typeparam', 'comptime'];
 
 const ITEM_KIND: Record<MetaSymbol['kind'], CompletionItemKind> = {
@@ -41,6 +41,7 @@ const ITEM_KIND: Record<MetaSymbol['kind'], CompletionItemKind> = {
   def: CompletionItemKind.Constant,
   typeparam: CompletionItemKind.TypeParameter,
   comptime: CompletionItemKind.Function,
+  variant: CompletionItemKind.EnumMember,
 };
 
 function offsetOf(text: string, pos: string): number {
@@ -155,15 +156,23 @@ function moduleNames(sources: (Source | null)[]): Map<string, { symbol: MetaSymb
 }
 
 function typeOf(source: Source, symbol: MetaSymbol): string {
+  // A refused value has no type to show
+  if (symbol.refused) return '';
   const type = source.meta.types[symbol.type]?.type;
   return type ? formatLine(type) : '';
+}
+
+// A type is an enum where its name is one, as the outline has it
+function kindOf(symbol: MetaSymbol, source: Source): CompletionItemKind {
+  const declared = symbol.kind === 'type' ? source.check.symbols.get(symbol.name) : undefined;
+  return declared?.kind === 'type' && unwrap(declared.type).kind === 'enum' ? CompletionItemKind.Enum : ITEM_KIND[symbol.kind];
 }
 
 function item(symbol: MetaSymbol, source: Source, sort: string): CompletionItem {
   const detail = typeOf(source, symbol);
   return {
     label: symbol.name,
-    kind: ITEM_KIND[symbol.kind],
+    kind: kindOf(symbol, source),
     ...(detail ? { detail } : {}),
     ...(symbol.doc ? { documentation: { kind: MarkupKind.Markdown, value: symbol.doc } } : {}),
     sortText: `${sort}${symbol.name}`,
@@ -211,6 +220,15 @@ export function complete(text: string, offset: number, current: Source | null, p
 function runtimeParams(decl: FuncDecl): Field[] {
   const input = decl.signature.input;
   return input.kind === 'CompositeType' ? input.fields.filter((f) => !f.comptime && f.type.kind !== 'TypeType') : [];
+}
+
+// The function a module declares under a name, exported or not
+function funcNamed(module: Module, name: string): FuncDecl | null {
+  for (const decl of module.decls) {
+    const item = decl.kind === 'ExportDecl' ? decl.item : decl;
+    if (item.kind === 'FuncDecl' && item.ident === name) return item;
+  }
+  return null;
 }
 
 // A generic's result as written, or '' for none
@@ -542,7 +560,14 @@ export function signatureHelp(text: string, offset: number, current: Source | nu
   const symbol = source.check.symbols.get(call.name);
   let params: string[];
   let returns: string;
-  if (symbol?.kind === 'func') {
+  // A function with a parameter or a result of a type that did not resolve
+  // shows its signature as written, as it hovers
+  const refused = symbol?.kind === 'func' && [...symbol.type.params, ...symbol.type.returns].some((f) => isRefusedType(f.type));
+  const written = refused ? funcNamed(source.module, call.name) : null;
+  if (written) {
+    params = runtimeParams(written).map((p) => `${p.ident ? `${p.ident}: ` : ''}${typeText(p.type)}`);
+    returns = outputText(written);
+  } else if (symbol?.kind === 'func') {
     params = symbol.type.params.map((p) => (p.name ? `${p.name}: ${typeToString(p.type)}` : typeToString(p.type)));
     returns = symbol.type.returns.map((r) => (r.name ? `${r.name}: ${typeToString(r.type)}` : typeToString(r.type))).join(', ');
   } else if (symbol?.kind === 'generic') {

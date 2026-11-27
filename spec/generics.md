@@ -107,7 +107,7 @@ Expected
 
 ## Type arguments
 
-A call argument that could not start an expression is parsed as a type. A bare type name:
+A call argument that could not start an expression is parsed as a type. A bare type name can (it is also how a unit variant is written), so it is a name, which the checker reads as a type where a type is wanted:
 
 ```ents Expr
 first(Pt, ps)
@@ -125,11 +125,8 @@ first(Pt, ps)
       "kind": "Arg",
       "name": null,
       "value": {
-        "kind": "TypeExpr",
-        "type": {
-          "kind": "TypeRef",
-          "name": "Pt"
-        }
+        "kind": "IdentExpr",
+        "name": "Pt"
       }
     },
     {
@@ -1577,22 +1574,16 @@ first(Vec(u32), Pair(A, B)(1, 2))
               "kind": "Arg",
               "name": null,
               "value": {
-                "kind": "TypeExpr",
-                "type": {
-                  "kind": "TypeRef",
-                  "name": "A"
-                }
+                "kind": "IdentExpr",
+                "name": "A"
               }
             },
             {
               "kind": "Arg",
               "name": null,
               "value": {
-                "kind": "TypeExpr",
-                "type": {
-                  "kind": "TypeRef",
-                  "name": "B"
-                }
+                "kind": "IdentExpr",
+                "name": "B"
               }
             }
           ]
@@ -2050,7 +2041,7 @@ func Two(comptime Pt: type) -> type => (Pt, Pt)
 type parameter 'Pt' has the name of a type declared in this module
 ```
 
-A name that a `type` or another generic type has.
+A name that a `type` or another generic type has: the one declared second is refused, as for every capitalised name of a module, and the first stands.
 
 ```ents
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
@@ -2060,7 +2051,7 @@ func f(v: *Vec(u32), w: Vec) -> u32 => v.len
 ```
 
 ```errors
-'Vec' is already declared: a generic type's name is unique in its module
+'Vec' is already declared (first declared at 1:6)
 ```
 
 Inside a test.

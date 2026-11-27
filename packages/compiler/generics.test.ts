@@ -3026,12 +3026,12 @@ func tag(comptime T: type, t: Tagged(T)) -> u32 => t.id + sizeof(T)
     [
       'a type of the same name',
       `${VEC}type Vec = (a: u32)\nfunc f(v: *Vec(u32), w: Vec) -> u32 => v.len`,
-      ["'Vec' is already declared: a generic type's name is unique in its module"],
+      ["'Vec' is already declared"],
     ],
     [
       'a second generic type of the same name',
       `${VEC}func Vec(comptime T: type) -> type => (T, T)\nfunc f(v: *Vec(u32)) -> u32 => v.len`,
-      ["'Vec' is already declared: a generic type's name is unique in its module"],
+      ["'Vec' is already declared"],
     ],
     [
       'a type parameter of a function named like a generic type',

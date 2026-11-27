@@ -2,12 +2,14 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
-import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, type TypeCheckResult } from './checker'
+import { argValue, partBinding } from './ast'
+import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, isRefusedType, foreignVariantAt, type TypeCheckResult } from './checker'
 import { ownName, callOf, memberIn, instancesListed, applicationsListed, genericAround, type GenericInfo } from './instances'
-import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow } from './types'
+import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow, enumText, variantSignature } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
 import { buildDataSection, type DataRef } from './data-pack'
+import { calledDecl, writtenParam, writtenResult } from './queries'
 
 // === Builtin Function Signatures ===
 // Note: Many builtins are polymorphic. These signatures are for LSP display.
@@ -109,13 +111,18 @@ export interface MetaSymbol {
   name: string
   // typeparam: a generic's `comptime T: type`; comptime: a generic
   // function's comptime function parameter, `comptime before: (T, T) -> bool`
-  kind: 'func' | 'type' | 'unique' | 'global' | 'local' | 'param' | 'return' | 'data' | 'def' | 'typeparam' | 'comptime'
+  // variant: a variant of an enum, whose value is its tag
+  kind: 'func' | 'type' | 'unique' | 'global' | 'local' | 'param' | 'return' | 'data' | 'def' | 'typeparam' | 'comptime' | 'variant'
   type: number // Index into types array
   def: string // "line:col" (0-indexed)
   refs: string[] // ["line:col", ...]
   doc?: string
   value?: string // For def constants: the literal value
   inline?: boolean // For functions: whether it's an inline function
+  // A parameter or local that is a refused value (a name of a refused
+  // pattern, a variable given a refused operator's result, one of a type
+  // that did not resolve): it has no type to show
+  refused?: boolean
 }
 
 export interface MetaHint {
@@ -127,6 +134,9 @@ export interface MetaHint {
   exprStart?: number // Column where full expression starts (for highlight range)
   parentKind?: MetaSymbol['kind'] // For member access: kind of the base object's symbol
   inputParam?: boolean // True if this hint is for a function input parameter position
+  // A declaration that has no symbol of the module: the name of a variant
+  // whose name an earlier declaration has, where its enum declares it
+  declares?: boolean
   // The function a call at this name calls, where the name alone does not
   // say it: an instance of a generic (index_of(T = u32)), the function a
   // comptime function parameter stands for
@@ -298,6 +308,9 @@ class MetaBuilder {
       case 'TypeDecl':
         this.collectTypeDecl(decl)
         break
+      case 'EnumDecl':
+        this.collectEnumDecl(decl)
+        break
       case 'DataDecl':
         this.collectData(decl)
         break
@@ -411,7 +424,7 @@ class MetaBuilder {
   // with the declaration it was written with, so that its name is found at
   // its declaration and wherever it is applied.
   private collectTypeFunc(decl: AST.TypeFuncDecl): void {
-    if (this.checkResult.symbols.get(decl.ident)?.kind !== 'typefunc') return
+    if (this.checkResult.symbols.get(decl.ident)?.kind !== 'typefunc' || this.checkResult.leftOut.has(decl)) return
     const offset = this.typeFuncIdentOffset(decl)
     const symbolIndex = this.addSymbol(decl.ident, 'type', this.source.slice(offset + decl.ident.length, decl.span.end), offset)
     this.genericSymbols.set(symbolIndex, decl)
@@ -460,7 +473,10 @@ class MetaBuilder {
 
       // Find the function name offset (after "func" keyword)
       const offset = this.findFuncIdentOffset(decl)
-      const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset, undefined, decl.inline, known)
+      // A parameter or result of a type that did not resolve has no type to
+      // show: the signature is shown as it is written.
+      const refused = [...sym.type.params, ...sym.type.returns].some((f) => isRefusedType(f.type))
+      const symbolIndex = this.addSymbol(decl.ident, 'func', refused ? this.writtenSignature(decl.signature) : sym.type, offset, undefined, decl.inline, known)
 
       // Collect params and locals (also adds hints for params/returns)
       this.collectFuncBody(decl, symbolIndex)
@@ -644,6 +660,8 @@ class MetaBuilder {
   }
 
   private collectTypeDecl(decl: AST.TypeDecl): void {
+    // One declared second is left out: the name is the first one's (2.9)
+    if (this.checkResult.leftOut.has(decl)) return
     const sym = this.checkResult.symbols.get(decl.ident.name)
     if (!sym || sym.kind !== 'type') return
 
@@ -653,6 +671,38 @@ class MetaBuilder {
     const declared = u.kind === 'host' && !u.optional && u.name === decl.ident.name ? 'host' : sym.type
     const symbolIndex = this.addSymbol(decl.ident.name, 'type', declared, decl.ident.span.start)
     this.typeRegistry.registerWithSymbol(sym.type, symbolIndex)
+  }
+
+  // An enum is a type; each of its variants a name of the module, a value
+  // of the enum whose value is its tag
+  private collectEnumDecl(decl: AST.EnumDecl): void {
+    // One declared second is left out, its variants too: the name is the
+    // first one's, and its variants declare nothing (2.9)
+    if (this.checkResult.leftOut.has(decl)) return
+    const sym = this.checkResult.symbols.get(decl.ident)
+    if (!sym || sym.kind !== 'type') return
+    // Shown written out: enum { Red, Rgb(r: u8, g: u8, b: u8) }
+    const e = unwrap(sym.type)
+    const symbolIndex = this.addSymbol(decl.ident, 'type', e.kind === 'enum' ? enumText(e) : sym.type, decl.identSpan.start)
+    this.typeRegistry.registerWithSymbol(sym.type, symbolIndex)
+    for (const [index, v] of decl.variants.entries()) {
+      const variant = this.checkResult.symbols.get(v.name)
+      // One whose name an earlier declaration has is its enum's all the same
+      // (queries' clashingVariantAt), and no symbol of the module: its
+      // declaration is shown as its enum's variant, as its patterns are
+      if (this.checkResult.leftOut.has(v) && e.kind === 'enum' && e.variants[index]) {
+        const shown = variantSignature(e.variants[index], decl.ident)
+        this.addHint(v.span.start, v.name.length, this.typeRegistry.registerText(shown), undefined, String(index), undefined, 'variant')
+        const hint = this.hints[this.lineMap.positionKey(v.span.start)]
+        if (hint) hint.declares = true
+        continue
+      }
+      if (variant?.kind !== 'variant' || this.checkResult.symbolDefOffsets.get(v.name) !== v.span.start) continue
+      // A payload variant as what it is constructed from: (r: u8) -> Color
+      const declared = e.kind === 'enum' ? e.variants[variant.index] : undefined
+      const shown = declared?.fields ? variantSignature(declared, decl.ident) : variant.type
+      this.addSymbol(v.name, 'variant', shown, v.span.start, String(variant.index))
+    }
   }
 
   private collectDef(decl: AST.DefDecl): void {
@@ -792,7 +842,7 @@ class MetaBuilder {
 
     // Get doc comment - only for module-level declarations
     let doc: string | null = null
-    if (kind === 'func' || kind === 'type' || kind === 'unique' || kind === 'global' || kind === 'data' || kind === 'def') {
+    if (kind === 'func' || kind === 'type' || kind === 'unique' || kind === 'global' || kind === 'data' || kind === 'def' || kind === 'variant') {
       const declLine = this.lineMap.offsetToPosition(offset).line
       doc = findDocComment(this.comments, declLine)
     }
@@ -820,6 +870,7 @@ class MetaBuilder {
     if (doc) symbol.doc = doc
     if (value) symbol.value = value
     if (inline) symbol.inline = true
+    if ((local || kind === 'def' || kind === 'global' || kind === 'data') && typeof type !== 'string' && isRefusedType(type)) symbol.refused = true
 
     const index = this.symbols.length
     this.symbols.push(symbol)
@@ -966,6 +1017,9 @@ class MetaBuilder {
       case 'TypeDecl':
         this.generateHintsForTypeDecl(decl)
         break
+      case 'EnumDecl':
+        this.generateHintsForEnumDecl(decl)
+        break
       case 'DataDecl':
         this.generateHintsForData(decl)
         break
@@ -1071,7 +1125,9 @@ class MetaBuilder {
 
   private generateHintsForTypeFunc(decl: AST.TypeFuncDecl): void {
     const symbolIndex = this.symbolIndexByName.get(decl.ident)
-    if (symbolIndex === undefined || this.checkResult.symbols.get(decl.ident)?.kind !== 'typefunc') return
+    // One declared second declares nothing (2.9): its name is no use of the
+    // first's either
+    if (symbolIndex === undefined || this.checkResult.symbols.get(decl.ident)?.kind !== 'typefunc' || this.checkResult.leftOut.has(decl)) return
     this.addHint(this.typeFuncIdentOffset(decl), decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
   }
 
@@ -1089,6 +1145,7 @@ class MetaBuilder {
         if (stmt.value) this.generateHintsForExpr(stmt.value)
         break
       case 'SetStmt':
+        this.generateHintsForSetPattern(stmt.pattern)
         if (stmt.type) this.generateHintsForTypeExpr(stmt.type)
         this.generateHintsForExpr(stmt.value)
         break
@@ -1151,6 +1208,23 @@ class MetaBuilder {
     }
   }
 
+  // The names a set assigns are uses of the variables they name
+  private generateHintsForSetPattern(pattern: AST.Pattern): void {
+    const named = (name: string, offset: number) => {
+      const def = this.checkResult.symbolRefs.get(offset)
+      const symbolIndex = def !== undefined ? this.symbolIndexByDef.get(def) : undefined
+      if (symbolIndex !== undefined) this.addHint(offset, name.length, this.symbols[symbolIndex].type, symbolIndex)
+    }
+    if (pattern.kind === 'IdentPattern') {
+      named(pattern.name, pattern.span.start)
+      return
+    }
+    for (const element of pattern.elements) {
+      if (element.kind === 'named') named(element.binding ?? element.field, namedPartAt(element))
+      else this.generateHintsForSetPattern(element.pattern)
+    }
+  }
+
   private generateHintsForPattern(pattern: AST.Pattern): void {
     if (pattern.kind === 'IdentPattern') {
       const type = this.bindingType(pattern.span.start, pattern.kind)
@@ -1181,8 +1255,40 @@ class MetaBuilder {
     }
   }
 
+  // A variant pattern names its variant, and each name it binds is a local,
+  // defined where it is written, of its field's type
+  private generateHintsForVariantPattern(pattern: AST.MatchPattern): void {
+    if (pattern.kind !== 'variant' && pattern.kind !== 'constructor') return
+    const variant = this.usedSymbol({ kind: 'IdentExpr', name: pattern.type, span: pattern.span })
+    if (variant !== undefined && this.checkResult.symbolRefs.has(pattern.span.start)) {
+      this.addHint(pattern.span.start, pattern.type.length, this.symbols[variant].type, variant)
+    } else {
+      // A variant of an enum the module does not declare (another module's)
+      // is shown as that enum's, and is no symbol of the module, whatever of
+      // the module is spelled like it.
+      const foreign = foreignVariantAt(this.checkResult, pattern.span.start)
+      if (foreign) {
+        const shown = variantSignature(foreign.variant, typeToString(foreign.enumType))
+        this.addHint(pattern.span.start, pattern.type.length, this.typeRegistry.registerText(shown), undefined, String(foreign.index), undefined, 'variant')
+      }
+    }
+    if (pattern.kind !== 'constructor') return
+    for (const part of pattern.elements) {
+      const binding = partBinding(part)
+      if (!binding) continue
+      const { name, at } = binding
+      // A name of a refused pattern is a refused value: its symbol has no
+      // type to show (MetaSymbol.refused)
+      const type = this.bindingType(at, 'Binding')
+      if (!type) continue
+      const symbolIndex = this.symbolIndexByDef.get(at) ?? this.addSymbol(name, 'local', type, at)
+      this.addHint(at, name.length, this.typeRegistry.register(type), symbolIndex)
+    }
+  }
+
   // The binding of an if let or elif let is a local, defined where its name stands
   private generateHintsForIfLetBinding(arm: AST.IfExpr | AST.ElifBranch): void {
+    if (arm.pattern) this.generateHintsForVariantPattern(arm.pattern)
     if (arm.pattern?.kind !== 'binding') return
     const at = arm.pattern.span.start
     const type = this.bindingType(at, 'Binding')
@@ -1204,13 +1310,48 @@ class MetaBuilder {
     }
 
     switch (expr.kind) {
+      case 'SizeofExpr':
+        // sizeof(Shape) uses the type it measures
+        this.generateHintsForTypeExpr(expr.type)
+        break
+
       case 'IdentExpr': {
         const symbolIndex = this.usedSymbol(expr)
+        // A refused value has no type to show: the use of a refused local is
+        // that local (MetaSymbol.refused), a type's name where a value is
+        // wanted (a type argument, a method call's receiver) is the type,
+        // and anything else has no hint.
+        if (isRefusedType(type)) {
+          const symbol = symbolIndex !== undefined ? this.symbols[symbolIndex] : undefined
+          if (symbol) this.addHint(expr.span.start, expr.name.length, symbol.type, symbolIndex)
+          break
+        }
+        // A variant is its own enum's, whatever its place expects (where that
+        // is another enum, the error says so).
+        if (symbolIndex !== undefined && this.symbols[symbolIndex].kind === 'variant') {
+          this.addHint(expr.span.start, expr.name.length, this.symbols[symbolIndex].type, symbolIndex)
+          break
+        }
+        // A function with a parameter or a result of a type that did not
+        // resolve is shown as it is written, at a call as at its name
+        const written = this.writtenCall(expr.span.start, type)
+        if (written !== null) {
+          this.addHint(expr.span.start, expr.name.length, written, symbolIndex)
+          break
+        }
+        if (symbolIndex !== undefined && this.symbols[symbolIndex].kind === 'func' && type?.kind === 'func' && [...type.params, ...type.returns].some((f) => isRefusedType(f.type))) {
+          this.addHint(expr.span.start, expr.name.length, this.symbols[symbolIndex].type, symbolIndex)
+          break
+        }
         // Check for builtin functions when no symbol is found
         const effectiveType = type ?? BUILTIN_SIGNATURES[expr.name]
         if (effectiveType) {
           const typeIndex = this.typeRegistry.register(effectiveType)
           this.addHint(expr.span.start, expr.name.length, typeIndex, symbolIndex)
+        } else if (symbolIndex !== undefined && ['type', 'unique'].includes(this.symbols[symbolIndex].kind)) {
+          // A type's name given for a comptime type parameter, size-of(Point),
+          // has no type of its own: it is the type, shown as its symbol is.
+          this.addHint(expr.span.start, expr.name.length, this.symbols[symbolIndex].type, symbolIndex)
         }
         break
       }
@@ -1233,8 +1374,17 @@ class MetaBuilder {
 
       case 'CallExpr': {
         if (!this.generateHintsForCallee(expr)) this.generateHintsForExpr(expr.callee)
+        // A shorthand `r:` stands for the variable r, which it is shown as:
+        // the field it gives has its name after a point or before a value.
         for (const arg of expr.args) {
-          if (arg.value) this.generateHintsForExpr(arg.value)
+          const value = argValue(arg)
+          if (!value) continue
+          // In a generic's body a shorthand's variable is its copy's in the
+          // instance, which the checker typed
+          const copy = arg.value ? undefined : (this.copies?.get(arg) as AST.Arg | undefined)
+          const own = copy && argValue(copy)
+          if (own) this.copies?.set(value, own)
+          this.generateHintsForExpr(value)
         }
         break
       }
@@ -1442,6 +1592,7 @@ class MetaBuilder {
       case 'MatchExpr':
         this.generateHintsForExpr(expr.subject)
         for (const arm of expr.arms) {
+          for (const pattern of arm.patterns) this.generateHintsForVariantPattern(pattern)
           if (arm.body.kind === 'Block') {
             this.generateHintsForBlock(arm.body)
           } else if (arm.body.kind === 'ArrowBody') {
@@ -1488,9 +1639,25 @@ class MetaBuilder {
     const type = this.checkResult.exprTypes.get(method !== null ? meant.callee : this.checked(callee)) ?? BUILTIN_SIGNATURES[name]
     if (type) {
       const offset = method !== null ? callee.span.end - name.length : callee.span.start
-      this.addHint(offset, name.length, this.typeRegistry.register(type), symbolIndex)
+      this.addHint(offset, name.length, this.writtenCall(offset, type) ?? this.typeRegistry.register(type), symbolIndex)
     }
     return true
+  }
+
+  // The type a call of a function with a parameter or a result of a type
+  // that did not resolve is shown with: each such part as the function the
+  // call means writes it, the rest as the call has it (`(x:u32,y:Nope)->u32`
+  // for gen(z, 1), of `gen(comptime T: type, x: T, y: Nope) -> T`). Null for
+  // any other call.
+  private writtenCall(offset: number, type: ResolvedType | undefined): number | null {
+    if (type?.kind !== 'func' || ![...type.params, ...type.returns].some((f) => isRefusedType(f.type))) return null
+    const decl = calledDecl(this.module, this.checkResult, offset)
+    if (!decl) return null
+    const part = (name: string | null | undefined, text: string) => (name ? `${name}:${text}` : text)
+    const params = type.params.map((p, i) => part(p.name, writtenParam(this.source, decl, p, i))).join(',')
+    const results = type.returns.map((r, i) => part(r.name, writtenResult(this.source, decl, i, r.type)))
+    const returns = results.length === 0 ? '()' : results.length === 1 && !type.returns[0].name ? results[0] : `(${results.join(',')})`
+    return this.typeRegistry.registerText(`(${params})->${returns}`)
   }
 
   private generateHintsForTypeExpr(type: AST.Type): void {
@@ -1533,13 +1700,37 @@ class MetaBuilder {
 
   private generateHintsForTypeDecl(decl: AST.TypeDecl): void {
     const symbolIndex = this.symbolIndexByName.get(decl.ident.name)
-    if (symbolIndex !== undefined) {
+    // One declared second declares nothing (2.9): its name is no use of the
+    // first's either
+    if (symbolIndex !== undefined && !this.checkResult.leftOut.has(decl)) {
       this.addHint(
         decl.ident.span.start,
         decl.ident.name.length,
         this.symbols[symbolIndex].type,
         symbolIndex,
       )
+    }
+    // A name for a type (type Hue = Color) uses the type it names. (A
+    // struct's fields name theirs, which are found where they are written.)
+    if (decl.type.kind === 'TypeRef' || decl.type.kind === 'TypeApply') this.generateHintsForTypeExpr(decl.type)
+  }
+
+  // An enum's name and each of its variants' are where they are declared,
+  // and the types its payloads name are uses of those types. A name refused
+  // by the check of capitalised names is the first one's, which has its hint
+  // there: nothing is added for it.
+  private generateHintsForEnumDecl(decl: AST.EnumDecl): void {
+    const own = (name: string, at: number) => this.checkResult.symbolDefOffsets.get(name) === at
+    const enumIndex = this.symbolIndexByName.get(decl.ident)
+    if (enumIndex !== undefined && own(decl.ident, decl.identSpan.start)) {
+      this.addHint(decl.identSpan.start, decl.ident.length, this.symbols[enumIndex].type, enumIndex)
+    }
+    for (const v of decl.variants) {
+      const variantIndex = this.symbolIndexByName.get(v.name)
+      if (variantIndex !== undefined && own(v.name, v.span.start)) {
+        this.addHint(v.span.start, v.name.length, this.symbols[variantIndex].type, variantIndex)
+      }
+      for (const field of v.fields ?? []) this.generateHintsForTypeExpr(field.type)
     }
   }
 
@@ -1562,6 +1753,8 @@ class MetaBuilder {
       const offset = this.findDataIdentOffset(decl)
       this.addHint(offset, decl.ident.length, symbol.type, symbolIndex, symbol.value)
     }
+    // The types its type names are uses of them
+    if (decl.type) this.generateHintsForTypeExpr(decl.type)
     this.generateHintsForExpr(decl.value)
   }
 

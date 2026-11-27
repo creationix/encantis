@@ -342,7 +342,7 @@ enum Shape {
 }
 ```
 
-**Not implemented:** an enum declaration parses and is ignored, and naming its type is an error (reference 2.9).
+An enum is a type: its name is used where a type is, and each variant is a value, `Empty` or `Circle(1.5)` (reference 2.9). An enum declaration stands at module level only; `export enum` and an enum with type parameters are syntax errors. The commas between variants are optional, and a variant's field list is a struct's, never empty (`Empty()` is a syntax error).
 
 ### Definitions
 
@@ -860,6 +860,7 @@ PrimaryExpr = IfExpr
             | "(" Expr ")"                        -- group
             | "(" ")"                             -- unit
             | typeIdent "(" ArgList? ")"          -- constructor
+            | typeIdent                           -- variant
             | literal
             | ident
 ArrayLiteral = "[" Expr ";" Expr "]"              -- repeat: value; count
@@ -876,12 +877,14 @@ ArrayLiteral = "[" Expr ";" Expr "]"              -- repeat: value; count
 [0:u8; 1024]                                        // 1024 zero bytes
 Point(1.0, 2.0)                                     // a constructor
 Point(y: 2.0, x: 1.0)                               // fields by name
+Red                                                 // a unit variant
+Rgb(1, 2, 3)                                        // a variant with a payload, a constructor
 Vec(u32)(p, 0, 16)                                  // the constructor of a generic type applied
 sizeof(u64)                                         // the size of a type in bytes
 sizeof data                                         // the end of the program's data
 ```
 
-A type that is called constructs a value of it. `Vec(u32)(p, 0, 16)` parses as a call of a call; the checker reads the inner one as the type. A named argument of a constructor and a named element of a tuple literal are the same syntax and mean the same: the value of the field of that name, whatever its place, while an element without a name is the field at its place. Values are computed in the order they are written (reference 2.8).
+A capitalised name alone (`-- variant`) is a name, as a lower-case one is: a unit variant of an enum (reference 2.9), or, where a type is wanted (an argument for a type parameter, a method call's receiver, `Point.size()`), a type's name, which the checker reads as the type. Tried after `-- constructor`, so `Rgb(1, 2, 3)` stays a constructor; and as for every expression, a line that starts with `(` continues it as a call (1.6). A type that is called constructs a value of it. `Vec(u32)(p, 0, 16)` parses as a call of a call; the checker reads the inner one as the type. A named argument of a constructor and a named element of a tuple literal are the same syntax and mean the same: the value of the field of that name, whatever its place, while an element without a name is the field at its place. Values are computed in the order they are written (reference 2.8).
 
 ### Calls and Arguments
 
@@ -894,9 +897,8 @@ Arg           = ident ":" Expr                 -- named
               | Type &("," | ")")              -- otherType
               | Expr                           -- unfinished
 TypeLit       = &typeOnlyStart BaseType
-typeOnlyStart = "?" | "*" | "[*]" | "[]" | arrayPrefix | rangedHead | rangedUnsigned | bareTypeIdent
+typeOnlyStart = "?" | "*" | "[*]" | "[]" | arrayPrefix | rangedHead | rangedUnsigned
 arrayPrefix   = "[" arrayFramings "]"
-bareTypeIdent = typeIdent ~"("
 ```
 
 ```encantis
@@ -917,12 +919,12 @@ max(u32, a, b)                // u32 is an identifier, read as a type by its pos
 pick((i32, i32), c, p, q)     // a tuple of identifiers, read as a type by its position
 head([]u8, xs)                // []u8 can only be a type: parsed as one
 head(*mut Point, xs)
-first(Point, ps)              // a bare type name is not an expression: parsed as a type
-apply((u32) -> u32, f)        // so is a function type
+first(Point, ps)              // a bare type name is an expression (as Red is), read as a type by its position
+apply((u32) -> u32, f)        // a function type is parsed as a type
 pick((name: []u8, at: Point), a, b)   // and a struct type whose fields are not all expressions
 ```
 
-An argument is parsed as a type when it starts in a way no expression can (`?`, `*`, `[*]`, `[]`, `[N]`, `u8#16`, `u8#n`, `u8#(`, an upper-case name that is not followed by `(`), or when it is no expression but is a type, such as a function type or a struct type with a field type like `[]u8` or `Point`; the type is followed by `,` or `)`. Everything else stays an expression: `u32`, `(i32, i32)`, `(q: i32, r: i32)`, `(at: Point)` (the name `at` given a type, in parentheses), `Point(1, 2)`, `[4]`, `[]`. The checker reads such an expression as a type where the parameter is a type parameter, so a type argument is always written as it would be after a colon. So a struct type with named fields is written in place like any other type argument: `(q: i32, r: i32)` is an expression read as a type, and `(name: []u8, at: Point)` is parsed as a type because it is no expression.
+An argument is parsed as a type when it starts in a way no expression can (`?`, `*`, `[*]`, `[]`, `[N]`, `u8#16`, `u8#n`, `u8#(`), or when it is no expression but is a type, such as a function type or a struct type with a field type like `[]u8`; the type is followed by `,` or `)`. Everything else stays an expression: `u32`, `Point` (a capitalised name is one, since a unit variant is written so), `(i32, i32)`, `(q: i32, r: i32)`, `(at: Point)` (the name `at` given a type, in parentheses), `Point(1, 2)`, `[4]`, `[]`. A capitalised name is read as a type unless it names a variant: `Solid(Red)` and `(Red, Blue)` are values. The checker reads such an expression as a type where the parameter is a type parameter, so a type argument is always written as it would be after a colon. So a struct type with named fields is written in place like any other type argument: `(q: i32, r: i32)` is an expression read as a type, and `(name: []u8, at: Point)` is parsed as a type because it is no expression.
 
 A generic type applied is an expression of the same kind: `first(Vec(u32), vs)` parses as a call inside a call, and is read as a type by its position. Its own arguments follow the same rule, so `first(Vec([]u8), vs)` works too. A call with numbers among its arguments, `Ring(8, u32)`, is read as a type where its callee is a generic type in scope, each number given to a value parameter; `Cell(1, 2)` with `Cell` a struct type stays a value.
 
@@ -952,7 +954,7 @@ if let name = names[i] { print(name) } else { print("none") }
 let n = if let p = maybe { p.* } else { 0 }
 ```
 
-A branch is a block or `=>` and one expression: `if c => r = 1` is a syntax error, as an assignment is a statement. An `elif let` branch binds its name in its own body, as an `if let` does.
+A branch is a block or `=>` and one expression: `if c => r = 1` is a syntax error, as an assignment is a statement. An `elif let` branch binds its name in its own body, as an `if let` does. The pattern of an `if let` or `elif let` is a name, or a variant pattern of an enum, `if let Rgb(r, _, b) = c` (reference 6.4); the checker refuses any other.
 
 ### Match
 
@@ -986,7 +988,7 @@ match status {
 }
 ```
 
-The compiler compares numbers, codepoints and bools, and `_` matches anything. **Not implemented:** binding, variant, constructor and tuple patterns parse, and are not matched (reference 6.3). There is no guard: `n if n > 3 => ...` is a syntax error.
+The compiler compares numbers, codepoints and bools, `_` matches anything, and on an enum a variant pattern (`-- variant`, or `-- constructor` with each part a name, `_` or `field:`) matches a variant and binds its fields (reference 6.3). **Not implemented:** binding, tuple and struct constructor patterns parse, and are refused by the checker (reference 6.3). There is no guard: `n if n > 3 => ...` is a syntax error.
 
 ---
 
