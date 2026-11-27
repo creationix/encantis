@@ -1,0 +1,4 @@
+{
+  "examples/browser/lantern.ents": { "init": ["init:1"] },
+  "examples/browser/starter.ents": { "init": ["init:1"] }
+}
